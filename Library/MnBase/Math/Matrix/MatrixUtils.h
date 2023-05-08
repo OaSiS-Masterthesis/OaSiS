@@ -2,6 +2,7 @@
 #define MATRIX_UTILS_H
 
 #include "Utility.h"
+#include "Givens.cuh"
 
 namespace mn {
 
@@ -101,6 +102,70 @@ constexpr void matrix_inverse(const std::array<T, 9>& x, std::array<T, 9>& inv)
     inv[8] = s * x[0] * x[4] - s * x[3] * x[1];
 }
 #endif
+
+//Solves ax = b for x
+template <typename T>
+constexpr void solve_linear_system(const std::array<T, 9>& a, std::array<T, 3>& x, const std::array<T, 3>& b){
+	//Calculate QR
+	std::array<T, 9> r = a;
+	
+	const mn::math::GivensRotation rot0(r[1], r[2], 1, 2);
+	rot0.template mat_rotation<3, T>(r);
+	const mn::math::GivensRotation rot1(r[0], r[1], 0, 1);
+	rot1.template mat_rotation<3, T>(r);
+	const mn::math::GivensRotation rot2(r[4], r[5], 1, 2);
+	rot2.template mat_rotation<3, T>(r);
+	
+	std::array<T, 9> rot0_mat;
+	std::array<T, 9> rot1_mat;
+	std::array<T, 9> rot2_mat;
+	rot0.template fill<3, T>(rot0_mat);
+	rot1.template fill<3, T>(rot1_mat);
+	rot2.template fill<3, T>(rot2_mat);
+	
+	std::array<T, 9> q_transpose_tmp;
+	matrix_matrix_multiplication_3d(rot1_mat, rot0_mat, q_transpose_tmp);
+	std::array<T, 9> q_transpose;
+	matrix_matrix_multiplication_3d(rot2_mat, q_transpose_tmp, q_transpose);
+	
+	//Calculate y
+	std::array<T, 3> y;
+	matrix_vector_multiplication_3d(q_transpose, b, y);
+	
+	//Back substitution
+	x[2] = y[2] / (std::abs(r[8]) < 1e-4 ? static_cast<T>(1.0) : r[8]);
+	x[1] = (y[1] - x[2] * r[7]) / (std::abs(r[4]) < 1e-4 ? static_cast<T>(1.0) : r[4]);
+	x[0] = (y[0] - x[2] * r[6] - x[1] * r[3]) / (std::abs(r[0]) < 1e-4 ? static_cast<T>(1.0) : r[0]);
+}
+
+//Gram-Schmidt orthogonalization
+template <typename T>
+constexpr void matrix_orthogonalize(const std::array<T, 9>& x, std::array<T, 9>& orth)
+{
+	//FIXME: Not sure if that works correctly (does seem to produce wring results)
+	const T length_0 = sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]);
+	orth[0] = x[0]/length_0;
+	orth[1] = x[1]/length_0;
+	orth[2] = x[2]/length_0;
+	
+	const vec<T, 3> column_0 {orth[0], orth[1], orth[2]};
+	const vec<T, 3> column_1 {x[3], x[4], x[5]};
+	const vec<T, 3> dot_div = column_1 - column_0.dot(column_1) * column_0;
+	
+	const T length_1 = sqrt(dot_div[0] * dot_div[0] + dot_div[1] * dot_div[1] + dot_div[2] * dot_div[2]);
+	orth[3] = dot_div[0]/length_1;
+	orth[4] = dot_div[1]/length_1;
+	orth[5] = dot_div[2]/length_1;
+	
+	const vec<T, 3> column_1_new {orth[3], orth[4], orth[5]};
+	vec<T, 3> cross;
+	vec_cross_mul_vec_3d(cross.data_arr(), column_0.data_arr(), column_1_new.data_arr());
+	
+	const T length_2 = sqrt(cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]);
+	orth[6] = cross[0]/length_2;
+	orth[7] = cross[1]/length_2;
+	orth[8] = cross[2]/length_2;
+}
 
 template<typename T>
 constexpr T matrix_determinant_3d(const std::array<T, 9>& x) {
@@ -245,6 +310,20 @@ constexpr void matrix_matrix_transpose_multiplication_3d(const std::array<T, 9>&
 	c[8] = a[2] * b[2] + a[5] * b[5] + a[8] * b[8];
 }
 
+//c = b * a * b^T
+template<typename T>
+constexpr void matrix_matrix_matrix_transpose_multiplication_3d(const std::array<T, 9>& a, const std::array<T, 9>& b, std::array<T, 9>& c) {
+	c[0] = b[0] * a[0] * b[0] + b[1] * a[3] * b[3] + b[2] * a[6] * b[6];
+	c[1] = b[0] * a[1] * b[0] + b[1] * a[4] * b[3] + b[2] * a[7] * b[6];
+	c[2] = b[0] * a[2] * b[0] + b[1] * a[5] * b[3] + b[2] * a[8] * b[6];
+	c[3] = b[3] * a[0] * b[1] + b[4] * a[3] * b[4] + b[5] * a[6] * b[7];
+	c[4] = b[3] * a[1] * b[1] + b[4] * a[4] * b[4] + b[5] * a[7] * b[7];
+	c[5] = b[3] * a[2] * b[1] + b[4] * a[5] * b[4] + b[5] * a[8] * b[7];
+	c[6] = b[6] * a[0] * b[2] + b[7] * a[3] * b[5] + b[8] * a[6] * b[8];
+	c[7] = b[6] * a[1] * b[2] + b[7] * a[4] * b[5] + b[8] * a[7] * b[8];
+	c[8] = b[6] * a[2] * b[2] + b[7] * a[5] * b[5] + b[8] * a[8] * b[8];
+}
+
 template<typename T>
 constexpr void matrix_matrix_transpose_multiplication_2d(const std::array<T, 4>& a, const std::array<T, 4>& b, std::array<T, 4>& c) {
 	c[0] = a[0] * b[0] + a[2] * b[2];
@@ -283,6 +362,79 @@ constexpr void matrix_deviatoric_3d(const std::array<T, 9>& in, std::array<T, 9>
 	out[6] = in[6];
 	out[7] = in[7];
 	out[8] = in[8] * static_cast<T>(2.0 / 3.0) - (in[0] + in[4]) / static_cast<T>(3.0);
+}
+
+template <typename T>
+constexpr void quat_quat_multiplication(const std::array<T, 4>& a, const std::array<T, 4>& b, std::array<T, 4>& c) {
+	c[0] = a[0] * b[3] + b[0] * a[3] + a[1] * b[2] - a[2] * b[1];
+	c[1] = a[1] * b[3] + b[1] * a[3] + a[2] * b[0] - a[0] * b[2];
+	c[2] = a[2] * b[3] + b[2] * a[3] + a[0] * b[1] - a[1] * b[0];
+	c[3] = a[3] * b[3] - (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]);
+}
+
+template <typename T>
+constexpr void vec_quat_multiplication(const std::array<T, 3>& a, const std::array<T, 4>& b, std::array<T, 4>& c) {
+	c[0] = a[0] * b[3] + a[1] * b[2] - a[2] * b[1];
+	c[1] = a[1] * b[3] + a[2] * b[0] - a[0] * b[2];
+	c[2] = a[2] * b[3] + a[0] * b[1] - a[1] * b[0];
+	c[3] = -(a[0] * b[0] + a[1] * b[1] + a[2] * b[2]);
+}
+
+template <typename T>
+constexpr void quat_quat_cross(const std::array<T, 4>& a, const std::array<T, 4>& b, std::array<T, 4>& c) {
+	c[0] = a[0] * b[3] + b[0] * a[3] + a[1] * b[2] - a[2] * b[1];
+	c[1] = a[1] * b[3] + b[1] * a[3] + a[2] * b[0] - a[0] * b[2];
+	c[2] = a[2] * b[3] + b[2] * a[3] + a[0] * b[1] - a[1] * b[0];
+	c[3] = a[3] * b[3];
+}
+
+template <typename T>
+constexpr void vec_quat_cross(const std::array<T, 3>& a, const std::array<T, 4>& b, std::array<T, 4>& c) {
+	c[0] = a[0] * b[3] + b[0] * a[3] + a[1] * b[2] - a[2] * b[1];
+	c[1] = a[1] * b[3] + b[1] * a[3] + a[2] * b[0] - a[0] * b[2];
+	c[2] = a[2] * b[3] + b[2] * a[3] + a[0] * b[1] - a[1] * b[0];
+	c[3] = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]);
+}
+
+template <typename T>
+constexpr void quat_vec_cross(const std::array<T, 4>& a, const std::array<T, 3>& b, std::array<T, 4>& c) {
+	c[0] = a[0] * b[3] + b[0] * a[3] + a[1] * b[2] - a[2] * b[1];
+	c[1] = a[1] * b[3] + b[1] * a[3] + a[2] * b[0] - a[0] * b[2];
+	c[2] = a[2] * b[3] + b[2] * a[3] + a[0] * b[1] - a[1] * b[0];
+	c[3] = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]);
+}
+
+template <typename T>
+constexpr void rotate_by_quat(const std::array<T, 3>& in, const std::array<T, 4>& quat, std::array<T, 3>& out)
+{
+	out[0] = in[0] + static_cast<T>(2.0) * quat[1] * (quat[0] * in[1] - quat[1] * in[0] + quat[3] * in[2]) - static_cast<T>(2.0) * quat[2] * (quat[2] * in[0] - quat[0] * in[2] + quat[3] * in[1]);
+	out[1] = in[1] + static_cast<T>(2.0) * quat[2] * (quat[1] * in[2] - quat[2] * in[1] + quat[3] * in[0]) - static_cast<T>(2.0) * quat[0] * (quat[0] * in[1] - quat[1] * in[0] + quat[3] * in[2]);
+	out[2] = in[2] + static_cast<T>(2.0) * quat[0] * (quat[2] * in[0] - quat[0] * in[2] + quat[3] * in[1]) - static_cast<T>(2.0) * quat[1] * (quat[1] * in[2] - quat[2] * in[1] + quat[3] * in[0]);
+}
+
+template <typename T>
+constexpr void rotate_by_quat(const std::array<T, 9>& in, const std::array<T, 4>& quat, std::array<T, 9>& out)
+{
+	const std::array<T, 3> column_0 {in[0], in[1], in[2]};
+	const std::array<T, 3> column_1 {in[3], in[4], in[5]};
+	const std::array<T, 3> column_2 {in[6], in[7], in[8]};
+	
+	std::array<T, 3> column_0_rotated;
+	std::array<T, 3> column_1_rotated;
+	std::array<T, 3> column_2_rotated;
+	rotate_by_quat(column_0, quat, column_0_rotated);
+	rotate_by_quat(column_1, quat, column_1_rotated);
+	rotate_by_quat(column_2, quat, column_2_rotated);
+	
+	out[0] = column_0_rotated[0];
+	out[1] = column_0_rotated[1];
+	out[2] = column_0_rotated[2];
+	out[3] = column_1_rotated[0];
+	out[4] = column_1_rotated[1];
+	out[5] = column_1_rotated[2];
+	out[6] = column_2_rotated[0];
+	out[7] = column_2_rotated[1];
+	out[8] = column_2_rotated[2];
 }
 
 #if 0
