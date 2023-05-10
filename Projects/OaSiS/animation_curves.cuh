@@ -3,7 +3,6 @@
 
 #include "settings.h"
 
-
 struct UpAndDown{
 	const float range_start;
 	const float range_end;

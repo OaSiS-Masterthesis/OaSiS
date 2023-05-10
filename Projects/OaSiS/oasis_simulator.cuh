@@ -11,6 +11,7 @@
 #include <MnBase/Profile/CppTimers.hpp>
 #include <MnBase/Profile/CudaTimers.cuh>
 #include <MnSystem/IO/ParticleIO.hpp>
+#include <MnSystem/IO/OBJIO.hpp>
 #include <array>
 #include <vector>
 
@@ -123,6 +124,7 @@ struct OasisSimulator {
 	std::vector<TriangleShell> triangle_shells = {};
 	std::vector<void*> triangle_mesh_transfer_device_buffers = {};
 	std::vector<std::vector<std::array<float, config::NUM_DIMENSIONS>>> triangle_mesh_transfer_host_buffers = {};
+	std::vector<std::vector<std::array<unsigned int, config::NUM_DIMENSIONS>>> triangle_mesh_face_buffers = {};
 
 	explicit OasisSimulator(int gpu = 0, Duration dt = DEFAULT_DT, int fps = DEFAULT_FPS, int frames = DEFAULT_FRAMES)
 		: gpuid(gpu)
@@ -187,7 +189,10 @@ struct OasisSimulator {
 		//Create transfer buffers
 		triangle_mesh_transfer_device_buffers.emplace_back();
 		check_cuda_errors(cudaMalloc(&triangle_mesh_transfer_device_buffers.back(), sizeof(float) * config::NUM_DIMENSIONS * positions.size()));
-		triangle_mesh_transfer_host_buffers.emplace_back( positions.size());
+		triangle_mesh_transfer_host_buffers.emplace_back(positions.size());
+		
+		//Keep face data
+		triangle_mesh_face_buffers.push_back(faces);
 		
 		//Copy positions and face data to device
 		cudaMemcpyAsync(triangle_mesh_transfer_device_buffers.back(), positions.data(), sizeof(float) * config::NUM_DIMENSIONS * positions.size(), cudaMemcpyDefault, cu_dev.stream_compute());
@@ -196,9 +201,9 @@ struct OasisSimulator {
 		cu_dev.compute_launch({(triangle_mesh_vertex_counts.back() + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, copy_triangle_data_to_device, triangle_meshes.back(), triangle_mesh_vertex_counts.back(), static_cast<float*>(triangle_mesh_transfer_device_buffers.back()));
 		
 		//Write out initial state to file
-		std::string fn = std::string {"mesh"} + "_id[" + std::to_string(triangle_meshes.size() - 1) + "]_frame[0].bgeo";
-		IO::insert_job([fn, positions]() {
-			write_partio<float, config::NUM_DIMENSIONS>(fn, positions);
+		std::string fn = std::string {"mesh"} + "_id[" + std::to_string(triangle_meshes.size() - 1) + "]_frame[0].obj";
+		IO::insert_job([fn, positions, faces]() {
+			write_triangle_mesh<float, uint32_t, config::NUM_DIMENSIONS>(fn, positions, faces);
 		});
 		IO::flush();
 	}
@@ -701,9 +706,9 @@ struct OasisSimulator {
 			cu_dev.syncStream<streamIdx::COMPUTE>();
 
 			//Write out initial state to file
-			std::string fn = std::string {"mesh"} + "_id[" + std::to_string(i) + "]_frame[" + std::to_string(cur_frame) + "].bgeo";
+			std::string fn = std::string {"mesh"} + "_id[" + std::to_string(i) + "]_frame[" + std::to_string(cur_frame) + "].obj";
 			IO::insert_job([this, fn, i]() {
-				write_partio<float, config::NUM_DIMENSIONS>(fn, triangle_mesh_transfer_host_buffers[i]);
+				write_triangle_mesh<float, uint32_t, config::NUM_DIMENSIONS>(fn, triangle_mesh_transfer_host_buffers[i], triangle_mesh_face_buffers[i]);
 			});
 			IO::flush();
 		}

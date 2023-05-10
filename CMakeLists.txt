@@ -28,6 +28,7 @@ include_directories(
 	Externals/variant
 	Externals/optional
 	Externals/function_ref
+	Externals/obj-io
 )
 
 message("===============================================================")

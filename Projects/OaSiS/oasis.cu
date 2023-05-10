@@ -49,13 +49,39 @@ namespace {
 template<typename T>
 inline bool check_member(const T& model, const char* member) {
 	if(!model.HasMember(member)) {
-		fmt::print("Membert not found: {}\n", member);
+		fmt::print("Member not found: {}\n", member);
 		return false;
 	} else {
 		return true;
 	}
 }
 }// namespace
+
+template<typename T>
+inline std::function<mn::vec3(mn::Duration, mn::Duration)> parse_animation_curve(const T& params){
+	const std::string type {params["type"].GetString()};
+	if(type == "UpAndDown"){
+		if(!check_member(params, "range_start") || !check_member(params, "range_end") || !check_member(params, "init") || !check_member(params, "speed")) {
+			return std::function<mn::vec3(mn::Duration, mn::Duration)>();
+		}
+		return UpAndDown(
+			  params["range_start"].GetFloat()
+			, params["range_end"].GetFloat()
+			, params["init"].GetFloat()
+			, params["speed"].GetFloat()
+		);
+	}else if(type == std::string("RotateAroundY")){
+		if(!check_member(params, "magnitude")) {
+			return std::function<mn::vec3(mn::Duration, mn::Duration)>();
+		}
+		return RotateAroundY(
+			  params["magnitude"].GetFloat()
+		);
+	}else{
+		fmt::print("Unknown animation curve: {}", type);
+		return std::function<mn::vec3(mn::Duration, mn::Duration)>();
+	}
+}
 
 //NOLINTBEGIN(clang-analyzer-cplusplus.PlacementNew) check_member prevents the error case
 void parse_scene(const std::string& fn, std::unique_ptr<mn::OasisSimulator>& benchmark) {
@@ -100,68 +126,118 @@ void parse_scene(const std::string& fn, std::unique_ptr<mn::OasisSimulator>& ben
 				if(it->value.IsArray()) {
 					fmt::print("has {} models\n", it->value.Size());
 					for(auto& model: it->value.GetArray()) {
-						if(!check_member(model, "constitutive") || !check_member(model, "file")) {
+						if(!check_member(model, "file")) {
 							return;
 						}
-
-						std::string constitutive {model["constitutive"].GetString()};
-
-						fmt::print(fg(fmt::color::green), "model constitutive[{}], file[{}]\n", constitutive, model["file"].GetString());
 
 						fs::path p {model["file"].GetString()};
-
-						auto init_model = [&](auto& positions, auto& velocity) {
-							if(constitutive == "fixed_corotated") {
-								if(!check_member(model, "rho") || !check_member(model, "volume") || !check_member(model, "youngs_modulus") || !check_member(model, "poisson_ratio")) {
-									return;
-								}
-
-								benchmark->init_model<mn::MaterialE::FIXED_COROTATED>(positions, velocity);
-								benchmark->update_fr_parameters(model["rho"].GetFloat(), model["volume"].GetFloat(), model["youngs_modulus"].GetFloat(), model["poisson_ratio"].GetFloat());
-							} else if(constitutive == "jfluid") {
-								if(!check_member(model, "rho") || !check_member(model, "volume") || !check_member(model, "bulk_modulus") || !check_member(model, "gamma") || !check_member(model, "viscosity")) {
-									return;
-								}
-
-								benchmark->init_model<mn::MaterialE::J_FLUID>(positions, velocity);
-								benchmark->update_j_fluid_parameters(model["rho"].GetFloat(), model["volume"].GetFloat(), model["bulk_modulus"].GetFloat(), model["gamma"].GetFloat(), model["viscosity"].GetFloat());
-							} else if(constitutive == "nacc") {
-								if(!check_member(model, "rho") || !check_member(model, "volume") || !check_member(model, "youngs_modulus") || !check_member(model, "poisson_ratio") || !check_member(model, "beta") || !check_member(model, "xi")) {
-									return;
-								}
-
-								benchmark->init_model<mn::MaterialE::NACC>(positions, velocity);
-								benchmark->update_nacc_parameters(model["rho"].GetFloat(), model["volume"].GetFloat(), model["youngs_modulus"].GetFloat(), model["poisson_ratio"].GetFloat(), model["beta"].GetFloat(), model["xi"].GetFloat());
-							} else if(constitutive == "sand") {
-								benchmark->init_model<mn::MaterialE::SAND>(positions, velocity);
-							} else {
-								fmt::print("Unknown constitutive: {}", constitutive);
-							}
-						};
-						mn::vec<float, mn::config::NUM_DIMENSIONS> offset;
-						mn::vec<float, mn::config::NUM_DIMENSIONS> span;
-						mn::vec<float, mn::config::NUM_DIMENSIONS> velocity;
-						if(!check_member(model, "offset") || !check_member(model, "span") || !check_member(model, "velocity")) {
-							return;
-						}
-
-						for(int d = 0; d < mn::config::NUM_DIMENSIONS; ++d) {
-							offset[d]	= model["offset"].GetArray()[d].GetFloat();
-							span[d]		= model["span"].GetArray()[d].GetFloat();
-							velocity[d] = model["velocity"].GetArray()[d].GetFloat();
-						}
 						if(p.extension() == ".sdf") {
+							if(!check_member(model, "constitutive")) {
+								return;
+							}
+
+							std::string constitutive {model["constitutive"].GetString()};
+
+							fmt::print(fg(fmt::color::green), "model constitutive[{}], file[{}]\n", constitutive, model["file"].GetString());
+
+							auto init_model = [&](auto& positions, auto& velocity) {
+								if(constitutive == "fixed_corotated") {
+									if(!check_member(model, "rho") || !check_member(model, "volume") || !check_member(model, "youngs_modulus") || !check_member(model, "poisson_ratio")) {
+										return;
+									}
+
+									benchmark->init_model<mn::MaterialE::FIXED_COROTATED>(positions, velocity);
+									benchmark->update_fr_parameters(model["rho"].GetFloat(), model["volume"].GetFloat(), model["youngs_modulus"].GetFloat(), model["poisson_ratio"].GetFloat());
+								} else if(constitutive == "jfluid") {
+									if(!check_member(model, "rho") || !check_member(model, "volume") || !check_member(model, "bulk_modulus") || !check_member(model, "gamma") || !check_member(model, "viscosity")) {
+										return;
+									}
+
+									benchmark->init_model<mn::MaterialE::J_FLUID>(positions, velocity);
+									benchmark->update_j_fluid_parameters(model["rho"].GetFloat(), model["volume"].GetFloat(), model["bulk_modulus"].GetFloat(), model["gamma"].GetFloat(), model["viscosity"].GetFloat());
+								} else if(constitutive == "nacc") {
+									if(!check_member(model, "rho") || !check_member(model, "volume") || !check_member(model, "youngs_modulus") || !check_member(model, "poisson_ratio") || !check_member(model, "beta") || !check_member(model, "xi")) {
+										return;
+									}
+
+									benchmark->init_model<mn::MaterialE::NACC>(positions, velocity);
+									benchmark->update_nacc_parameters(model["rho"].GetFloat(), model["volume"].GetFloat(), model["youngs_modulus"].GetFloat(), model["poisson_ratio"].GetFloat(), model["beta"].GetFloat(), model["xi"].GetFloat());
+								} else if(constitutive == "sand") {
+									benchmark->init_model<mn::MaterialE::SAND>(positions, velocity);
+								} else {
+									fmt::print("Unknown constitutive: {}", constitutive);
+								}
+							};
+							mn::vec<float, mn::config::NUM_DIMENSIONS> offset;
+							mn::vec<float, mn::config::NUM_DIMENSIONS> span;
+							mn::vec<float, mn::config::NUM_DIMENSIONS> velocity;
+							if(!check_member(model, "offset") || !check_member(model, "span") || !check_member(model, "velocity")) {
+								return;
+							}
+
+							for(int d = 0; d < mn::config::NUM_DIMENSIONS; ++d) {
+								offset[d]	= model["offset"].GetArray()[d].GetFloat();
+								span[d]		= model["span"].GetArray()[d].GetFloat();
+								velocity[d] = model["velocity"].GetArray()[d].GetFloat();
+							}
+						
 							auto positions = mn::read_sdf(model["file"].GetString(), mn::config::MODEL_PPC, mn::config::G_DX, mn::config::G_DOMAIN_SIZE, offset, span);
 							mn::IO::insert_job([&]() {
 								mn::write_partio<float, mn::config::NUM_DIMENSIONS>(p.stem().string() + ".bgeo", positions);
 							});
 							mn::IO::flush();
 							init_model(positions, velocity);
+						}else if(p.extension() == ".obj"){
+							if(!check_member(model, "mass") || !check_member(model, "animation_linear") || !check_member(model, "animation_rotational")) {
+								return;
+							}
+							
+							auto animation_linear_it = model.FindMember("animation_linear");
+							auto& animation_linear_params = animation_linear_it->value;
+							if(!animation_linear_params.IsObject()) {
+								fmt::print("animation_linear is no object but of type {}", K_TYPE_NAMES[animation_linear_params.GetType()]);
+							}
+							auto animation_rotational_it = model.FindMember("animation_rotational");
+							auto& animation_rotational_params = animation_rotational_it->value;
+							if(!animation_rotational_params.IsObject()) {
+								fmt::print("animation_rotational is no object but of type {}", K_TYPE_NAMES[animation_linear_params.GetType()]);
+							}
+							
+							if(!check_member(animation_linear_params, "type") || !check_member(animation_rotational_params, "type")) {
+								return;
+							}
+							
+							std::function<mn::vec3(mn::Duration, mn::Duration)> animation_linear = parse_animation_curve(animation_linear_params);
+							std::function<mn::vec3(mn::Duration, mn::Duration)> animation_rotational = parse_animation_curve(animation_rotational_params);
+							
+							if(!animation_linear || !animation_rotational){
+								return;
+							}
+							
+							mn::vec<float, mn::config::NUM_DIMENSIONS> offset;
+							mn::vec<float, mn::config::NUM_DIMENSIONS> scale;
+							if(!check_member(model, "offset") || !check_member(model, "scale")) {
+								return;
+							}
+
+							for(int d = 0; d < mn::config::NUM_DIMENSIONS; ++d) {
+								offset[d]	= model["offset"].GetArray()[d].GetFloat();
+								scale[d]		= model["scale"].GetArray()[d].GetFloat();
+							}
+							
+							std::vector<std::array<float, mn::config::NUM_DIMENSIONS>> positions;
+							std::vector<std::array<uint32_t, 3>> faces;
+							mn::read_triangle_mesh(model["file"].GetString(), offset.data_arr(), scale.data_arr(), positions, faces);
+
+							benchmark->init_triangle_mesh(positions, faces);//CUBE
+							benchmark->update_triangle_mesh_parameters(model["mass"].GetFloat(), animation_linear, animation_rotational);
+						}else{
+							fmt::print("Unknown file type: {}", model["file"].GetString());
 						}
 					}
 					
 					//TODO: Create and use loader for triangle meshes
-					benchmark->init_triangle_mesh(
+					/*benchmark->init_triangle_mesh(
 						{
 							 {0.4f, 0.4f, 0.4f}
 							,{0.4f, 0.4f, 0.6f}
@@ -188,7 +264,7 @@ void parse_scene(const std::string& fn, std::unique_ptr<mn::OasisSimulator>& ben
 							,{1, 5, 4}
 						}
 					);//CUBE
-					benchmark->update_triangle_mesh_parameters(1.0f, UpAndDown(-1500.0f, 1500.0f, 1500.0f, 100000.0f), RotateAroundY(10.0f));
+					benchmark->update_triangle_mesh_parameters(1.0f, UpAndDown(-1500.0f, 1500.0f, 1500.0f, 100000.0f), RotateAroundY(10.0f));*/
 				}
 			}
 		}///< end models parsing
