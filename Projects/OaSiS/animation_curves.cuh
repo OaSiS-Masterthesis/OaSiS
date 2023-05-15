@@ -3,6 +3,24 @@
 
 #include "settings.h"
 
+struct Rest{
+	mn::vec3 operator()(const mn::Duration& curr_time, const mn::Duration& dt) const noexcept{
+		return mn::vec3{0.0f, 0.0f, 0.0f};
+	}
+};
+
+struct Gravity{
+	const float mass;
+	
+	Gravity(float mass)
+	:mass(mass)
+	{}
+	
+	mn::vec3 operator()(const mn::Duration& curr_time, const mn::Duration& dt) const noexcept{
+		return mn::vec3{0.0f, mass * mn::config::G_GRAVITY, 0.0f};
+	}
+};
+
 struct UpAndDown{
 	const float range_start;
 	const float range_end;

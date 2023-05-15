@@ -22,6 +22,8 @@
 #include "settings.h"
 #include "triangle_mesh.cuh"
 
+#define OUTPUT_TRIANGLE_SHELL_OUTER_POS 1
+
 namespace mn {
 
 struct OasisSimulator {
@@ -121,10 +123,11 @@ struct OasisSimulator {
 	std::vector<uint32_t> triangle_mesh_vertex_counts = {};
 	std::vector<uint32_t> triangle_mesh_face_counts = {};
 	std::vector<TriangleMesh> triangle_meshes = {};
-	std::vector<TriangleShell> triangle_shells = {};
+	std::array<std::vector<std::vector<TriangleShell>>, BIN_COUNT> triangle_shells = {};
 	std::vector<void*> triangle_mesh_transfer_device_buffers = {};
 	std::vector<std::vector<std::array<float, config::NUM_DIMENSIONS>>> triangle_mesh_transfer_host_buffers = {};
 	std::vector<std::vector<std::array<unsigned int, config::NUM_DIMENSIONS>>> triangle_mesh_face_buffers = {};
+	std::array<std::vector<TriangleShellGridBuffer>, BIN_COUNT> triangle_shell_grid_buffer = {};//For mass redistribution and such
 
 	explicit OasisSimulator(int gpu = 0, Duration dt = DEFAULT_DT, int fps = DEFAULT_FPS, int frames = DEFAULT_FRAMES)
 		: gpuid(gpu)
@@ -176,9 +179,8 @@ struct OasisSimulator {
 	void init_triangle_mesh(const std::vector<std::array<float, config::NUM_DIMENSIONS>>& positions, const std::vector<std::array<unsigned int, config::NUM_DIMENSIONS>>& faces){
 		auto& cu_dev = Cuda::ref_cuda_context(gpuid);
 		
-		//Create buffers for triangle mesh and shell
+		//Create buffers for triangle mesh
 		triangle_meshes.emplace_back(spawn<TriangleMesh, orphan_signature>(DeviceAllocator {}, 1));
-		triangle_shells.emplace_back(spawn<TriangleShell, orphan_signature>(DeviceAllocator {}, 1));
 		
 		//Init sizes
 		triangle_mesh_vertex_counts.emplace_back(static_cast<uint32_t>(positions.size()));
@@ -189,16 +191,25 @@ struct OasisSimulator {
 		//Create transfer buffers
 		triangle_mesh_transfer_device_buffers.emplace_back();
 		check_cuda_errors(cudaMalloc(&triangle_mesh_transfer_device_buffers.back(), sizeof(float) * config::NUM_DIMENSIONS * positions.size()));
-		triangle_mesh_transfer_host_buffers.emplace_back(positions.size());
+		triangle_mesh_transfer_host_buffers.push_back(positions);
+		
 		
 		//Keep face data
 		triangle_mesh_face_buffers.push_back(faces);
+	
+		//Create temporary transfer buffer
+		void* faces_tmp;
+		check_cuda_errors(cudaMalloc(&faces_tmp, sizeof(unsigned int) * config::NUM_DIMENSIONS * faces.size()));//TODO: MAybe we can dorectly copy into data structure
 		
 		//Copy positions and face data to device
 		cudaMemcpyAsync(triangle_mesh_transfer_device_buffers.back(), positions.data(), sizeof(float) * config::NUM_DIMENSIONS * positions.size(), cudaMemcpyDefault, cu_dev.stream_compute());
-		cudaMemcpyAsync(static_cast<void*>(&triangle_meshes.back().val_1d(_0, 0)), faces.data(), sizeof(unsigned int) * config::NUM_DIMENSIONS * faces.size(), cudaMemcpyDefault, cu_dev.stream_compute());
+		cudaMemcpyAsync(faces_tmp, faces.data(), sizeof(unsigned int) * config::NUM_DIMENSIONS * faces.size(), cudaMemcpyDefault, cu_dev.stream_compute());
 		
-		cu_dev.compute_launch({(triangle_mesh_vertex_counts.back() + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, copy_triangle_data_to_device, triangle_meshes.back(), triangle_mesh_vertex_counts.back(), static_cast<float*>(triangle_mesh_transfer_device_buffers.back()));
+		cu_dev.compute_launch({(std::max(triangle_mesh_vertex_counts.back(), triangle_mesh_face_counts.back())+ config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, copy_triangle_mesh_data_to_device, triangle_meshes.back(), triangle_mesh_vertex_counts.back(), triangle_mesh_face_counts.back(), static_cast<float*>(triangle_mesh_transfer_device_buffers.back()), static_cast<unsigned int*>(faces_tmp));
+		
+		//Free temporary transfer buffer
+		cudaDeviceSynchronize();
+		check_cuda_errors(cudaFree(faces_tmp));
 		
 		//Write out initial state to file
 		std::string fn = std::string {"mesh"} + "_id[" + std::to_string(triangle_meshes.size() - 1) + "]_frame[0].obj";
@@ -233,6 +244,11 @@ struct OasisSimulator {
 		cur_num_active_bins.emplace_back(config::G_MAX_PARTICLE_BIN);
 		bincount.emplace_back(0);
 		checked_bin_counts.emplace_back(0);
+		
+		//Create triangle_shell_grid
+		for(int copyid = 0; copyid < BIN_COUNT; copyid++) {
+			triangle_shell_grid_buffer[copyid].emplace_back(DeviceAllocator {});
+		}
 
 		//Init particle counts
 		particle_counts.emplace_back(static_cast<unsigned int>(model.size()));//NOTE: Explicic narrowing cast
@@ -348,6 +364,26 @@ struct OasisSimulator {
 
 	//NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic) Current c++ version does not yet support std::span
 	void main_loop() {
+		//Create triangle shells and init their particle buffer
+		for(int copyid = 0; copyid < BIN_COUNT; ++copyid) {
+			triangle_shells[copyid].resize(get_model_count());
+			for(int i = 0; i < get_model_count(); ++i) {
+				for(int j = 0; j <triangle_meshes.size(); ++j) {
+					triangle_shells[copyid][i].emplace_back(spawn<TriangleShell, orphan_signature>(DeviceAllocator {}, 1));
+					triangle_shells[copyid][i].back().particle_buffer.reserve_buckets(DeviceAllocator {}, config::G_MAX_ACTIVE_BLOCK);
+					
+					//Write out initial state
+					#ifdef OUTPUT_TRIANGLE_SHELL_OUTER_POS
+						//Write out initial state to file
+						std::string fn = std::string {"shell"} + "_id[" + std::to_string(i) + "_" + std::to_string(j) + "]_frame[" + std::to_string(cur_frame) + "].obj";
+						IO::insert_job([this, fn, j, pos = triangle_mesh_transfer_host_buffers[j]]() {
+							write_triangle_mesh<float, uint32_t, config::NUM_DIMENSIONS>(fn, pos, triangle_mesh_face_buffers[j]);
+						});
+					#endif	
+				}
+			}
+		}
+		
 		/// initial
 		const Duration seconds_per_frame(Duration(1) / Duration(fps));
 		{
@@ -441,6 +477,21 @@ struct OasisSimulator {
 							//partition_block_count; G_PARTICLE_BATCH_CAPACITY
 							cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, g2p2g, dt, next_dt, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0], grid_blocks[1]);
 						});
+						
+						//Clear triangle_shell_grid_buffer
+						triangle_shell_grid_buffer[(rollid + 1) % BIN_COUNT][i].reset(neighbor_block_count, cu_dev);
+						
+						//grid => shell: mom(t-1) => mom(t); 0 => mass(t) shell => grid: mass(t-1) => mass(t)
+						for(int j = 0; j < triangle_shells[rollid].size(); ++j) {
+							//TODO: Clear triangle shell?
+
+							//Perform g2p2g
+							match(particle_bins[rollid][i])([this, &cu_dev, &i, &j](const auto& particle_buffer) {
+								
+								//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+								cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, g2p2g, dt, next_dt, particle_buffer, triangle_shells[rollid][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0], grid_blocks[1], triangle_shell_grid_buffer[rollid][i], triangle_shell_grid_buffer[(rollid + 1) % BIN_COUNT][i]);
+							});
+						}
 					}
 					cu_dev.syncStream<streamIdx::COMPUTE>();
 
@@ -454,10 +505,79 @@ struct OasisSimulator {
 							match(particle_bins[rollid][i])([this, &cu_dev](auto& particle_buffer) {
 								particle_buffer.reserve_buckets(DeviceAllocator {}, cur_num_active_blocks);
 							});
+							
+							for(int j = 0; j < triangle_shells[rollid].size(); ++j) {
+								triangle_shells[rollid][i][j].particle_buffer.reserve_buckets(DeviceAllocator {}, cur_num_active_blocks);
+							}
 						}
 						checked_counts[0]--;
 					}
 				}
+				
+				//TODO: Inner shell part (part of rigid body motion directly transfered; gravity;) (Navier stokes!) (We have to keep track of current state (for outer shell the grid does so))
+				//mesh => shell: vel(t-1) => vel(t);
+				//TODO: mass(t-1) => mass(t)
+				{
+					auto& cu_dev = Cuda::ref_cuda_context(gpuid);
+					CudaTimer timer {cu_dev.stream_compute()};
+					
+					timer.tick();
+					
+					for(int i = 0; i < get_model_count(); ++i) {
+						for(int j = 0; j < triangle_meshes.size(); ++j) {
+							cu_dev.compute_launch({(triangle_mesh_vertex_counts[j] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, update_triangle_shell_inner, triangle_meshes[j], triangle_shells[rollid][i][j], triangle_mesh_vertex_counts[j], dt);
+						}
+					}
+					cu_dev.syncStream<streamIdx::COMPUTE>();
+					
+					timer.tock(fmt::format("GPU[{}] frame {} step {} triangle_shell_inner_update", gpuid, cur_frame, cur_step));
+				}
+				
+				//TODO: Simulate subdomain (=> properties needed for further calculation and for next g2p2g step); Also transfer of physical properties along surface and accross domain.
+				{
+					auto& cu_dev = Cuda::ref_cuda_context(gpuid);
+					CudaTimer timer {cu_dev.stream_compute()};
+					
+					timer.tick();
+					
+					for(int i = 0; i < get_model_count(); ++i) {
+						for(int j = 0; j < triangle_meshes.size(); ++j) {
+							//First clear next triangle shell
+							cu_dev.compute_launch({(triangle_mesh_vertex_counts[j] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, clear_triangle_shell, triangle_shells[(rollid + 1) % BIN_COUNT][i][j], triangle_mesh_vertex_counts[j]);
+						
+							//Then update domain
+							//cu_dev.compute_launch({(triangle_mesh_face_counts[j] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, update_triangle_shell_subdomain, triangle_meshes[j], triangle_shells[rollid][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j], triangle_mesh_face_counts[j]);
+							cu_dev.compute_launch({(triangle_mesh_vertex_counts[j] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, update_triangle_shell_subdomain, triangle_shells[rollid][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j], triangle_mesh_vertex_counts[j]);
+						}
+					}
+					cu_dev.syncStream<streamIdx::COMPUTE>();
+					
+					timer.tock(fmt::format("GPU[{}] frame {} step {} triangle_shell_step", gpuid, cur_frame, cur_step));
+				}
+				
+				//TODO: Volume redistribute on shell, volume exchange between shell and domain, volume exchange between triangle mesh and domain (maybe already done in simulation step and inner shell update step?!)
+				{
+					auto& cu_dev = Cuda::ref_cuda_context(gpuid);
+					CudaTimer timer {cu_dev.stream_compute()};
+					
+					timer.tick();
+					
+					for(int i = 0; i < get_model_count(); ++i) {
+						for(int j = 0; j < triangle_meshes.size(); ++j) {
+							//First init sizes with 0 (we reuse the buffer for particle generation)
+							check_cuda_errors(cudaMemsetAsync(triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer.particle_bucket_sizes, 0, sizeof(int) * (exterior_block_count + 1), cu_dev.stream_compute()));
+							
+							cu_dev.compute_launch({(triangle_mesh_vertex_counts[j] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, update_triangle_shell_height_field, triangle_meshes[j], triangle_shells[rollid][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer, partitions[rollid], triangle_mesh_vertex_counts[j], dt);
+						}
+					}
+					cu_dev.syncStream<streamIdx::COMPUTE>();
+					
+					timer.tock(fmt::format("GPU[{}] frame {} step {} triangle_shell_next", gpuid, cur_frame, cur_step));
+				}
+				
+				//TODO: Force Feedback to triangle mesh
+				
+				//TODO: Max velocity and maybe different CFL
 				
 				//Rigid body motion
 				//TODO: Maybe need to split up this for interaction with other things
@@ -475,6 +595,26 @@ struct OasisSimulator {
 					
 					timer.tock(fmt::format("GPU[{}] frame {} step {} rigid_body_update", gpuid, cur_frame, cur_step));
 				
+				}
+				
+				//New particle generation
+				{
+					auto& cu_dev = Cuda::ref_cuda_context(gpuid);
+					CudaTimer timer {cu_dev.stream_compute()};
+					
+					timer.tick();
+					
+					for(int i = 0; i < get_model_count(); ++i) {
+						for(int j = 0; j < triangle_shells[(rollid + 1) % BIN_COUNT].size(); ++j) {
+							match(particle_bins[rollid][i])([this, &cu_dev, &i, &j](const auto& particle_buffer) {
+								//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+								cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, mass_transfer_shell_domain, dt, particle_buffer, triangle_meshes[i], triangle_shells[rollid][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], triangle_shell_grid_buffer[rollid][i], triangle_shell_grid_buffer[(rollid + 1) % BIN_COUNT][i]);
+							});
+						}
+					}
+					cu_dev.syncStream<streamIdx::COMPUTE>();
+					
+					timer.tock(fmt::format("GPU[{}] frame {} step {} particle generation", gpuid, cur_frame, cur_step));
 				}
 
 				/// update partition
@@ -494,6 +634,15 @@ struct OasisSimulator {
 							cu_dev.compute_launch({exterior_block_count, config::G_BLOCKVOLUME}, cell_bucket_to_block, particle_buffer.cell_particle_counts, particle_buffer.cellbuckets, particle_buffer.particle_bucket_sizes, particle_buffer.blockbuckets);
 							// partitions[rollid].buildParticleBuckets(cu_dev, exterior_block_count);
 						});
+						
+						//Store triangle shell outer vertices in buckets
+						for(int j = 0; j < triangle_shells[(rollid + 1) % BIN_COUNT].size(); ++j) {
+							//First init sizes with 0
+							check_cuda_errors(cudaMemsetAsync(triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer.particle_bucket_sizes, 0, sizeof(int) * (exterior_block_count + 1), cu_dev.stream_compute()));
+							
+							//Store triangle shell outer vertices in buckets
+							cu_dev.compute_launch({(triangle_mesh_vertex_counts[j] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, store_triangle_shell_in_bucket, triangle_mesh_vertex_counts[j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer, partitions[rollid]);
+						}
 					}
 
 					int* active_block_marks = tmps.active_block_marks;
@@ -515,6 +664,12 @@ struct OasisSimulator {
 							//floor((exterior_block_count + 1)/G_PARTICLE_BATCH_CAPACITY); G_PARTICLE_BATCH_CAPACITY
 							cu_dev.compute_launch({exterior_block_count / config::G_PARTICLE_BATCH_CAPACITY + 1, config::G_PARTICLE_BATCH_CAPACITY}, mark_active_particle_blocks, exterior_block_count + 1, particle_buffer.particle_bucket_sizes, sources);
 						});
+						
+						//Mark for triangle shell vertices
+						for(int j = 0; j < triangle_shells[(rollid + 1) % BIN_COUNT].size(); ++j) {
+							//floor((exterior_block_count + 1)/G_PARTICLE_BATCH_CAPACITY); G_PARTICLE_BATCH_CAPACITY
+							cu_dev.compute_launch({exterior_block_count / config::G_PARTICLE_BATCH_CAPACITY + 1, config::G_PARTICLE_BATCH_CAPACITY}, mark_active_particle_blocks, exterior_block_count + 1, triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer.particle_bucket_sizes, sources);
+						}
 					}
 
 					//Sum up number of active buckets and calculate offsets (empty buckets are collapsed
@@ -525,7 +680,7 @@ struct OasisSimulator {
 					//Store new bucket count
 					check_cuda_errors(cudaMemcpyAsync(partitions[(rollid + 1) % BIN_COUNT].count, destinations + exterior_block_count, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute()));
 					check_cuda_errors(cudaMemcpyAsync(&partition_block_count, destinations + exterior_block_count, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute()));
-
+					
 					//Calculate indices of block by position
 					//floor(exterior_block_count/config::DEFAULT_CUDA_BLOCK_SIZE); config::DEFAULT_CUDA_BLOCK_SIZE
 					cu_dev.compute_launch({(exterior_block_count + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, exclusive_scan_inverse, exterior_block_count, static_cast<const int*>(destinations), sources);
@@ -551,6 +706,11 @@ struct OasisSimulator {
 							//partition_block_count; G_PARTICLE_BATCH_CAPACITY
 							cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, update_buckets, static_cast<uint32_t>(partition_block_count), static_cast<const int*>(sources), particle_buffer, next_particle_buffer);
 						});
+						
+						for(int j = 0; j < triangle_shells[(rollid + 1) % BIN_COUNT].size(); ++j) {
+							//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+							cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, update_buckets, static_cast<uint32_t>(partition_block_count), static_cast<const int*>(sources), triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer, triangle_shells[rollid][i][j].particle_buffer);
+						}
 					}
 
 					//Compute bin capacities, bin offsets and the summed bin size for current particle buffer
@@ -593,16 +753,29 @@ struct OasisSimulator {
 					//Resize grid if necessary
 					if(checked_counts[0] > 0) {
 						grid_blocks[0].resize(DeviceAllocator {}, cur_num_active_blocks);
+						
+						for(int i = 0; i < get_model_count(); ++i) {
+							triangle_shell_grid_buffer[rollid][i].resize(DeviceAllocator {}, cur_num_active_blocks);
+						}
 					}
 
 					timer.tick();
 
 					//Clear the grid
 					grid_blocks[0].reset(exterior_block_count, cu_dev);
+					
+					for(int i = 0; i < get_model_count(); ++i) {
+						triangle_shell_grid_buffer[rollid][i].reset(exterior_block_count, cu_dev);
+					}
 
 					//Copy values from old grid for active blocks
 					//prev_neighbor_block_count; G_BLOCKVOLUME
 					cu_dev.compute_launch({prev_neighbor_block_count, config::G_BLOCKVOLUME}, copy_selected_grid_blocks, static_cast<const ivec3*>(partitions[rollid].active_keys), partitions[(rollid + 1) % BIN_COUNT], static_cast<const int*>(active_block_marks), grid_blocks[1], grid_blocks[0]);
+					
+					for(int i = 0; i < get_model_count(); ++i) {
+						cu_dev.compute_launch({prev_neighbor_block_count, config::G_BLOCKVOLUME}, copy_selected_grid_blocks_triangle_shell, static_cast<const ivec3*>(partitions[rollid].active_keys), partitions[(rollid + 1) % BIN_COUNT], static_cast<const int*>(active_block_marks), triangle_shell_grid_buffer[(rollid + 1) % BIN_COUNT][i], triangle_shell_grid_buffer[rollid][i]);
+					}
+					
 					cu_dev.syncStream<streamIdx::COMPUTE>();
 
 					timer.tock(fmt::format("GPU[{}] frame {} step {} copy_grid_blocks", gpuid, cur_frame, cur_step));
@@ -611,6 +784,10 @@ struct OasisSimulator {
 					if(checked_counts[0] > 0) {
 						grid_blocks[1].resize(DeviceAllocator {}, cur_num_active_blocks);
 						tmps.resize(cur_num_active_blocks);
+						
+						for(int i = 0; i < get_model_count(); ++i) {
+							triangle_shell_grid_buffer[(rollid + 1) % BIN_COUNT][i].resize(DeviceAllocator {}, cur_num_active_blocks);
+						}
 					}
 				}
 
@@ -701,22 +878,90 @@ struct OasisSimulator {
 
 		for(int i = 0; i < triangle_meshes.size(); ++i) {
 			//Copy the data to the output model
-			cu_dev.compute_launch({(triangle_mesh_vertex_counts[i] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, copy_triangle_data_to_host, triangle_meshes[i], triangle_mesh_vertex_counts[i], static_cast<float*>(triangle_mesh_transfer_device_buffers[i]));
+			cu_dev.compute_launch({(triangle_mesh_vertex_counts[i] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, copy_triangle_mesh_data_to_host, triangle_meshes[i], triangle_mesh_vertex_counts[i], static_cast<float*>(triangle_mesh_transfer_device_buffers[i]));
 			check_cuda_errors(cudaMemcpyAsync(triangle_mesh_transfer_host_buffers[i].data(), triangle_mesh_transfer_device_buffers[i], sizeof(std::array<float, config::NUM_DIMENSIONS>) * triangle_mesh_vertex_counts[i], cudaMemcpyDefault, cu_dev.stream_compute()));
 			cu_dev.syncStream<streamIdx::COMPUTE>();
 
 			//Write out initial state to file
 			std::string fn = std::string {"mesh"} + "_id[" + std::to_string(i) + "]_frame[" + std::to_string(cur_frame) + "].obj";
-			IO::insert_job([this, fn, i]() {
-				write_triangle_mesh<float, uint32_t, config::NUM_DIMENSIONS>(fn, triangle_mesh_transfer_host_buffers[i], triangle_mesh_face_buffers[i]);
+			IO::insert_job([this, fn, i, pos = triangle_mesh_transfer_host_buffers[i]]() {
+				write_triangle_mesh<float, uint32_t, config::NUM_DIMENSIONS>(fn, pos, triangle_mesh_face_buffers[i]);
 			});
-			IO::flush();
 		}
+		
+		#ifdef OUTPUT_TRIANGLE_SHELL_OUTER_POS
+		//Flush IO, so that we can safely reuse our transfer buffer
+		IO::flush();
+		for(int i = 0; i < get_model_count(); ++i) {
+			for(int j = 0; j < triangle_meshes.size(); ++j) {
+				//Copy the data to the output model
+				cu_dev.compute_launch({(triangle_mesh_vertex_counts[j] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, copy_triangle_shell_data_to_host, triangle_shells[rollid][i][j], triangle_mesh_vertex_counts[j], static_cast<float*>(triangle_mesh_transfer_device_buffers[j]));
+				check_cuda_errors(cudaMemcpyAsync(triangle_mesh_transfer_host_buffers[j].data(), triangle_mesh_transfer_device_buffers[j], sizeof(std::array<float, config::NUM_DIMENSIONS>) * triangle_mesh_vertex_counts[j], cudaMemcpyDefault, cu_dev.stream_compute()));
+				cu_dev.syncStream<streamIdx::COMPUTE>();
+
+				//Write out initial state to file
+				std::string fn = std::string {"shell"} + "_id[" + std::to_string(i) + "_" + std::to_string(j) + "]_frame[" + std::to_string(cur_frame) + "].obj";
+				IO::insert_job([this, fn, j, pos = triangle_mesh_transfer_host_buffers[j]]() {
+					write_triangle_mesh<float, uint32_t, config::NUM_DIMENSIONS>(fn, pos, triangle_mesh_face_buffers[j]);
+				});
+			}
+		}
+		#endif
 		timer.tock(fmt::format("GPU[{}] frame {} step {} retrieve_particles", gpuid, cur_frame, cur_step));
 	}
 
 	//NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic)Current c++ version does not yet support std::span
 	void initial_setup() {
+		//Initialize triangle meshes
+		{
+			auto& cu_dev = Cuda::ref_cuda_context(gpuid);
+			CudaTimer timer {cu_dev.stream_compute()};
+			
+			timer.tick();
+			
+			void* init_tmp;
+			check_cuda_errors(cudaMalloc(&init_tmp, sizeof(float) * 9));
+			for(int i = 0; i < triangle_meshes.size(); ++i) {
+				//Calculate center of mass
+				vec3 center_of_mass;
+				check_cuda_errors(cudaMemsetAsync(init_tmp, 0, sizeof(float) * 9, cu_dev.stream_compute()));
+				cu_dev.compute_launch({(triangle_mesh_vertex_counts[i] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, calculate_center_of_mass, triangle_meshes[i], triangle_mesh_vertex_counts[i],  static_cast<float*>(init_tmp));
+				check_cuda_errors(cudaMemcpyAsync(center_of_mass.data(), init_tmp, sizeof(float) * 3, cudaMemcpyDefault, cu_dev.stream_compute()));
+				cu_dev.syncStream<streamIdx::COMPUTE>();
+				
+				triangle_meshes[i].center = center_of_mass / triangle_meshes[i].mass;
+			
+				//Calculate inertia
+				check_cuda_errors(cudaMemsetAsync(init_tmp, 0, sizeof(float) * 9, cu_dev.stream_compute()));
+				cu_dev.compute_launch({(triangle_mesh_vertex_counts[i] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, calculate_inertia_and_relative_pos, triangle_meshes[i], triangle_mesh_vertex_counts[i], triangle_meshes[i].center.data_arr(),  static_cast<float*>(init_tmp));
+				
+				check_cuda_errors(cudaMemcpyAsync(triangle_meshes[i].inertia.data(), init_tmp, sizeof(float) * 9, cudaMemcpyDefault, cu_dev.stream_compute()));
+				
+				//Calculate normals per vertex
+				cu_dev.compute_launch({(triangle_mesh_face_counts[i] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, calculate_normals, triangle_meshes[i], triangle_mesh_face_counts[i]);
+				cu_dev.compute_launch({(triangle_mesh_vertex_counts[i] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, normalize_normals, triangle_meshes[i], triangle_mesh_vertex_counts[i]);
+				
+				//Apply rigid body pose for timestamp 0
+				triangle_meshes[i].rigid_body_update(Duration::zero(), Duration::zero());
+				cu_dev.compute_launch({(triangle_mesh_vertex_counts[i] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, update_triangle_mesh, triangle_meshes[i], triangle_mesh_vertex_counts[i], triangle_meshes[i].center.data_arr(), triangle_meshes[i].linear_velocity.data_arr(), triangle_meshes[i].rotation.data_arr(), triangle_meshes[i].angular_velocity.data_arr());
+			
+				for(int j = 0; j < get_model_count(); ++j) {
+					//Clear triangle_shell data
+					cu_dev.compute_launch({(triangle_mesh_vertex_counts[i] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, init_triangle_shell, triangle_meshes[i], triangle_shells[rollid][j][i], triangle_mesh_vertex_counts[i]);
+					
+					//FIXME: Remove this, cause initial mass is just != 0 for testing reason?
+					cu_dev.compute_launch({(triangle_mesh_vertex_counts[i] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, activate_blocks_for_shell, triangle_mesh_vertex_counts[i], triangle_shells[rollid][j][i], partitions[(rollid + 1) % BIN_COUNT]);
+					check_cuda_errors(cudaMemsetAsync(triangle_shells[0][i][j].particle_buffer.particle_bucket_sizes, 0, sizeof(int) * (exterior_block_count + 1), cu_dev.stream_compute()));
+					cu_dev.compute_launch({(triangle_mesh_vertex_counts[j] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, store_triangle_shell_in_bucket, triangle_mesh_vertex_counts[j], triangle_shells[rollid][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer, partitions[(rollid + 1) % BIN_COUNT]);
+						
+				}
+			}
+			cudaDeviceSynchronize();
+			check_cuda_errors(cudaFree(init_tmp));
+			
+			timer.tock(fmt::format("GPU[{}] step {} init_triangle_mesh", gpuid, cur_step));
+		}
+		
 		{
 			//TODO: Verify bounds when model offset is too large
 
@@ -859,42 +1104,6 @@ struct OasisSimulator {
 			}
 			cu_dev.syncStream<streamIdx::COMPUTE>();
 			timer.tock(fmt::format("GPU[{}] step {} init_grid", gpuid, cur_step));
-		}
-		
-		//Initialize triangle meshes
-		{
-			auto& cu_dev = Cuda::ref_cuda_context(gpuid);
-			CudaTimer timer {cu_dev.stream_compute()};
-			
-			timer.tick();
-			
-			void* init_tmp;
-			check_cuda_errors(cudaMalloc(&init_tmp, sizeof(float) * 9));
-			for(int i = 0; i < triangle_meshes.size(); ++i) {
-				//Calculate center of mass
-				vec3 center_of_mass;
-				check_cuda_errors(cudaMemsetAsync(init_tmp, 0, sizeof(float) * 9, cu_dev.stream_compute()));
-				cu_dev.compute_launch({(triangle_mesh_vertex_counts[i] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, calculate_center_of_mass, triangle_meshes[i], triangle_mesh_vertex_counts[i],  static_cast<float*>(init_tmp));
-				check_cuda_errors(cudaMemcpyAsync(center_of_mass.data(), init_tmp, sizeof(float) * 3, cudaMemcpyDefault, cu_dev.stream_compute()));
-				cu_dev.syncStream<streamIdx::COMPUTE>();
-				
-				triangle_meshes[i].center = center_of_mass / triangle_meshes[i].mass;
-			
-				//Calculate inertia
-				check_cuda_errors(cudaMemsetAsync(init_tmp, 0, sizeof(float) * 9, cu_dev.stream_compute()));
-				cu_dev.compute_launch({(triangle_mesh_vertex_counts[i] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, calculate_inertia_and_relative_pos, triangle_meshes[i], triangle_mesh_vertex_counts[i], triangle_meshes[i].center.data_arr(),  static_cast<float*>(init_tmp));
-				
-				check_cuda_errors(cudaMemcpyAsync(triangle_meshes[i].inertia.data(), init_tmp, sizeof(float) * 9, cudaMemcpyDefault, cu_dev.stream_compute()));
-				cu_dev.syncStream<streamIdx::COMPUTE>();
-				
-				//Apply rigid body pose for timestamp 0
-				triangle_meshes[i].rigid_body_update(Duration::zero(), Duration::zero());
-				cu_dev.compute_launch({(triangle_mesh_vertex_counts[i] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, update_triangle_mesh, triangle_meshes[i], triangle_mesh_vertex_counts[i], triangle_meshes[i].center.data_arr(), triangle_meshes[i].linear_velocity.data_arr(), triangle_meshes[i].rotation.data_arr(), triangle_meshes[i].angular_velocity.data_arr());
-			}
-			cudaDeviceSynchronize();
-			check_cuda_errors(cudaFree(init_tmp));
-			
-			timer.tock(fmt::format("GPU[{}] step {} init_triangle_mesh", gpuid, cur_step));
 		}
 	}
 	//NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic)

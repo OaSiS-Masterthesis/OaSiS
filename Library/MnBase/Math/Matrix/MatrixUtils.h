@@ -59,6 +59,14 @@ constexpr void vec_cross_mul_vec_3d(std::array<T, 3>& out, const std::array<T, 3
 }
 
 template<typename T>
+constexpr void vec_cross_vec_3d(std::array<T, 3>& out, const std::array<T, 3>& a, const std::array<T, 3>& b) {
+	out[0] = a[1] * b[2] - a[2] * b[1];
+	out[1] = a[2] * b[0] - a[0] * b[2];
+	out[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+
+template<typename T>
 constexpr void matrix_cofactor_2d(const std::array<T, 4>& x, std::array<T, 4>& cof) {
 	cof[0] = x[3];
 	cof[1] = -x[2];
@@ -159,7 +167,7 @@ constexpr void matrix_orthogonalize(const std::array<T, 9>& x, std::array<T, 9>&
 	
 	const vec<T, 3> column_1_new {orth[3], orth[4], orth[5]};
 	vec<T, 3> cross;
-	vec_cross_mul_vec_3d(cross.data_arr(), column_0.data_arr(), column_1_new.data_arr());
+	vec_cross_vec_3d(cross.data_arr(), column_0.data_arr(), column_1_new.data_arr());
 	
 	const T length_2 = sqrt(cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]);
 	orth[6] = cross[0]/length_2;

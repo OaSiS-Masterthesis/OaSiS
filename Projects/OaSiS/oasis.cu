@@ -60,7 +60,16 @@ inline bool check_member(const T& model, const char* member) {
 template<typename T>
 inline std::function<mn::vec3(mn::Duration, mn::Duration)> parse_animation_curve(const T& params){
 	const std::string type {params["type"].GetString()};
-	if(type == "UpAndDown"){
+	if(type == "Rest"){
+		return Rest();
+	}else if(type == "Gravity"){
+		if(!check_member(params, "mass")) {
+			return std::function<mn::vec3(mn::Duration, mn::Duration)>();
+		}
+		return Gravity(
+			params["mass"].GetFloat()
+		);
+	}else if(type == "UpAndDown"){
 		if(!check_member(params, "range_start") || !check_member(params, "range_end") || !check_member(params, "init") || !check_member(params, "speed")) {
 			return std::function<mn::vec3(mn::Duration, mn::Duration)>();
 		}
@@ -235,36 +244,6 @@ void parse_scene(const std::string& fn, std::unique_ptr<mn::OasisSimulator>& ben
 							fmt::print("Unknown file type: {}", model["file"].GetString());
 						}
 					}
-					
-					//TODO: Create and use loader for triangle meshes
-					/*benchmark->init_triangle_mesh(
-						{
-							 {0.4f, 0.4f, 0.4f}
-							,{0.4f, 0.4f, 0.6f}
-							,{0.4f, 0.6f, 0.4f}
-							,{0.4f, 0.6f, 0.6f}
-							,{0.6f, 0.4f, 0.4f}
-							,{0.6f, 0.4f, 0.6f}
-							,{0.6f, 0.6f, 0.4f}
-							,{0.6f, 0.6f, 0.6f}
-							
-						},
-						{
-							 {0, 1, 2}
-							,{1, 3, 2}
-							,{1, 5, 3}
-							,{5, 7, 3}
-							,{5, 4, 7}
-							,{4, 6, 7}
-							,{4, 0, 6}
-							,{0, 2, 6}
-							,{2, 3, 6}
-							,{3, 7, 6}
-							,{0, 1, 4}
-							,{1, 5, 4}
-						}
-					);//CUBE
-					benchmark->update_triangle_mesh_parameters(1.0f, UpAndDown(-1500.0f, 1500.0f, 1500.0f, 100000.0f), RotateAroundY(10.0f));*/
 				}
 			}
 		}///< end models parsing

@@ -16,9 +16,9 @@
 			"gamma": 7.15,
 			"viscosity": 0.01,
 			"offset": [
-				0.1,
-				0.1,
-				0.1
+				0.5,
+				0.04,
+				0.5
 			],
 			"span": [
 				1.0,
@@ -34,27 +34,23 @@
 		{
 			"type": "triangle_mesh",
 			"file": "cube.obj",
-			"mass": 1.0,
+			"mass": 0.01,
 			"offset": [
 				0.5,
-				0.5,
+				0.04,
 				0.5
 			],
 			"scale": [
-				0.1,
-				0.1,
-				0.1
+				0.01,
+				0.01,
+				0.01
 			],
 			"animation_linear": {
-				"type": "UpAndDown",
-				"range_start" : -1500.0,
-				"range_end" : 1500.0,
-				"init" : 1500.0,
-				"speed" : 100000.0
+				"type": "Rest"
 			},
 			"animation_rotational": {
 				"type": "RotateAroundY",
-				"magnitude" : 10.0
+				"magnitude" : 1000.0
 			}
 		}
 	]
