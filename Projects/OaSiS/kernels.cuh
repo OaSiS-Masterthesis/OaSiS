@@ -6,6 +6,8 @@
 #include <MnBase/Algorithm/MappingKernels.cuh>
 #include <MnSystem/Cuda/DeviceUtils.cuh>
 
+#include <curand_kernel.h>
+
 #include "constitutive_models.cuh"
 #include "particle_buffer.cuh"
 #include "settings.h"
@@ -1539,18 +1541,39 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 
 template<typename Partition, MaterialE MaterialType>
 __forceinline__ __device__ void spawn_new_particles(ParticleBuffer<MaterialType> next_particle_buffer, Partition partition, const float drop_out_mass, const std::array<float, 3> prev_pos, const std::array<float, 3> pos, int blockno){
+	//Calculate grid index after movement
+	const ivec3 global_base_index = get_block_id(prev_pos) - 1;
+	const ivec3 new_global_base_index = get_block_id(pos) - 1;
+	
+	const ivec3 cellid = new_global_base_index - 1;
+	
+	const int cellno = ((cellid[0] & config::G_BLOCKMASK) << (config::G_BLOCKBITS << 1)) | ((cellid[1] & config::G_BLOCKMASK) << config::G_BLOCKBITS) | (cellid[2] & config::G_BLOCKMASK);
+
+	const size_t space_left = config::G_MAX_PARTICLES_IN_CELL - next_particle_buffer.cell_particle_counts[blockno * config::G_BLOCKVOLUME + cellno];
+
 	//TODO: More variation/different algorithm
-	const size_t count_particles = std::ceil(drop_out_mass / next_particle_buffer.mass);
+	size_t count_particles = std::ceil(drop_out_mass / next_particle_buffer.mass);
+	count_particles = std::min(count_particles, std::min(space_left, (space_left + 3) / 4));
+	
 	const float mass = drop_out_mass / static_cast<float>(count_particles);
 	
-	//Calculate grid index after movement
-	ivec3 global_base_index = get_block_id(prev_pos) - 1;
-	ivec3 new_global_base_index = get_block_id(pos) - 1;
+	const vec3 local_pos{
+		  (new_global_base_index[0] + 1) * config::G_DX
+		, (new_global_base_index[1] + 1) * config::G_DX
+		, (new_global_base_index[2] + 1) * config::G_DX
+	};
 	
+	//TODO: Correct parameters
+	curandState random_state;
+	curand_init(0, blockno, 0, &random_state);
 	for(size_t i = 0; i < count_particles; ++i){
 		
-		//TODO: Different wy to calculate this (maybe random)
-		const vec3 particle_pos {pos[0], pos[1], pos[2]};
+		//TODO: Different way to calculate this?
+		const vec3 particle_pos {
+			  local_pos[0] + curand_uniform(&random_state) * (config::G_DX / static_cast<float>(config::G_BLOCKSIZE))
+			, local_pos[1] + curand_uniform(&random_state) * (config::G_DX / static_cast<float>(config::G_BLOCKSIZE))
+			, local_pos[2] + curand_uniform(&random_state) * (config::G_DX / static_cast<float>(config::G_BLOCKSIZE))
+		};
 		
 		int particle_id_in_block = atomicAdd(next_particle_buffer.particle_bucket_sizes + blockno, 1);
 		
@@ -1577,9 +1600,9 @@ __forceinline__ __device__ void spawn_new_particles(ParticleBuffer<MaterialType>
 		{
 			//Calculate direction offset
 			const int dirtag = dir_offset(((global_base_index - 1) / static_cast<int>(config::G_BLOCKSIZE) - (new_global_base_index - 1) / static_cast<int>(config::G_BLOCKSIZE)).data_arr());
-
+			
 			//Store particle in new block
-			next_particle_buffer.add_advection(partition, new_global_base_index - 1, dirtag, particle_id_in_block);
+			next_particle_buffer.add_advection(partition, cellid, dirtag, particle_id_in_block);
 		}
 	}
 }
@@ -1624,16 +1647,20 @@ __global__ void mass_transfer_shell_domain(Duration dt, ParticleBuffer<MaterialT
 		//const vec3 momentum = velocity * mass_outer;
 		
 		//TODO: How much mass drops out?
-		const float drop_out_mass = std::min(mass_outer, 0.01f);
+		//TODO: Too small mass causes system to explode. Investigate why!
+		const float drop_out_mass = (mass_outer > 0.0001f) ? std::min(mass_outer, 0.01f) : 0.0f;
 
 		//TODO: Momentum transfer happens via grid?!
 		//TODO: How correctly calculate new momentum
 		//const vec3 drop_out_momentum = momentum * 0.5f;
 		
-		const vec3 fictive_new_pos = shell_pos + velocity * dt.count();
+		//Only drop out if mass is not 0.0
+		if(drop_out_mass > 0.0f){
+			const vec3 fictive_new_pos = shell_pos + velocity * dt.count();
 		
-		//Create new particles
-		spawn_new_particles(next_particle_buffer, partition, drop_out_mass, shell_pos.data_arr(), fictive_new_pos.data_arr(), src_blockno);
+			//Create new particles
+			spawn_new_particles(next_particle_buffer, partition, drop_out_mass, shell_pos.data_arr(), fictive_new_pos.data_arr(), src_blockno);
+		}
 		
 		//Recalculate pos and velocity
 		vec3 mesh_pos;
@@ -2185,6 +2212,16 @@ __global__ void init_triangle_shell(TriangleMesh triangle_mesh, TriangleShell tr
 	vertex_data_inner.val(_0, idx) = 0.01f;//FIXME:0.0f;//mass
 	vertex_data_outer.val(_0, idx) = 0.01f;//FIXME:0.0f;//mass
 	
+	//TODO:Do we have to clear this or is it reset at each step?
+	//FIXME:Set this to initial velocity of model such that it is correctly distributed. Not needed if we do not have initial mass
+	vertex_data_inner.val(_1, idx) = -2.0f;//FIXME:0.0f;
+	vertex_data_inner.val(_2, idx) = -2.0f;//FIXME:0.0f;
+	vertex_data_inner.val(_3, idx) = -2.0f;//FIXME:0.0f;
+	
+	vertex_data_outer.val(_4, idx) = 0.0f;
+	vertex_data_outer.val(_5, idx) = 0.0f;
+	vertex_data_outer.val(_6, idx) = 0.0f;
+	
 	//FIXME:vertex_data_outer.val(_1, idx) = mesh_data.val(_3, idx);//pos
 	//FIXME:vertex_data_outer.val(_2, idx) = mesh_data.val(_4, idx);
 	//FIXME:vertex_data_outer.val(_3, idx) = mesh_data.val(_5, idx);
@@ -2312,6 +2349,7 @@ __global__ void update_triangle_shell_inner(TriangleMesh triangle_mesh, Triangle
 	//Transfer speed of triangle mesh (using adhesion)
 	//TODO: Actually material specific
 	current_velocity = (mesh_velocity + current_velocity) * 0.5f;
+	
 	
 	//TODO: Also apply friction somehow (either here or in later step!)
 	
@@ -2472,9 +2510,8 @@ __global__ void update_triangle_shell_height_field(TriangleMesh triangle_mesh, T
 	//TODO: Currently we just act by distance to inner
 	vec3 diff = shell_pos - mesh_pos;
 	const float distance = sqrt(diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]);
-	//If too much stress, separate and regenerate pos
-	//TODO: Separate! Currently just spare mass on grid
-	if(distance > config::G_DX * 0.01f) {
+	//If too much stress, separate and regenerate pos (Done at different stage, we just mark buffer)
+	if(distance > config::G_DX * 0.1f) {
 		//Mark block for drip out
 		{
 			//Get block id by particle pos

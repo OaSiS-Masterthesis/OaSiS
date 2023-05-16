@@ -606,7 +606,7 @@ struct OasisSimulator {
 					
 					for(int i = 0; i < get_model_count(); ++i) {
 						for(int j = 0; j < triangle_shells[(rollid + 1) % BIN_COUNT].size(); ++j) {
-							match(particle_bins[rollid][i])([this, &cu_dev, &i, &j](const auto& particle_buffer) {
+							match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &i, &j](const auto& particle_buffer) {
 								//partition_block_count; G_PARTICLE_BATCH_CAPACITY
 								cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, mass_transfer_shell_domain, dt, particle_buffer, triangle_meshes[i], triangle_shells[rollid][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], triangle_shell_grid_buffer[rollid][i], triangle_shell_grid_buffer[(rollid + 1) % BIN_COUNT][i]);
 							});
@@ -845,6 +845,24 @@ struct OasisSimulator {
 
 			//Init particle count with 0
 			check_cuda_errors(cudaMemsetAsync(d_particle_count, 0, sizeof(int), cu_dev.stream_compute()));
+			
+			//Retrieve particle count
+			match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &particle_count](const auto& particle_buffer) {
+				auto policy = thrust::cuda::par.on(static_cast<cudaStream_t>(cu_dev.stream_compute()));
+				thrust::device_ptr<int> host_particle_bucket_sizes = thrust::device_pointer_cast(particle_buffer.particle_bucket_sizes);
+				particle_count = thrust::reduce(policy, host_particle_bucket_sizes, host_particle_bucket_sizes + partition_block_count + 1);
+			});
+			
+			//Reallocate particle array if necessary
+			if(particle_counts[i] < particle_count){
+				particle_counts[i] = particle_count;
+				particles[i].resize(DeviceAllocator{}, sizeof(float) * config::NUM_DIMENSIONS * particle_count);
+			}
+			
+			//Resize the output model
+			model.resize(particle_count);
+			
+			fmt::print(fg(fmt::color::red), "total number of particles {}\n", particle_count);
 
 			//Copy particle data to output buffer
 			match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count](const auto& particle_buffer) {
@@ -852,14 +870,7 @@ struct OasisSimulator {
 				cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), particles[i], d_particle_count);
 			});
 
-			//Retrieve particle count
-			check_cuda_errors(cudaMemcpyAsync(&particle_count, d_particle_count, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute()));
 			cu_dev.syncStream<streamIdx::COMPUTE>();
-
-			fmt::print(fg(fmt::color::red), "total number of particles {}\n", particle_count);
-
-			//Resize the output model
-			model.resize(particle_count);
 
 			//Copy the data to the output model
 			check_cuda_errors(cudaMemcpyAsync(model.data(), static_cast<void*>(&particles[i].val_1d(_0, 0)), sizeof(std::array<float, config::NUM_DIMENSIONS>) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
@@ -907,7 +918,7 @@ struct OasisSimulator {
 			}
 		}
 		#endif
-		timer.tock(fmt::format("GPU[{}] frame {} step {} retrieve_particles", gpuid, cur_frame, cur_step));
+		timer.tock(fmt::format("GPU[{}] frame {} step {} retrieve_triangle_mesh", gpuid, cur_frame, cur_step));
 	}
 
 	//NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic)Current c++ version does not yet support std::span
