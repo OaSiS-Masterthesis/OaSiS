@@ -846,7 +846,7 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 	const int src_blockno		   = static_cast<int>(blockIdx.x);
 	const auto blockid			   = partition.active_keys[blockIdx.x];
 	const int particle_bucket_size = next_particle_buffer.particle_bucket_sizes[src_blockno];
-
+	
 	//If we have no particles in the bucket return
 	if(particle_bucket_size == 0) {
 		return;
@@ -990,7 +990,13 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 				}
 			}
 		}
-
+		
+		if(
+			   (blockid[0] == 32 && blockid[1] == 24 && blockid[2] == 32)
+		){
+			printf("C %d %d %d # %d %d # %f %f %f - ", (base_index[0] - 1) / static_cast<int>(config::G_BLOCKSIZE), (base_index[1] - 1) / static_cast<int>(config::G_BLOCKSIZE), (base_index[2] - 1) / static_cast<int>(config::G_BLOCKSIZE), advection_source_blockno, source_pidib, pos[0], pos[1], pos[2]);
+		}
+		
 		//Update particle position
 		pos += vel * dt.count();
 
@@ -1238,15 +1244,9 @@ __forceinline__ __device__ void calculate_contribution<MaterialE::NACC>(const Pa
 //grid.vel and grid.mass are transfered to shell; shell.mass is transfered to grid
 //TODO: Somehow transfer shell.vel to grid!
 template<typename Partition, typename Grid, MaterialE MaterialType>
-__global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<MaterialType> particle_buffer, TriangleShell triangle_shell, TriangleShellParticleBuffer triangle_shell_particle_buffer, const Partition prev_partition, Partition partition, const Grid grid, Grid next_grid, TriangleShellGridBuffer triangle_shell_grid_buffer, TriangleShellGridBuffer next_triangle_shell_grid_buffer) {
+__global__ void grid_to_shell(Duration dt, Duration new_dt, const ParticleBuffer<MaterialType> particle_buffer, TriangleShell triangle_shell, TriangleShellParticleBuffer triangle_shell_particle_buffer, Partition partition, const Grid grid) {
 	static constexpr uint64_t NUM_M_VI_PER_BLOCK = static_cast<uint64_t>(config::G_BLOCKVOLUME) * 4;
 	static constexpr uint64_t NUM_M_VI_IN_ARENA	 = NUM_M_VI_PER_BLOCK << 3;
-	
-	static constexpr uint64_t NUM_SHELL_BUFFER_PER_BLOCK = static_cast<uint64_t>(config::G_BLOCKVOLUME) * 1;
-	static constexpr uint64_t NUM_SHELL_BUFFER_IN_ARENA	 = NUM_SHELL_BUFFER_PER_BLOCK << 3;
-
-	static constexpr unsigned ARENAMASK = (config::G_BLOCKSIZE << 1) - 1;
-	static constexpr unsigned ARENABITS = config::G_BLOCKBITS + 1;
 
 	using MViArena	  = std::array<std::array<std::array<std::array<float, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, 4>*;
 	using MViArenaRef = std::array<std::array<std::array<std::array<float, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, 4>&;
@@ -1254,14 +1254,10 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 	using ShellBufferArena	  = std::array<std::array<std::array<std::array<float, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, 4>*;
 	using ShellBufferArenaRef = std::array<std::array<std::array<std::array<float, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, 4>&;
 
-	static constexpr size_t shared_memory_size = static_cast<size_t>((4 + 4 + 1 + 1) * (config::G_BLOCKSIZE << 1) * (config::G_BLOCKSIZE << 1) * (config::G_BLOCKSIZE << 1)) * sizeof(float);
+	static constexpr size_t shared_memory_size = static_cast<size_t>((4) * (config::G_BLOCKSIZE << 1) * (config::G_BLOCKSIZE << 1) * (config::G_BLOCKSIZE << 1)) * sizeof(float);
 	__shared__ char shmem[shared_memory_size];//NOLINT(modernize-avoid-c-arrays, readability-redundant-declaration) Cannot declare runtime size shared memory as std::array; extern has different meaning here
 
 	MViArenaRef __restrict__ g2pbuffer = *static_cast<MViArena>(static_cast<void*>(static_cast<char*>(shmem)));
-	MViArenaRef __restrict__ p2gbuffer = *static_cast<MViArena>(static_cast<void*>(static_cast<char*>(shmem) + NUM_M_VI_IN_ARENA * sizeof(float)));
-	
-	ShellBufferArenaRef __restrict__ g2pbuffer_shell = *static_cast<ShellBufferArena>(static_cast<void*>(static_cast<char*>(shmem) + (NUM_M_VI_IN_ARENA + NUM_M_VI_IN_ARENA) * sizeof(float)));
-	ShellBufferArenaRef __restrict__ p2gbuffer_shell = *static_cast<ShellBufferArena>(static_cast<void*>(static_cast<char*>(shmem) + (NUM_M_VI_IN_ARENA + NUM_M_VI_IN_ARENA + NUM_SHELL_BUFFER_IN_ARENA) * sizeof(float)));
 
 	//Layout of buffers: 1 dimension is channel. other dimensions range [0, 3] contains current block, range [4, 7] contains next block
 	//The first cell of the next block is handled by the current block only (but may receive values of particles traveling out of next block in negative direction)
@@ -1280,7 +1276,6 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 		const char local_block_id = static_cast<char>(base / NUM_M_VI_PER_BLOCK);
 		const auto blockno		  = partition.query(ivec3 {blockid[0] + ((local_block_id & 4) != 0 ? 1 : 0), blockid[1] + ((local_block_id & 2) != 0 ? 1 : 0), blockid[2] + ((local_block_id & 1) != 0 ? 1 : 0)});
 		const auto grid_block	  = grid.ch(_0, blockno);
-		const auto grid_block_shell	  = triangle_shell_grid_buffer.ch(_0, blockno);
 		int channelid = static_cast<int>(base & (NUM_M_VI_PER_BLOCK - 1));
 		const char c  = static_cast<char>(channelid % config::G_BLOCKVOLUME);
 
@@ -1305,34 +1300,6 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 		}
 
 		g2pbuffer[channelid][static_cast<size_t>(static_cast<size_t>(cx) + (local_block_id & 4 ? config::G_BLOCKSIZE : 0))][static_cast<size_t>(static_cast<size_t>(cy) + (local_block_id & 2 ? config::G_BLOCKSIZE : 0))][static_cast<size_t>(static_cast<size_t>(cz) + (local_block_id & 1 ? config::G_BLOCKSIZE : 0))] = val;
-	
-		if(channelid < 1){
-			float val_shell;
-			if(channelid == 0) {
-				val_shell = grid_block_shell.val_1d(_0, c);
-			}
-
-			g2pbuffer_shell[channelid][static_cast<size_t>(static_cast<size_t>(cx) + (local_block_id & 4 ? config::G_BLOCKSIZE : 0))][static_cast<size_t>(static_cast<size_t>(cy) + (local_block_id & 2 ? config::G_BLOCKSIZE : 0))][static_cast<size_t>(static_cast<size_t>(cz) + (local_block_id & 1 ? config::G_BLOCKSIZE : 0))] = val_shell;
-		}
-	}
-	__syncthreads();
-
-	//Clear return buffer
-	for(int base = static_cast<int>(threadIdx.x); base < NUM_M_VI_IN_ARENA; base += static_cast<int>(blockDim.x)) {
-		int loc		 = base;
-		const char z = static_cast<char>(loc & ARENAMASK);
-		loc >>= ARENABITS;
-
-		const char y = static_cast<char>(loc & ARENAMASK);
-		loc >>= ARENABITS;
-
-		const char x = static_cast<char>(loc & ARENAMASK);
-
-		p2gbuffer[loc >> ARENABITS][x][y][z] = 0.0f;
-		
-		if((loc >> ARENABITS) < 1){
-			p2gbuffer_shell[loc >> ARENABITS][x][y][z] = 0.0f;
-		}
 	}
 	__syncthreads();
 
@@ -1345,10 +1312,15 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 		auto vertex_data = triangle_shell.ch(_0, 0).ch(_1, 0);
 	
 		const float mass = vertex_data.val(_0, vertex_id);
-		vec3 pos;//TODO: Calculate pos somewhere based on height based on volume based on mass
+		vec3 pos;
 		pos[0] = vertex_data.val(_1, vertex_id);//pos
 		pos[1] = vertex_data.val(_2, vertex_id);
 		pos[2] = vertex_data.val(_3, vertex_id);
+		
+		vec3 momentum;
+		momentum[0] = vertex_data.val(_4, vertex_id);//pos
+		momentum[1] = vertex_data.val(_5, vertex_id);
+		momentum[2] = vertex_data.val(_6, vertex_id);
 		
 		//Get position of grid cell
 		ivec3 global_base_index = get_block_id(pos.data_arr()) - 1;
@@ -1379,9 +1351,8 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 		vel.set(0.f);
 		vec9 A;//affine state
 		A.set(0.f);
-		vec3 momentum;
-		momentum.set(0.f);
-		float new_mass = 0.0f;
+		vec3 new_momentum;
+		new_momentum.set(0.f);
 #pragma unroll 3
 		for(char i = 0; i < 3; i++) {
 #pragma unroll 3
@@ -1395,15 +1366,14 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 					const float W = dws(0, i) * dws(1, j) * dws(2, k);
 					
 					const float grid_mass = g2pbuffer[0][static_cast<size_t>(static_cast<size_t>(global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(global_base_index[2]) + k)];
-					new_mass +=  g2pbuffer_shell[0][static_cast<size_t>(static_cast<size_t>(global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(global_base_index[2]) + k)];
-
 					//Velocity of grid cell
 					const vec3 vi {g2pbuffer[1][static_cast<size_t>(static_cast<size_t>(global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(global_base_index[2]) + k)], g2pbuffer[2][static_cast<size_t>(static_cast<size_t>(global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(global_base_index[2]) + k)], g2pbuffer[3][static_cast<size_t>(static_cast<size_t>(global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(global_base_index[2]) + k)]};
 
-					momentum += W * vi * grid_mass;
-	
+					new_momentum += W * vi * grid_mass;
+					
 					//Calculate velocity
 					vel += W * vi;
+	
 					//Calculate APIC affine matrix
 					A[0] += W * vi[0] * xixp[0];
 					A[1] += W * vi[1] * xixp[0];
@@ -1421,25 +1391,246 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 		//Store meomentum and new mass(angular part already contained in velocity)
 		//vertex_data.val(_0, vertex_id) = new_mass;
 		
-		//vertex_data.val(_4, vertex_id) = momentum[0];
-		//vertex_data.val(_5, vertex_id) = momentum[1];
-		//vertex_data.val(_6, vertex_id) = momentum[2];
-		
 		//FIXME: Don't use grid for mass redistribution. Instead use particle/shell vertices (outer shell may act exactly the same as domain, except for surface tension and connection to inner shell)
 		//FIXME: Remove shell_grid?!
 		vertex_data.val(_0, vertex_id) = mass;
 		
+		//FIXME: Transfering grid_momentum does not work. Why?
+		//vertex_data.val(_4, vertex_id) = new_momentum[0];
+		//vertex_data.val(_5, vertex_id) = new_momentum[1];
+		//vertex_data.val(_6, vertex_id) = new_momentum[2];
+		
 		vertex_data.val(_4, vertex_id) = vel[0] * mass;
 		vertex_data.val(_5, vertex_id) = vel[1] * mass;
 		vertex_data.val(_6, vertex_id) = vel[2] * mass;
+	}
+}
 
-		//Update particle position
-		pos += vel * dt.count();
+template<typename Partition, MaterialE MaterialType>
+__forceinline__ __device__ void spawn_new_particles(ParticleBuffer<MaterialType> next_particle_buffer, Partition partition, int partition_block_count, const float drop_out_mass, const std::array<float, 3> prev_pos, const std::array<float, 3> pos, int blockno){
+	int bin_count;
+	if(blockno == partition_block_count - 1){
+		bin_count = next_particle_buffer.bin_offsets[blockno + 1] - next_particle_buffer.bin_offsets[blockno];
+	}else{
+		bin_count = partition_block_count - next_particle_buffer.bin_offsets[blockno];
+	}
+
+	//Calculate grid index before and after movement
+	const ivec3 global_base_index = get_block_id(prev_pos) - 1;
+	const ivec3 new_global_base_index = get_block_id(pos) - 1;
+	
+	const ivec3 cellid = new_global_base_index - 1;
+	
+	const int cellno = ((cellid[0] & config::G_BLOCKMASK) << (config::G_BLOCKBITS << 1)) | ((cellid[1] & config::G_BLOCKMASK) << config::G_BLOCKBITS) | (cellid[2] & config::G_BLOCKMASK);
+
+	const size_t space_left = std::min(config::G_MAX_PARTICLES_IN_CELL - next_particle_buffer.cell_particle_counts[blockno * config::G_BLOCKVOLUME + cellno], bin_count * config::G_BIN_CAPACITY - next_particle_buffer.particle_bucket_sizes[blockno]);
+
+	//TODO: More variation/different algorithm
+	size_t count_particles = std::ceil(drop_out_mass / next_particle_buffer.mass);
+	count_particles = std::min(count_particles, std::min(space_left, (space_left + 3) / 4));
+	
+	const float mass = drop_out_mass / static_cast<float>(count_particles);
+	
+	ivec3 blockid = cellid / static_cast<int>(config::G_BLOCKSIZE);
+	printf("B %d # %d %d %d - ", (int)count_particles, blockid[0], blockid[1], blockid[2]);
+	
+	//TODO: Correct parameters
+	curandState random_state;
+	curand_init(0, blockno, 0, &random_state);
+	for(size_t i = 0; i < count_particles; ++i){
+		
+		//TODO: Different way to calculate this?
+		//NOTE: 0.0 is excluded by curand_uniform so we take 0.5 - curand_uniform to get range [-0.5; 0.5[;
+		const vec3 particle_pos {
+			  (static_cast<float>(new_global_base_index[0]) + (0.5f - curand_uniform(&random_state))) * config::G_DX
+			, (static_cast<float>(new_global_base_index[1]) + (0.5f - curand_uniform(&random_state))) * config::G_DX
+			, (static_cast<float>(new_global_base_index[2]) + (0.5f - curand_uniform(&random_state))) * config::G_DX
+		};
+
+		//TODO: Ensure particle_pos is in the right cell. Or calc cell by particle pos and store momentum in the right place
+		//const ivec3 new_global_base_index1 = get_block_id(particle_pos.data_arr());
+		//const ivec3 blockid0 = (new_global_base_index - 1) / static_cast<int>(config::G_BLOCKSIZE);
+		//const ivec3 blockid1 = (new_global_base_index1 - 1) / static_cast<int>(config::G_BLOCKSIZE);
+		//printf("%d %d %d # %d %d %d - ", blockid0[0], blockid0[1], blockid0[2], blockid1[0], blockid1[1], blockid1[2]);
+		
+		int particle_id_in_block = atomicAdd(next_particle_buffer.particle_bucket_sizes + blockno, 1);
+		
+		//If no space is left, don't store the particle
+		if(particle_id_in_block >= config::G_PARTICLE_NUM_PER_BLOCK) {
+			//Reduce count again
+			atomicSub(next_particle_buffer.particle_bucket_sizes + blockno, 1);
+			printf("No space left in block: block(%d)\n", blockno);
+			return;
+		}
+		
+		const int bin_no = next_particle_buffer.bin_offsets[blockno] + particle_id_in_block / config::G_BIN_CAPACITY;
+		
+		printf("G %d %d %d # %d %d # %f %f %f- ", blockid[0], blockid[1], blockid[2], bin_no, particle_id_in_block, particle_pos[0], particle_pos[1], particle_pos[2]);
+		
+		//TODO: Fill in values
+		StoreParticleDataIntermediate store_particle_data_tmp = {};
+		store_particle_data_tmp.mass = mass;
+		store_particle_data_tmp.pos													= particle_pos.data_arr();
+		store_particle_data_tmp.J													= 1.0f;
+		//store_particle_data_tmp.F														= F;
+		//store_particle_data_tmp.log_jp														= log_jp;
+
+		//Create new particle
+		store_particle_data<MaterialType>(next_particle_buffer, bin_no, particle_id_in_block, store_particle_data_tmp);
+
+		//Store index and movement direction
+		{
+			//Calculate direction offset
+			const int dirtag = dir_offset(((global_base_index - 1) / static_cast<int>(config::G_BLOCKSIZE) - (new_global_base_index - 1) / static_cast<int>(config::G_BLOCKSIZE)).data_arr());
+			
+			//Store particle in new block
+			next_particle_buffer.add_advection(partition, cellid, dirtag, particle_id_in_block);
+		}
+	}
+}
+
+template<typename Partition, typename Grid, MaterialE MaterialType>
+__global__ void shell_to_grid(Duration dt, Duration new_dt, int partition_block_count, const ParticleBuffer<MaterialType> particle_buffer, ParticleBuffer<MaterialType> next_particle_buffer, TriangleMesh triangle_mesh, TriangleShell prev_triangle_shell, TriangleShell triangle_shell, TriangleShellParticleBuffer triangle_shell_particle_buffer, Partition partition, Grid next_grid) {
+	static constexpr uint64_t NUM_M_VI_PER_BLOCK = static_cast<uint64_t>(config::G_BLOCKVOLUME) * 4;
+	static constexpr uint64_t NUM_M_VI_IN_ARENA	 = NUM_M_VI_PER_BLOCK << 3;
+
+	static constexpr unsigned ARENAMASK = (config::G_BLOCKSIZE << 1) - 1;
+	static constexpr unsigned ARENABITS = config::G_BLOCKBITS + 1;
+
+	using MViArena	  = std::array<std::array<std::array<std::array<float, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, 4>*;
+	using MViArenaRef = std::array<std::array<std::array<std::array<float, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, 4>&;
+	
+	using ShellBufferArena	  = std::array<std::array<std::array<std::array<float, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, 4>*;
+	using ShellBufferArenaRef = std::array<std::array<std::array<std::array<float, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, 4>&;
+
+	static constexpr size_t shared_memory_size = static_cast<size_t>((4) * (config::G_BLOCKSIZE << 1) * (config::G_BLOCKSIZE << 1) * (config::G_BLOCKSIZE << 1)) * sizeof(float);
+	__shared__ char shmem[shared_memory_size];//NOLINT(modernize-avoid-c-arrays, readability-redundant-declaration) Cannot declare runtime size shared memory as std::array; extern has different meaning here
+
+	MViArenaRef __restrict__ p2gbuffer = *static_cast<MViArena>(static_cast<void*>(static_cast<char*>(shmem)));
+
+	//Layout of buffers: 1 dimension is channel. other dimensions range [0, 3] contains current block, range [4, 7] contains next block
+	//The first cell of the next block is handled by the current block only (but may receive values of particles traveling out of next block in negative direction)
+
+	const int src_blockno		   = static_cast<int>(blockIdx.x);
+	const auto blockid			   = partition.active_keys[blockIdx.x];
+	const int particle_bucket_size = triangle_shell_particle_buffer.particle_bucket_sizes[src_blockno];
+
+	//If we have no particles in the bucket return
+	if(particle_bucket_size == 0) {
+		return;
+	}
+
+	//Clear return buffer
+	for(int base = static_cast<int>(threadIdx.x); base < NUM_M_VI_IN_ARENA; base += static_cast<int>(blockDim.x)) {
+		int loc		 = base;
+		const char z = static_cast<char>(loc & ARENAMASK);
+		loc >>= ARENABITS;
+
+		const char y = static_cast<char>(loc & ARENAMASK);
+		loc >>= ARENABITS;
+
+		const char x = static_cast<char>(loc & ARENAMASK);
+
+		p2gbuffer[loc >> ARENABITS][x][y][z] = 0.0f;
+	}
+	__syncthreads();
+
+	//Perform update
+	for(int particle_id_in_block = static_cast<int>(threadIdx.x); particle_id_in_block < particle_bucket_size; particle_id_in_block += static_cast<int>(blockDim.x)) {
+		//Fetch index of the advection source
+		const uint32_t vertex_id = triangle_shell_particle_buffer.blockbuckets[src_blockno * config::G_PARTICLE_NUM_PER_BLOCK + particle_id_in_block];
+		
+		//Load data
+		auto mesh_data = triangle_mesh.ch(_0, 0).ch(_0, 0);
+		const auto prev_shell_data_outer = prev_triangle_shell.ch(_0, 0).ch(_1, 0);
+		auto shell_data_outer = triangle_shell.ch(_0, 0).ch(_1, 0);
+		auto vertex_data = triangle_shell.ch(_0, 0).ch(_1, 0);
+		
+		const float mass_outer = shell_data_outer.val(_0, vertex_id);
+		
+		vec3 mesh_pos;
+		mesh_pos[0] = mesh_data.val(_3, vertex_id);//global_pos
+		mesh_pos[1] = mesh_data.val(_4, vertex_id);
+		mesh_pos[2] = mesh_data.val(_5, vertex_id);
+		
+		vec3 normal;
+		normal[0] = mesh_data.val(_9, vertex_id);//normal
+		normal[1] = mesh_data.val(_10, vertex_id);
+		normal[2] = mesh_data.val(_11, vertex_id);
+		
+		vec3 shell_pos;
+		shell_pos[0] = prev_shell_data_outer.val(_1, vertex_id);//pos
+		shell_pos[1] = prev_shell_data_outer.val(_2, vertex_id);
+		shell_pos[2] = prev_shell_data_outer.val(_3, vertex_id);
+		
+		vec3 momentum;
+		momentum[0] = shell_data_outer.val(_4, vertex_id);//momentum
+		momentum[1] = shell_data_outer.val(_5, vertex_id);
+		momentum[2] = shell_data_outer.val(_6, vertex_id);
+		
+		//If we have no mass at the point, the height at the point is 0.0
+		vec3 extrapolated_pos = mesh_pos;
+		vec3 new_pos = mesh_pos;
+		if(mass_outer > 0.0f){
+			const vec3 vel = momentum / mass_outer;
+			
+			extrapolated_pos = shell_pos + vel * dt.count();
+		
+			//TODO: Currently we just act by distance to inner
+			vec3 diff = shell_pos - mesh_pos;
+			const float distance = sqrt(diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]);
+			//If too much stress, separate and regenerate pos (Done at different stage, we just mark buffer)
+			if(distance > config::G_DX * 0.1f) {
+				//TODO: How much mass drops out?
+				//TODO: Too small mass causes system to explode. Investigate why!
+				const float drop_out_mass = (mass_outer > 0.0001f) ? std::min(mass_outer, 0.01f) : 0.0f;
+
+				//TODO: Momentum transfer happens via grid?!
+				//TODO: How correctly calculate new momentum
+				//const vec3 drop_out_momentum = momentum * 0.5f;
+				
+				//Only drop out if mass is not 0.0
+				if(drop_out_mass > 0.0f){
+					//Create new particles
+					spawn_new_particles(next_particle_buffer, partition, partition_block_count, drop_out_mass, shell_pos.data_arr(), extrapolated_pos.data_arr(), src_blockno);
+				}
+				
+				//Recalculate pos and velocity
+				const float new_mass = mass_outer - drop_out_mass;
+				
+				//const vec3 new_momentum = momentum - drop_out_momentum;
+				//const vec3 new_velocity = new_momentum / new_mass;
+
+				//Calculate new outer vertex pos
+				//TODO: Correct algorithm. Currently we just update the position based on the new veloicity, but actually it should be based on current fluid distribution
+				//TODO: Ensure that new pos is not farer away than one grid cell from previous pos
+				new_pos = mesh_pos + normal * std::min(new_mass, config::G_DX * 0.9f);
+				
+				//Store data
+				shell_data_outer.val(_0, vertex_id) = new_mass;
+				//shell_data_outer.val(_4, vertex_id) = new_velocity[0];
+				//shell_data_outer.val(_5, vertex_id) = new_velocity[1];
+				//shell_data_outer.val(_6, vertex_id) = new_velocity[2];
+			}
+			
+		}
+		
+		//Store pos
+		shell_data_outer.val(_1, vertex_id) = new_pos[0];
+		shell_data_outer.val(_2, vertex_id) = new_pos[1];
+		shell_data_outer.val(_3, vertex_id) = new_pos[2];
+		
+		//Calculate other parameters
+		//TODO: Correct algorithm.
+		vec9 A = {};
+			
+		//Get position of grid cell
+		ivec3 base_index = get_block_id(shell_pos.data_arr()) - 1;
 
 		//TODO: Fill in values
 		//TODO: Advection?
 		CalculateContributionIntermediate calculate_contribution_tmp = {};
-		calculate_contribution_tmp.pos													= pos.data_arr();
+		calculate_contribution_tmp.pos													= extrapolated_pos.data_arr();
 		calculate_contribution_tmp.J														= 1.0f;
 		//calculate_contribution_tmp.deformation_gradient														= deformation_gradient;
 		//calculate_contribution_tmp.log_jp														= log_jp;
@@ -1450,15 +1641,16 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 		//Update momentum?
 		//Multiply A with mass to complete it. Then subtract current momentum?
 		//C = A * D^-1
-		contrib = (A * mass - contrib * new_dt.count()) * config::G_D_INV;
+		contrib = (A * mass_outer - contrib * new_dt.count()) * config::G_D_INV;
 
 		//Calculate grid index after movement
-		ivec3 new_global_base_index = get_block_id(pos.data_arr()) - 1;
+		ivec3 new_global_base_index = get_block_id(extrapolated_pos.data_arr()) - 1;
 
-		//Update local position
-		local_pos = pos - new_global_base_index * config::G_DX;
+		//Get position relative to grid cell
+		const vec3 local_pos = extrapolated_pos - new_global_base_index * config::G_DX;
 
 		//Calculate weights and mask global index
+		vec3x3 dws;
 #pragma unroll 3
 		for(char dd = 0; dd < 3; ++dd) {
 			const vec3 weight = bspline_weight(local_pos[dd]);
@@ -1485,17 +1677,14 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 			for(char j = 0; j < 3; j++) {
 #pragma unroll 3
 				for(char k = 0; k < 3; k++) {
-					pos			  = vec3 {static_cast<float>(i), static_cast<float>(j), static_cast<float>(k)} * config::G_DX - local_pos;
+					const vec3 pos			  = vec3 {static_cast<float>(i), static_cast<float>(j), static_cast<float>(k)} * config::G_DX - local_pos;
 					const float W = dws(0, i) * dws(1, j) * dws(2, k);
-					const auto wm = mass * W;
+					const auto wm = mass_outer * W;
 
 					atomicAdd(&p2gbuffer[0][static_cast<size_t>(static_cast<size_t>(new_global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[2]) + k)], wm);
-					atomicAdd(&p2gbuffer[1][static_cast<size_t>(static_cast<size_t>(new_global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[2]) + k)], wm * vel[0] + (contrib[0] * pos[0] + contrib[3] * pos[1] + contrib[6] * pos[2]) * W);
-					atomicAdd(&p2gbuffer[2][static_cast<size_t>(static_cast<size_t>(new_global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[2]) + k)], wm * vel[1] + (contrib[1] * pos[0] + contrib[4] * pos[1] + contrib[7] * pos[2]) * W);
-					atomicAdd(&p2gbuffer[3][static_cast<size_t>(static_cast<size_t>(new_global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[2]) + k)], wm * vel[2] + (contrib[2] * pos[0] + contrib[5] * pos[1] + contrib[8] * pos[2]) * W);
-				
-					//Add mass
-					atomicAdd(&p2gbuffer_shell[0][static_cast<size_t>(static_cast<size_t>(new_global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[2]) + k)], wm);
+					atomicAdd(&p2gbuffer[1][static_cast<size_t>(static_cast<size_t>(new_global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[2]) + k)], W * momentum[0] + (contrib[0] * pos[0] + contrib[3] * pos[1] + contrib[6] * pos[2]) * W);
+					atomicAdd(&p2gbuffer[2][static_cast<size_t>(static_cast<size_t>(new_global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[2]) + k)], W * momentum[1] + (contrib[1] * pos[0] + contrib[4] * pos[1] + contrib[7] * pos[2]) * W);
+					atomicAdd(&p2gbuffer[3][static_cast<size_t>(static_cast<size_t>(new_global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[2]) + k)], W * momentum[2] + (contrib[2] * pos[0] + contrib[5] * pos[1] + contrib[8] * pos[2]) * W);
 				}
 			}
 		}
@@ -1529,172 +1718,6 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 		} else {
 			atomicAdd(&next_grid.ch(_0, blockno).val_1d(_3, c), val);
 		}
-		
-		if(channelid < 1){
-			float val_shell = p2gbuffer_shell[channelid][static_cast<size_t>(static_cast<size_t>(cx) + (local_block_id & 4 ? config::G_BLOCKSIZE : 0))][static_cast<size_t>(static_cast<size_t>(cy) + (local_block_id & 2 ? config::G_BLOCKSIZE : 0))][static_cast<size_t>(static_cast<size_t>(cz) + (local_block_id & 1 ? config::G_BLOCKSIZE : 0))];
-			if(channelid == 0) {
-				atomicAdd(&next_triangle_shell_grid_buffer.ch(_0, blockno).val_1d(_0, c), val_shell);
-			}
-		}
-	}
-}
-
-template<typename Partition, MaterialE MaterialType>
-__forceinline__ __device__ void spawn_new_particles(ParticleBuffer<MaterialType> next_particle_buffer, Partition partition, const float drop_out_mass, const std::array<float, 3> prev_pos, const std::array<float, 3> pos, int blockno){
-	//Calculate grid index after movement
-	const ivec3 global_base_index = get_block_id(prev_pos) - 1;
-	const ivec3 new_global_base_index = get_block_id(pos) - 1;
-	
-	const ivec3 cellid = new_global_base_index - 1;
-	
-	const int cellno = ((cellid[0] & config::G_BLOCKMASK) << (config::G_BLOCKBITS << 1)) | ((cellid[1] & config::G_BLOCKMASK) << config::G_BLOCKBITS) | (cellid[2] & config::G_BLOCKMASK);
-
-	const size_t space_left = config::G_MAX_PARTICLES_IN_CELL - next_particle_buffer.cell_particle_counts[blockno * config::G_BLOCKVOLUME + cellno];
-
-	//TODO: More variation/different algorithm
-	size_t count_particles = std::ceil(drop_out_mass / next_particle_buffer.mass);
-	count_particles = std::min(count_particles, std::min(space_left, (space_left + 3) / 4));
-	
-	const float mass = drop_out_mass / static_cast<float>(count_particles);
-	
-	const vec3 local_pos{
-		  (new_global_base_index[0] + 1) * config::G_DX
-		, (new_global_base_index[1] + 1) * config::G_DX
-		, (new_global_base_index[2] + 1) * config::G_DX
-	};
-	
-	//TODO: Correct parameters
-	curandState random_state;
-	curand_init(0, blockno, 0, &random_state);
-	for(size_t i = 0; i < count_particles; ++i){
-		
-		//TODO: Different way to calculate this?
-		const vec3 particle_pos {
-			  local_pos[0] + curand_uniform(&random_state) * (config::G_DX / static_cast<float>(config::G_BLOCKSIZE))
-			, local_pos[1] + curand_uniform(&random_state) * (config::G_DX / static_cast<float>(config::G_BLOCKSIZE))
-			, local_pos[2] + curand_uniform(&random_state) * (config::G_DX / static_cast<float>(config::G_BLOCKSIZE))
-		};
-		
-		int particle_id_in_block = atomicAdd(next_particle_buffer.particle_bucket_sizes + blockno, 1);
-		
-		//If no space is left, don't store the particle
-		if(particle_id_in_block >= config::G_PARTICLE_NUM_PER_BLOCK) {
-			//Reduce count again
-			atomicSub(next_particle_buffer.particle_bucket_sizes + blockno, 1);
-			printf("No space left in block: block(%d)\n", blockno);
-			return;
-		}
-		
-		//TODO: Fill in values
-		StoreParticleDataIntermediate store_particle_data_tmp = {};
-		store_particle_data_tmp.mass = mass;
-		store_particle_data_tmp.pos													= particle_pos.data_arr();
-		store_particle_data_tmp.J													= 1.0f;
-		//store_particle_data_tmp.F														= F;
-		//store_particle_data_tmp.log_jp														= log_jp;
-
-		//Create new particle
-		store_particle_data<MaterialType>(next_particle_buffer, blockno, particle_id_in_block, store_particle_data_tmp);
-
-		//Store index and movement direction
-		{
-			//Calculate direction offset
-			const int dirtag = dir_offset(((global_base_index - 1) / static_cast<int>(config::G_BLOCKSIZE) - (new_global_base_index - 1) / static_cast<int>(config::G_BLOCKSIZE)).data_arr());
-			
-			//Store particle in new block
-			next_particle_buffer.add_advection(partition, cellid, dirtag, particle_id_in_block);
-		}
-	}
-}
-
-template<typename Partition, MaterialE MaterialType>
-__global__ void mass_transfer_shell_domain(Duration dt, ParticleBuffer<MaterialType> next_particle_buffer, TriangleMesh triangle_mesh, TriangleShell prev_triangle_shell, TriangleShell triangle_shell, TriangleShellParticleBuffer triangle_shell_particle_buffer, const Partition prev_partition, Partition partition, TriangleShellGridBuffer triangle_shell_grid_buffer, TriangleShellGridBuffer next_triangle_shell_grid_buffer) {
-	//Layout of buffers: 1 dimension is channel. other dimensions range [0, 3] contains current block, range [4, 7] contains next block
-	//The first cell of the next block is handled by the current block only (but may receive values of particles traveling out of next block in negative direction)
-
-	const int src_blockno		   = static_cast<int>(blockIdx.x);
-	//const auto blockid			   = partition.active_keys[blockIdx.x];
-	const int particle_bucket_size = triangle_shell_particle_buffer.particle_bucket_sizes[src_blockno];
-
-	//If we have no particles in the bucket return
-	if(particle_bucket_size == 0) {
-		return;
-	}
-
-	//Perform update
-	for(int particle_id_in_block = static_cast<int>(threadIdx.x); particle_id_in_block < particle_bucket_size; particle_id_in_block += static_cast<int>(blockDim.x)) {
-		//Fetch index of the advection source
-		const uint32_t vertex_id = triangle_shell_particle_buffer.blockbuckets[src_blockno * config::G_PARTICLE_NUM_PER_BLOCK + particle_id_in_block];
-		
-		//Load data
-		auto mesh_data = triangle_mesh.ch(_0, 0).ch(_0, 0);
-		auto shell_data_inner = triangle_shell.ch(_0, 0).ch(_0, 0);
-		const auto prev_shell_data_outer = prev_triangle_shell.ch(_0, 0).ch(_1, 0);
-		auto shell_data_outer = triangle_shell.ch(_0, 0).ch(_1, 0);
-		
-		const float mass_outer = shell_data_outer.val(_0, vertex_id);//mass
-		
-		vec3 shell_pos;
-		shell_pos[0] = prev_shell_data_outer.val(_1, vertex_id);//pos
-		shell_pos[1] = prev_shell_data_outer.val(_2, vertex_id);
-		shell_pos[2] = prev_shell_data_outer.val(_3, vertex_id);
-		
-		vec3 velocity;
-		velocity[0] = shell_data_outer.val(_4, vertex_id);//velocity
-		velocity[1] = shell_data_outer.val(_5, vertex_id);
-		velocity[2] = shell_data_outer.val(_6, vertex_id);
-		
-		//const vec3 momentum = velocity * mass_outer;
-		
-		//TODO: How much mass drops out?
-		//TODO: Too small mass causes system to explode. Investigate why!
-		const float drop_out_mass = (mass_outer > 0.0001f) ? std::min(mass_outer, 0.01f) : 0.0f;
-
-		//TODO: Momentum transfer happens via grid?!
-		//TODO: How correctly calculate new momentum
-		//const vec3 drop_out_momentum = momentum * 0.5f;
-		
-		//Only drop out if mass is not 0.0
-		if(drop_out_mass > 0.0f){
-			const vec3 fictive_new_pos = shell_pos + velocity * dt.count();
-		
-			//Create new particles
-			spawn_new_particles(next_particle_buffer, partition, drop_out_mass, shell_pos.data_arr(), fictive_new_pos.data_arr(), src_blockno);
-		}
-		
-		//Recalculate pos and velocity
-		vec3 mesh_pos;
-		mesh_pos[0] = mesh_data.val(_3, vertex_id);//normal
-		mesh_pos[1] = mesh_data.val(_4, vertex_id);
-		mesh_pos[2] = mesh_data.val(_5, vertex_id);
-		
-		vec3 normal;
-		normal[0] = mesh_data.val(_9, vertex_id);//normal
-		normal[1] = mesh_data.val(_10, vertex_id);
-		normal[2] = mesh_data.val(_11, vertex_id);
-		
-		const float new_mass = mass_outer - drop_out_mass;
-		
-		//const vec3 new_momentum = momentum - drop_out_momentum;
-		//const vec3 new_velocity = new_momentum / new_mass;
-		
-		const float mass_inner = shell_data_inner.val(_0, vertex_id);
-		
-		const float total_mass = mass_inner + new_mass;
-
-		//Calculate new outer vertex pos
-		//TODO: Correct algorithm. Currently we just update the position based on the new veloicity, but actually it should be based on current fluid distribution
-		//TODO: Ensure that new pos is not farer away than one grid cell from previous pos
-		const vec3 new_pos = mesh_pos + normal * std::min(total_mass, config::G_DX * 0.9f);
-		
-		//Store data
-		shell_data_outer.val(_0, vertex_id) = new_mass;
-		shell_data_outer.val(_1, vertex_id) = new_pos[0];
-		shell_data_outer.val(_2, vertex_id) = new_pos[1];
-		shell_data_outer.val(_3, vertex_id) = new_pos[2];
-		//shell_data_outer.val(_4, vertex_id) = new_velocity[0];
-		//shell_data_outer.val(_5, vertex_id) = new_velocity[1];
-		//shell_data_outer.val(_6, vertex_id) = new_velocity[2];
 	}
 }
 
@@ -2209,14 +2232,13 @@ __global__ void init_triangle_shell(TriangleMesh triangle_mesh, TriangleShell tr
 	auto vertex_data_outer = triangle_shell.ch(_0, 0).ch(_1, 0);
 	
 	//Store data
-	vertex_data_inner.val(_0, idx) = 0.01f;//FIXME:0.0f;//mass
+	vertex_data_inner.val(_0, idx) = 0.0f;//mass
 	vertex_data_outer.val(_0, idx) = 0.01f;//FIXME:0.0f;//mass
 	
 	//TODO:Do we have to clear this or is it reset at each step?
-	//FIXME:Set this to initial velocity of model such that it is correctly distributed. Not needed if we do not have initial mass
-	vertex_data_inner.val(_1, idx) = -2.0f;//FIXME:0.0f;
-	vertex_data_inner.val(_2, idx) = -2.0f;//FIXME:0.0f;
-	vertex_data_inner.val(_3, idx) = -2.0f;//FIXME:0.0f;
+	vertex_data_inner.val(_1, idx) = 0.0f;
+	vertex_data_inner.val(_2, idx) = 0.0f;
+	vertex_data_inner.val(_3, idx) = 0.0f;
 	
 	vertex_data_outer.val(_4, idx) = 0.0f;
 	vertex_data_outer.val(_5, idx) = 0.0f;
@@ -2238,14 +2260,11 @@ __global__ void init_triangle_shell(TriangleMesh triangle_mesh, TriangleShell tr
 		normal[1] = mesh_data.val(_10, idx);
 		normal[2] = mesh_data.val(_11, idx);
 		
-		const float mass_inner = vertex_data_inner.val(_0, idx);
 		const float mass_outer = vertex_data_outer.val(_0, idx);
-		
-		const float total_mass = mass_inner + mass_outer;
 
 		//Calculate new outer vertex pos
 		//TODO: Correct algorithm. Currently we just update the position based on the new veloicity, but actually it should be based on current fluid distribution
-		vec3 new_pos = mesh_pos + normal * std::min(total_mass, config::G_DX * 0.9f);
+		vec3 new_pos = mesh_pos + normal * std::min(mass_outer, config::G_DX * 0.9f);
 		
 		//Store pos
 		vertex_data_outer.val(_1, idx) = new_pos[0];
@@ -2270,11 +2289,11 @@ __global__ void clear_triangle_shell(TriangleShell triangle_shell, uint32_t vert
 	vertex_data_inner.val(_0, idx) = 0.0f;//mass
 	vertex_data_outer.val(_0, idx) = 0.0f;//mass
 	
-	vertex_data_inner.val(_1, idx) = 0.0f;//velocity
+	vertex_data_inner.val(_1, idx) = 0.0f;//momentum
 	vertex_data_inner.val(_2, idx) = 0.0f;
 	vertex_data_inner.val(_3, idx) = 0.0f;
 	
-	vertex_data_outer.val(_4, idx) = 0.0f;//velocity
+	vertex_data_outer.val(_4, idx) = 0.0f;//momentum
 	vertex_data_outer.val(_5, idx) = 0.0f;
 	vertex_data_outer.val(_6, idx) = 0.0f;
 }
@@ -2336,10 +2355,10 @@ __global__ void update_triangle_shell_inner(TriangleMesh triangle_mesh, Triangle
 	
 	const float mass = shell_data.val(_0, idx);///mass
 	
-	vec3 current_velocity;
-	current_velocity[0] = shell_data.val(_1, idx);//velocity
-	current_velocity[1] = shell_data.val(_2, idx);
-	current_velocity[2] = shell_data.val(_3, idx);
+	vec3 current_momentum;
+	current_momentum[0] = shell_data.val(_1, idx);//velocity
+	current_momentum[1] = shell_data.val(_2, idx);
+	current_momentum[2] = shell_data.val(_3, idx);
 	
 	vec3 mesh_velocity;
 	mesh_velocity[0] = mesh_data.val(_6, idx);//velocity
@@ -2348,7 +2367,10 @@ __global__ void update_triangle_shell_inner(TriangleMesh triangle_mesh, Triangle
 	
 	//Transfer speed of triangle mesh (using adhesion)
 	//TODO: Actually material specific
-	current_velocity = (mesh_velocity + current_velocity) * 0.5f;
+	//current_velocity = (mesh_velocity + current_velocity) * 0.5f;
+	
+	//Currently just transfer mass
+	const vec3 momentum = mesh_velocity * triangle_mesh.mass;
 	
 	
 	//TODO: Also apply friction somehow (either here or in later step!)
@@ -2357,12 +2379,12 @@ __global__ void update_triangle_shell_inner(TriangleMesh triangle_mesh, Triangle
 	
 	//Add gravity
 	//FIXME: Only apply if not already applied on triangle mesh; Or actually it is model depended if this should be applied.
-	current_velocity[1] += config::G_GRAVITY * dt.count();
+	//current_velocity[1] += config::G_GRAVITY * dt.count();
 	
 	//Store data
-	shell_data.val(_1, idx) = current_velocity[0];
-	shell_data.val(_2, idx) = current_velocity[1];
-	shell_data.val(_3, idx) = current_velocity[2];
+	shell_data.val(_1, idx) = momentum[0];
+	shell_data.val(_2, idx) = momentum[1];
+	shell_data.val(_3, idx) = momentum[2];
 }
 /*
 __global__ void update_triangle_shell_subdomain(TriangleMesh triangle_mesh, TriangleShell triangle_shell, TriangleShell next_triangle_shell, uint32_t face_count){
@@ -2447,16 +2469,17 @@ __global__ void update_triangle_shell_subdomain(TriangleShell triangle_shell, Tr
 	const float mass_inner = shell_data_inner.val(_0, idx);//mass
 	const float mass_outer = shell_data_outer.val(_0, idx);//mass
 	
-	vec3 velocity_inner;
-	velocity_inner[0] = shell_data_inner.val(_1, idx);//velocity
-	velocity_inner[1] = shell_data_inner.val(_2, idx);
-	velocity_inner[2] = shell_data_inner.val(_3, idx);
+	vec3 momentum_inner;
+	momentum_inner[0] = shell_data_inner.val(_1, idx);//velocity
+	momentum_inner[1] = shell_data_inner.val(_2, idx);
+	momentum_inner[2] = shell_data_inner.val(_3, idx);
 	
 	vec3 momentum_outer;
 	momentum_outer[0] = shell_data_outer.val(_4, idx);//momentum
 	momentum_outer[1] = shell_data_outer.val(_5, idx);
 	momentum_outer[2] = shell_data_outer.val(_6, idx);
 	
+	/*
 	//TODO: Where do mass redistribution for outer shell? (also including transfer between domain and shell) => Not at all/outer shelöl behaves very similiar to domain; Inner shell redistribution can happen in update of inner shell (and may include transfer between mesh and domain)
 	
 	//Smooth mass and momentum
@@ -2475,75 +2498,19 @@ __global__ void update_triangle_shell_subdomain(TriangleShell triangle_shell, Tr
 		next_shell_data_outer.val(_5, idx) = smoothed_velocity[1];
 		next_shell_data_outer.val(_6, idx) = smoothed_velocity[2];
 	}
-}
-
-template<typename Partition>
-__global__ void update_triangle_shell_height_field(TriangleMesh triangle_mesh, TriangleShell prev_triangle_shell, TriangleShell triangle_shell, TriangleShellParticleBuffer triangle_shell_particle_buffer, Partition partition, uint32_t vertex_count, Duration dt){
-	const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-	if(idx >= vertex_count) {
-		return;
-	}
+	*/
 	
-	//Load data
-	auto mesh_data = triangle_mesh.ch(_0, 0).ch(_0, 0);
-	const auto shell_data_inner = triangle_shell.ch(_0, 0).ch(_0, 0);
-	const auto prev_shell_data_outer = prev_triangle_shell.ch(_0, 0).ch(_1, 0);
-	auto shell_data_outer = triangle_shell.ch(_0, 0).ch(_1, 0);
+	const vec3 total_momentum = momentum_inner + momentum_outer;
 	
-	vec3 mesh_pos;
-	mesh_pos[0] = mesh_data.val(_3, idx);//global_pos
-	mesh_pos[1] = mesh_data.val(_4, idx);
-	mesh_pos[2] = mesh_data.val(_5, idx);
+	next_shell_data_inner.val(_0, idx) = mass_inner;
+	next_shell_data_outer.val(_0, idx) = mass_outer;
 	
-	vec3 shell_pos;
-	shell_pos[0] = prev_shell_data_outer.val(_1, idx);//pos
-	shell_pos[1] = prev_shell_data_outer.val(_2, idx);
-	shell_pos[2] = prev_shell_data_outer.val(_3, idx);
-	
-	vec3 velocity;
-	velocity[0] = shell_data_outer.val(_4, idx);//velocity
-	velocity[1] = shell_data_outer.val(_5, idx);
-	velocity[2] = shell_data_outer.val(_6, idx);
-	
-	vec3 new_pos = shell_pos + velocity * dt.count();
-	
-	//TODO: Currently we just act by distance to inner
-	vec3 diff = shell_pos - mesh_pos;
-	const float distance = sqrt(diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]);
-	//If too much stress, separate and regenerate pos (Done at different stage, we just mark buffer)
-	if(distance > config::G_DX * 0.1f) {
-		//Mark block for drip out
-		{
-			//Get block id by particle pos
-			const ivec3 coord	= get_block_id(shell_pos.data_arr()) - 2;
-			const ivec3 blockid = coord / static_cast<int>(config::G_BLOCKSIZE);
-
-			//Fetch block number
-			auto blockno = partition.query(blockid);
-			
-			//Increase particle count of cell and get id of particle in cell
-			auto particle_id_in_block = atomicAdd(triangle_shell_particle_buffer.particle_bucket_sizes + blockno, 1);
-
-			//If no space is left, don't store the particle
-			if(particle_id_in_block >= config::G_PARTICLE_NUM_PER_BLOCK) {
-				//Reduce count again
-				atomicSub(triangle_shell_particle_buffer.particle_bucket_sizes + blockno, 1);
-				printf("No space left in block: block(%d)\n", blockno);
-				return;
-			}
-
-			//Insert particle id in cell bucket
-			triangle_shell_particle_buffer.blockbuckets[blockno * config::G_PARTICLE_NUM_PER_BLOCK + particle_id_in_block] = idx;
-		}
-	}else{
-		//Store pos
-		shell_data_outer.val(_1, idx) = new_pos[0];
-		shell_data_outer.val(_2, idx) = new_pos[1];
-		shell_data_outer.val(_3, idx) = new_pos[2];
-	}
-	
-	//Calculate other parameters
-	//TODO: Correct algorithm. 
+	next_shell_data_inner.val(_1, idx) = 0.0f;
+	next_shell_data_inner.val(_2, idx) = 0.0f;
+	next_shell_data_inner.val(_3, idx) = 0.0f;
+	next_shell_data_outer.val(_4, idx) = total_momentum[0];
+	next_shell_data_outer.val(_5, idx) = total_momentum[1];
+	next_shell_data_outer.val(_6, idx) = total_momentum[2];
 }
 
 //NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic, readability-magic-numbers, readability-identifier-naming, misc-definitions-in-headers)

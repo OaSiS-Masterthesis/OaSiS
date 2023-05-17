@@ -20,8 +20,8 @@ using TriangleMeshVertexData  = Structural<StructuralType::DENSE, Decorator<Stru
 using TriangleMeshFaceData  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, TriangleBinDomain, attrib_layout::SOA, u32_, u32_, u32_>;//index
 using TriangleMeshData  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, TriangleMeshDataDomain, attrib_layout::AOS, TriangleMeshVertexData, TriangleMeshFaceData>;
 
-using TriangleShellInnerData  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, TriangleBinDomain, attrib_layout::SOA, f32_, f32_, f32_, f32_>;//mass, velocity
-using TriangleShellOuterData  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, TriangleBinDomain, attrib_layout::SOA, f32_, f32_, f32_, f32_, f32_, f32_, f32_>;//mass, pos (actually no need to store it, but can be useful for debugging), velocity	
+using TriangleShellInnerData  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, TriangleBinDomain, attrib_layout::SOA, f32_, f32_, f32_, f32_>;//mass, momentum
+using TriangleShellOuterData  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, TriangleBinDomain, attrib_layout::SOA, f32_, f32_, f32_, f32_, f32_, f32_, f32_>;//mass, pos (actually no need to store it, but can be useful for debugging), momentum	
 using TriangleShellData  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, TriangleShellDataDomain, attrib_layout::AOS, TriangleShellInnerData, TriangleShellOuterData>;
 
 template<typename TriangleMeshStruct>
@@ -30,7 +30,7 @@ using TriangleMeshBuffer = Structural<StructuralType::DYNAMIC, Decorator<Structu
 template<typename TriangleShellStruct>
 using TriangleShellBuffer  = Structural<StructuralType::DYNAMIC, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::COMPACT>, TriangleShellDomain, attrib_layout::AOS, TriangleShellStruct>;
 
-using TriangleShellGridBlockData  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, BlockDomain, attrib_layout::SOA, f32_, f32_, f32_, f32_>;//mass, momentum/velocity
+using TriangleShellGridBlockData  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, BlockDomain, attrib_layout::SOA, f32_, f32_, f32_, f32_>;//mass, momentum
 using TriangleShellGridBufferData = Structural<StructuralType::DYNAMIC, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::COMPACT>, GridBufferDomain, attrib_layout::AOS, TriangleShellGridBlockData>;
 //NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables, readability-identifier-naming)
 

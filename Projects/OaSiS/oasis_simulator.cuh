@@ -485,14 +485,15 @@ struct OasisSimulator {
 						for(int j = 0; j < triangle_shells[rollid].size(); ++j) {
 							//TODO: Clear triangle shell?
 
-							//Perform g2p2g
+							//Perform g2p
 							match(particle_bins[rollid][i])([this, &cu_dev, &i, &j](const auto& particle_buffer) {
 								
 								//partition_block_count; G_PARTICLE_BATCH_CAPACITY
-								cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, g2p2g, dt, next_dt, particle_buffer, triangle_shells[rollid][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0], grid_blocks[1], triangle_shell_grid_buffer[rollid][i], triangle_shell_grid_buffer[(rollid + 1) % BIN_COUNT][i]);
+								cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, grid_to_shell, dt, next_dt, particle_buffer, triangle_shells[rollid][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer, partitions[rollid], grid_blocks[0]);
 							});
 						}
 					}
+					
 					cu_dev.syncStream<streamIdx::COMPUTE>();
 
 					timer.tock(fmt::format("GPU[{}] frame {} step {} g2p2g", gpuid, cur_frame, cur_step));
@@ -555,26 +556,6 @@ struct OasisSimulator {
 					timer.tock(fmt::format("GPU[{}] frame {} step {} triangle_shell_step", gpuid, cur_frame, cur_step));
 				}
 				
-				//TODO: Volume redistribute on shell, volume exchange between shell and domain, volume exchange between triangle mesh and domain (maybe already done in simulation step and inner shell update step?!)
-				{
-					auto& cu_dev = Cuda::ref_cuda_context(gpuid);
-					CudaTimer timer {cu_dev.stream_compute()};
-					
-					timer.tick();
-					
-					for(int i = 0; i < get_model_count(); ++i) {
-						for(int j = 0; j < triangle_meshes.size(); ++j) {
-							//First init sizes with 0 (we reuse the buffer for particle generation)
-							check_cuda_errors(cudaMemsetAsync(triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer.particle_bucket_sizes, 0, sizeof(int) * (exterior_block_count + 1), cu_dev.stream_compute()));
-							
-							cu_dev.compute_launch({(triangle_mesh_vertex_counts[j] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, update_triangle_shell_height_field, triangle_meshes[j], triangle_shells[rollid][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer, partitions[rollid], triangle_mesh_vertex_counts[j], dt);
-						}
-					}
-					cu_dev.syncStream<streamIdx::COMPUTE>();
-					
-					timer.tock(fmt::format("GPU[{}] frame {} step {} triangle_shell_next", gpuid, cur_frame, cur_step));
-				}
-				
 				//TODO: Force Feedback to triangle mesh
 				
 				//TODO: Max velocity and maybe different CFL
@@ -597,7 +578,7 @@ struct OasisSimulator {
 				
 				}
 				
-				//New particle generation
+				//TODO: Volume redistribute on shell, volume exchange between shell and domain, volume exchange between triangle mesh and domain (maybe already done in simulation step and inner shell update step?!)
 				{
 					auto& cu_dev = Cuda::ref_cuda_context(gpuid);
 					CudaTimer timer {cu_dev.stream_compute()};
@@ -606,15 +587,15 @@ struct OasisSimulator {
 					
 					for(int i = 0; i < get_model_count(); ++i) {
 						for(int j = 0; j < triangle_shells[(rollid + 1) % BIN_COUNT].size(); ++j) {
-							match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &i, &j](const auto& particle_buffer) {
+							match(particle_bins[rollid][i])([this, &cu_dev, &i, &j](const auto& particle_buffer) {
 								//partition_block_count; G_PARTICLE_BATCH_CAPACITY
-								cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, mass_transfer_shell_domain, dt, particle_buffer, triangle_meshes[i], triangle_shells[rollid][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], triangle_shell_grid_buffer[rollid][i], triangle_shell_grid_buffer[(rollid + 1) % BIN_COUNT][i]);
+								cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, shell_to_grid, dt, next_dt, partition_block_count, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), triangle_meshes[i], triangle_shells[rollid][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer, partitions[rollid], grid_blocks[1]);
 							});
 						}
 					}
 					cu_dev.syncStream<streamIdx::COMPUTE>();
 					
-					timer.tock(fmt::format("GPU[{}] frame {} step {} particle generation", gpuid, cur_frame, cur_step));
+					timer.tock(fmt::format("GPU[{}] frame {} step {} p2g", gpuid, cur_frame, cur_step));
 				}
 
 				/// update partition

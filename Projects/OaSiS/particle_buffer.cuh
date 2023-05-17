@@ -96,7 +96,7 @@ struct ParticleBufferImpl : Instance<particle_buffer_<particle_bin_<Mt>>> {
 		check_cuda_errors(cudaMemcpyAsync(other.particle_bucket_sizes, particle_bucket_sizes, sizeof(int) * block_count, cudaMemcpyDefault, stream));
 	}
 
-	//FIXME: passing kjey_t here might cause problems because cuda is buggy
+	//FIXME: passing key_t here might cause problems because cuda is buggy
 	__forceinline__ __device__ void add_advection(Partition<1>& table, Partition<1>::key_t cellid, int dirtag, int particle_id_in_block) noexcept {
 		const Partition<1>::key_t blockid = cellid / static_cast<int>(config::G_BLOCKSIZE);
 		const int blockno				  = table.query(blockid);
