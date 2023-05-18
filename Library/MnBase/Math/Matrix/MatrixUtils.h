@@ -113,7 +113,7 @@ constexpr void matrix_inverse(const std::array<T, 9>& x, std::array<T, 9>& inv)
 
 //Solves ax = b for x
 template <typename T>
-constexpr void solve_linear_system(const std::array<T, 9>& a, std::array<T, 3>& x, const std::array<T, 3>& b){
+__forceinline__ __host__ __device__ void solve_linear_system(const std::array<T, 9>& a, std::array<T, 3>& x, const std::array<T, 3>& b){
 	//Calculate QR
 	std::array<T, 9> r = a;
 	

@@ -110,7 +110,7 @@ __global__ void cell_bucket_to_block(const int* cell_particle_counts, const int*
 }
 
 template<typename Partition>
-__global__ void store_triangle_shell_in_bucket(uint32_t particle_count, const TriangleShell triangle_shell, TriangleShellParticleBuffer triangle_shell_particle_buffer, Partition partition) {
+__global__ void store_triangle_shell_vertices_in_bucket(uint32_t particle_count, const TriangleShell triangle_shell, TriangleShellParticleBuffer triangle_shell_particle_buffer, Partition partition) {
 	const uint32_t particle_id = blockIdx.x * blockDim.x + threadIdx.x;
 	if(particle_id >= particle_count) {
 		return;
@@ -138,7 +138,7 @@ __global__ void store_triangle_shell_in_bucket(uint32_t particle_count, const Tr
 		return;
 	}
 
-	//Increase particle count of cell and get id of partzicle in cell
+	//Increase particle count of cell and get id of particle in cell
 	auto particle_id_in_block = atomicAdd(triangle_shell_particle_buffer.particle_bucket_sizes + blockno, 1);
 
 	//If no space is left, don't store the particle
@@ -153,6 +153,153 @@ __global__ void store_triangle_shell_in_bucket(uint32_t particle_count, const Tr
 	triangle_shell_particle_buffer.blockbuckets[blockno * config::G_PARTICLE_NUM_PER_BLOCK + particle_id_in_block] = particle_id;
 }
 
+template<typename Partition>
+__global__ void store_triangle_shell_faces_in_bucket(uint32_t face_count, const TriangleMesh triangle_mesh, const TriangleShell triangle_shell, TriangleShellParticleBuffer triangle_shell_particle_buffer, Partition partition) {
+	const uint32_t face_id = blockIdx.x * blockDim.x + threadIdx.x;
+	if(face_id >= face_count) {
+		return;
+	}
+	
+	//Load data
+	const auto face_data = triangle_mesh.ch(_0, 0).ch(_1, 0);
+	const auto shell_data_outer = triangle_shell.ch(_0, 0).ch(_1, 0);
+	
+	vec<uint32_t, 3> vertex_indices;
+	vertex_indices[0] = face_data.val(_0, face_id);
+	vertex_indices[1] = face_data.val(_1, face_id);
+	vertex_indices[2] = face_data.val(_2, face_id);
+	
+	//Fetch positions and blockids
+	vec3 positions[3];
+	ivec3 blockids[3];
+	for(size_t i = 0; i < 3; ++i){
+		const uint32_t current_vertex_index = vertex_indices[i];
+		
+		positions[i][0] = shell_data_outer.val(_1, current_vertex_index);//pos
+		positions[i][1] = shell_data_outer.val(_2, current_vertex_index);
+		positions[i][2] = shell_data_outer.val(_3, current_vertex_index);
+		
+		const ivec3 coord = get_block_id(positions[i].data_arr()) - 2;
+		blockids[i] = coord / static_cast<int>(config::G_BLOCKSIZE);
+	}
+	
+	//TODO: More efficient algorithm
+	//TODO: Ensure triangles are small enough to not cover more than one cell and their neighbours
+	
+	
+	//Create bounding box
+	ivec3 min_blockid;
+	ivec3 max_blockid;
+	min_blockid[0] = std::min(blockids[0][0], std::min(blockids[1][0], blockids[1][0]));
+	min_blockid[1] = std::min(blockids[0][1], std::min(blockids[1][1], blockids[1][1]));
+	min_blockid[2] = std::min(blockids[0][2], std::min(blockids[1][2], blockids[1][2]));
+	max_blockid[0] = std::max(blockids[0][0], std::max(blockids[1][0], blockids[1][0]));
+	max_blockid[1] = std::max(blockids[0][1], std::max(blockids[1][1], blockids[1][1]));
+	max_blockid[2] = std::max(blockids[0][2], std::max(blockids[1][2], blockids[1][2]));
+	
+	//Perform intersection test for ech cell with the triangle
+	
+	//Calculate normals
+	const vec3 block_normals[3] {
+		  vec3(1.0f, 0.0f, 0.0f)
+		, vec3(0.0f, 1.0f, 0.0f)
+		, vec3(0.0f, 0.0f, 1.0f)
+	};
+	
+	vec3 face_normal;
+	vec_cross_vec_3d(face_normal.data_arr(), (positions[1] - positions[0]).data_arr(), (positions[2] - positions[0]).data_arr());
+	//Normalize
+	face_normal = face_normal / sqrt(face_normal[0] * face_normal[0] + face_normal[1] * face_normal[1] + face_normal[2] * face_normal[2]);
+	
+	vec3 cross_normals[9];
+	vec_cross_vec_3d(cross_normals[0].data_arr(), (positions[1] - positions[0]).data_arr(), block_normals[0].data_arr());
+	vec_cross_vec_3d(cross_normals[1].data_arr(), (positions[1] - positions[0]).data_arr(), block_normals[1].data_arr());
+	vec_cross_vec_3d(cross_normals[2].data_arr(), (positions[1] - positions[0]).data_arr(), block_normals[2].data_arr());
+	vec_cross_vec_3d(cross_normals[3].data_arr(), (positions[2] - positions[1]).data_arr(), block_normals[0].data_arr());
+	vec_cross_vec_3d(cross_normals[4].data_arr(), (positions[2] - positions[1]).data_arr(), block_normals[1].data_arr());
+	vec_cross_vec_3d(cross_normals[5].data_arr(), (positions[2] - positions[1]).data_arr(), block_normals[2].data_arr());
+	vec_cross_vec_3d(cross_normals[6].data_arr(), (positions[0] - positions[2]).data_arr(), block_normals[0].data_arr());
+	vec_cross_vec_3d(cross_normals[7].data_arr(), (positions[0] - positions[2]).data_arr(), block_normals[1].data_arr());
+	vec_cross_vec_3d(cross_normals[8].data_arr(), (positions[0] - positions[2]).data_arr(), block_normals[2].data_arr());
+	//Normalize
+	for(size_t i = 0; i < 9; ++i){
+		cross_normals[i] = cross_normals[i] / sqrt(cross_normals[i][0] * cross_normals[i][0] + cross_normals[i][1] * cross_normals[i][1] + cross_normals[i][2] * cross_normals[i][2]);
+	}
+	
+	const vec3 intersection_normals[13] {
+		  block_normals[0]
+		, block_normals[1]
+		, block_normals[2]
+		, face_normal
+		, cross_normals[0]
+		, cross_normals[1]
+		, cross_normals[2]
+		, cross_normals[3]
+		, cross_normals[4]
+		, cross_normals[5]
+		, cross_normals[6]
+		, cross_normals[7]
+		, cross_normals[8]
+	};
+	
+	float proj_triangle_min[13];
+	float proj_triangle_max[13];
+	for(size_t normal_index = 0; normal_index < 13; ++normal_index){
+		const vec3 current_normal = intersection_normals[normal_index];
+		
+		float projected[3];
+		for(size_t i = 0; i < 3; ++i){
+			projected[i] = positions[i].dot(current_normal);
+		}
+		
+		proj_triangle_min[normal_index] = std::min(projected[0], std::min(projected[1], projected[2]));
+		proj_triangle_max[normal_index] = std::max(projected[0], std::max(projected[1], projected[2]));
+	}
+	
+	//Performe intersection test
+	for(int i = min_blockid[0]; i <= max_blockid[0]; ++i){
+		for(int j = min_blockid[1]; j <= max_blockid[1]; ++j){
+			for(int k = min_blockid[2]; k <= max_blockid[2]; ++k){
+				const ivec3 blockid {i, j, k};
+
+				//Fetch block number
+				auto blockno = partition.query(blockid);
+				
+				//Skip invalid blocks
+				if(blockno == -1) {
+					continue;
+				}
+				
+				for(size_t normal_index = 0; normal_index < 13; ++normal_index){
+					const vec3 current_normal = intersection_normals[normal_index];
+					
+					const float projected_center = ((blockid.cast<float>() + 0.5f) * config::G_DX).dot(current_normal);
+					const float projected_length = 0.5f * config::G_DX * (std::abs(current_normal[0]) + std::abs(current_normal[1]) + std::abs(current_normal[2]));
+					
+					const float proj_box_min = projected_center - projected_length;
+					const float proj_box_max = projected_center + projected_length;
+					
+					if(!(proj_box_max <= proj_triangle_min[normal_index] || proj_box_min >= proj_triangle_max[normal_index])){
+						//Increase face count of cell and get id of face in cell
+						auto face_id_in_block = atomicAdd(triangle_shell_particle_buffer.face_bucket_sizes + blockno, 1);
+
+						//If no space is left, don't store the face
+						if(face_id_in_block >= config::G_FACE_NUM_PER_BLOCK) {
+							//Reduce count again
+							atomicSub(triangle_shell_particle_buffer.face_bucket_sizes + blockno, 1);
+							printf("No space left in block: block(%d)\n", blockno);
+							continue;
+						}
+
+						//Insert face id in cell bucket
+						triangle_shell_particle_buffer.face_blockbuckets[blockno * config::G_PARTICLE_NUM_PER_BLOCK + face_id_in_block] = face_id;
+					}
+				}
+			}
+		}
+	}
+}
+
 __global__ void compute_bin_capacity(uint32_t block_count, int const* particle_bucket_sizes, int* bin_sizes) {
 	const uint32_t blockno = blockIdx.x * blockDim.x + threadIdx.x;
 	if(blockno >= block_count) {
@@ -161,6 +308,16 @@ __global__ void compute_bin_capacity(uint32_t block_count, int const* particle_b
 
 	//Bin capacity is the ceiled bucket size divided by the bin max capacity
 	bin_sizes[blockno] = (particle_bucket_sizes[blockno] + config::G_BIN_CAPACITY - 1) / config::G_BIN_CAPACITY;
+}
+
+__global__ void compute_bin_capacity_shell(uint32_t block_count, int const* particle_bucket_sizes, int* bin_sizes) {
+	const uint32_t blockno = blockIdx.x * blockDim.x + threadIdx.x;
+	if(blockno >= block_count) {
+		return;
+	}
+
+	//Maximum of current size and space for new particles. But not bugger than maximum size of block.
+	bin_sizes[blockno] = std::min((config::G_PARTICLE_NUM_PER_BLOCK + config::G_BIN_CAPACITY - 1) / config::G_BIN_CAPACITY, std::max(bin_sizes[blockno], (particle_bucket_sizes[blockno] * config::MAX_GENERATED_PARTICLE_PER_VERTEX + config::G_BIN_CAPACITY - 1) / config::G_BIN_CAPACITY));
 }
 
 __global__ void init_adv_bucket(const int* particle_bucket_sizes, int* buckets) {
@@ -517,7 +674,7 @@ __forceinline__ __device__ void fetch_particle_buffer_data(const ParticleBuffer<
 
 template<>
 __forceinline__ __device__ void fetch_particle_buffer_data<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer, int advection_source_blockno, int source_pidib, FetchParticleBufferDataIntermediate& data) {
-	auto source_particle_bin = particle_buffer.ch(_0, advection_source_blockno);
+	auto source_particle_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
 	data.mass				 = source_particle_bin.val(_0, source_pidib % config::G_BIN_CAPACITY);
 	data.pos[0]				 = source_particle_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
 	data.pos[1]				 = source_particle_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
@@ -527,7 +684,7 @@ __forceinline__ __device__ void fetch_particle_buffer_data<MaterialE::J_FLUID>(c
 
 template<>
 __forceinline__ __device__ void fetch_particle_buffer_data<MaterialE::FIXED_COROTATED>(const ParticleBuffer<MaterialE::FIXED_COROTATED> particle_buffer, int advection_source_blockno, int source_pidib, FetchParticleBufferDataIntermediate& data) {
-	auto source_particle_bin = particle_buffer.ch(_0, advection_source_blockno);
+	auto source_particle_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
 	data.mass				 = source_particle_bin.val(_0, source_pidib % config::G_BIN_CAPACITY);
 	data.pos[0]				 = source_particle_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
 	data.pos[1]				 = source_particle_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
@@ -536,7 +693,7 @@ __forceinline__ __device__ void fetch_particle_buffer_data<MaterialE::FIXED_CORO
 
 template<>
 __forceinline__ __device__ void fetch_particle_buffer_data<MaterialE::SAND>(const ParticleBuffer<MaterialE::SAND> particle_buffer, int advection_source_blockno, int source_pidib, FetchParticleBufferDataIntermediate& data) {
-	auto source_particle_bin = particle_buffer.ch(_0, advection_source_blockno);
+	auto source_particle_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
 	data.mass				 = source_particle_bin.val(_0, source_pidib % config::G_BIN_CAPACITY);
 	data.pos[0]				 = source_particle_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
 	data.pos[1]				 = source_particle_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
@@ -545,7 +702,7 @@ __forceinline__ __device__ void fetch_particle_buffer_data<MaterialE::SAND>(cons
 
 template<>
 __forceinline__ __device__ void fetch_particle_buffer_data<MaterialE::NACC>(const ParticleBuffer<MaterialE::NACC> particle_buffer, int advection_source_blockno, int source_pidib, FetchParticleBufferDataIntermediate& data) {
-	auto source_particle_bin = particle_buffer.ch(_0, advection_source_blockno);
+	auto source_particle_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
 	data.mass				 = source_particle_bin.val(_0, source_pidib % config::G_BIN_CAPACITY);
 	data.pos[0]				 = source_particle_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
 	data.pos[1]				 = source_particle_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
@@ -705,7 +862,7 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 
 	{
 		vec9 F;
-		auto source_particle_bin = particle_buffer.ch(_0, advection_source_blockno);
+		auto source_particle_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
 		contrib[0]				 = source_particle_bin.val(_4, source_pidib % config::G_BIN_CAPACITY);
 		contrib[1]				 = source_particle_bin.val(_5, source_pidib % config::G_BIN_CAPACITY);
 		contrib[2]				 = source_particle_bin.val(_6, source_pidib % config::G_BIN_CAPACITY);
@@ -741,7 +898,7 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 	{
 		vec9 F;
 		float log_jp;
-		auto source_particle_bin = particle_buffer.ch(_0, advection_source_blockno);
+		auto source_particle_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
 		contrib[0]				 = source_particle_bin.val(_4, source_pidib % config::G_BIN_CAPACITY);
 		contrib[1]				 = source_particle_bin.val(_5, source_pidib % config::G_BIN_CAPACITY);
 		contrib[2]				 = source_particle_bin.val(_6, source_pidib % config::G_BIN_CAPACITY);
@@ -785,7 +942,7 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 	{
 		vec9 F;
 		float log_jp;
-		auto source_particle_bin = particle_buffer.ch(_0, advection_source_blockno);
+		auto source_particle_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
 		contrib[0]				 = source_particle_bin.val(_4, source_pidib % config::G_BIN_CAPACITY);
 		contrib[1]				 = source_particle_bin.val(_5, source_pidib % config::G_BIN_CAPACITY);
 		contrib[2]				 = source_particle_bin.val(_6, source_pidib % config::G_BIN_CAPACITY);
@@ -917,10 +1074,7 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 			const ivec3 global_advection_index = blockid + offset;
 
 			//Get block_no from partition
-			const int advection_source_blockno_from_partition = prev_partition.query(global_advection_index);
-
-			//Get block number in particle bins
-			advection_source_blockno = particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib / config::G_BIN_CAPACITY;
+			advection_source_blockno = prev_partition.query(global_advection_index);
 		}
 
 		//Fetch position and determinant of deformation gradient
@@ -929,6 +1083,261 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 		const float mass = fetch_particle_buffer_tmp.mass;
 		vec3 pos {fetch_particle_buffer_tmp.pos[0], fetch_particle_buffer_tmp.pos[1], fetch_particle_buffer_tmp.pos[2]};
 		float J	 = fetch_particle_buffer_tmp.J;
+		
+		//Delete particle with mass 0.0
+		if(mass > 0.0f){
+			//Get position of grid cell
+			ivec3 global_base_index = get_block_id(pos.data_arr()) - 1;
+
+			//Get position relative to grid cell
+			vec3 local_pos = pos - global_base_index * config::G_DX;
+
+			//Save global_base_index
+			ivec3 base_index = global_base_index;
+
+			//Calculate weights and mask global index
+			vec3x3 dws;
+	#pragma unroll 3
+			for(int dd = 0; dd < 3; ++dd) {
+				const vec3 weight = bspline_weight(local_pos[dd]);
+				dws(dd, 0)		  = weight[0];
+				dws(dd, 1)		  = weight[1];
+				dws(dd, 2)		  = weight[2];
+
+				//Calculate (modulo (config::G_BLOCKMASK + 1)) + 1 of index (== (..., -4, -3, -2, -1, 0, 1, 2, 3, 4, ...) -> (..., 4, 1, 2, 3, 4, 1, 2, 3, 4, ...))
+				global_base_index[dd] = ((base_index[dd] - 1) & config::G_BLOCKMASK) + 1;
+			}
+
+			//Calculate particle velocity and APIC affine matrix
+			//v_p = sum(i, weight_i_p * v_i)
+			//A = sum(i, weight_i_p * v_i * (x_i - x_p))
+			vec3 vel;
+			vel.set(0.f);
+			vec9 A;//affine state
+			A.set(0.f);
+	#pragma unroll 3
+			for(char i = 0; i < 3; i++) {
+	#pragma unroll 3
+				for(char j = 0; j < 3; j++) {
+	#pragma unroll 3
+					for(char k = 0; k < 3; k++) {
+						//(x_i - x_p)
+						const vec3 xixp = vec3 {static_cast<float>(i), static_cast<float>(j), static_cast<float>(k)} * config::G_DX - local_pos;
+
+						//Weight
+						const float W = dws(0, i) * dws(1, j) * dws(2, k);
+
+						//Velocity of grid cell
+						const vec3 vi {g2pbuffer[0][static_cast<size_t>(static_cast<size_t>(global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(global_base_index[2]) + k)], g2pbuffer[1][static_cast<size_t>(static_cast<size_t>(global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(global_base_index[2]) + k)], g2pbuffer[2][static_cast<size_t>(static_cast<size_t>(global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(global_base_index[2]) + k)]};
+
+						//Calculate velocity
+						vel += W * vi;
+
+						//Calculate APIC affine matrix
+						A[0] += W * vi[0] * xixp[0];
+						A[1] += W * vi[1] * xixp[0];
+						A[2] += W * vi[2] * xixp[0];
+						A[3] += W * vi[0] * xixp[1];
+						A[4] += W * vi[1] * xixp[1];
+						A[5] += W * vi[2] * xixp[1];
+						A[6] += W * vi[0] * xixp[2];
+						A[7] += W * vi[1] * xixp[2];
+						A[8] += W * vi[2] * xixp[2];
+					}
+				}
+			}
+			
+			//Update particle position
+			pos += vel * dt.count();
+
+			CalculateContributionAndStoreParticleDataIntermediate store_particle_buffer_tmp = {};
+			store_particle_buffer_tmp.mass = mass;
+			store_particle_buffer_tmp.pos													= pos.data_arr();
+			store_particle_buffer_tmp.J														= J;
+
+			vec9 contrib;
+			calculate_contribution_and_store_particle_data<MaterialType>(particle_buffer, next_particle_buffer, advection_source_blockno, source_pidib, src_blockno, particle_id_in_block, dt, A.data_arr(), contrib.data_arr(), store_particle_buffer_tmp);
+
+			//Update momentum?
+			//Multiply A with mass to complete it. Then subtract current momentum?
+			//C = A * D^-1
+			contrib = (A * mass - contrib * new_dt.count()) * config::G_D_INV;
+
+			//Calculate grid index after movement
+			ivec3 new_global_base_index = get_block_id(pos.data_arr()) - 1;
+
+			//Update local position
+			local_pos = pos - new_global_base_index * config::G_DX;
+
+			//Store index and movement direction
+			{
+				//Calculate direction offset
+				const int dirtag = dir_offset(((base_index - 1) / static_cast<int>(config::G_BLOCKSIZE) - (new_global_base_index - 1) / static_cast<int>(config::G_BLOCKSIZE)).data_arr());
+
+				//Store particle in new block
+				next_particle_buffer.add_advection(partition, new_global_base_index - 1, dirtag, particle_id_in_block);
+				// partition.add_advection(new_global_base_index - 1, dirtag, particle_id_in_block);
+			}
+
+			//Calculate weights and mask global index
+	#pragma unroll 3
+			for(char dd = 0; dd < 3; ++dd) {
+				const vec3 weight = bspline_weight(local_pos[dd]);
+				dws(dd, 0)		  = weight[0];
+				dws(dd, 1)		  = weight[1];
+				dws(dd, 2)		  = weight[2];
+
+				//Calculate (modulo (config::G_BLOCKMASK + 1)) + 1 of index (== (..., -4, -3, -2, -1, 0, 1, 2, 3, 4, ...) -> (..., 4, 1, 2, 3, 4, 1, 2, 3, 4, ...)) and add offset (may not be out of range max [-4, 4] min [-1, 1])
+				new_global_base_index[dd] = (((base_index[dd] - 1) & config::G_BLOCKMASK) + 1) + (new_global_base_index[dd] - base_index[dd]);
+			}
+
+			//Dim of p2gbuffer is (4, 8, 8, 8). So if values are too big, discard whole particle
+			if(new_global_base_index[0] < 0 || new_global_base_index[1] < 0 || new_global_base_index[2] < 0 || new_global_base_index[0] + 2 >= 8 || new_global_base_index[1] + 2 >= 8 || new_global_base_index[2] + 2 >= 8) {
+				//NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) Cuda has no other way to print; Numbers are array indices to be printed
+				printf("new_global_base_index out of range: %d %d %d\n", new_global_base_index[0], new_global_base_index[1], new_global_base_index[2]);
+				return;
+			}
+
+			//Calculate new gird momentum and mass
+			//m_i * v_i = sum(p, w_i_p * m_p * vel_p + ?)
+	#pragma unroll 3
+			for(char i = 0; i < 3; i++) {
+	#pragma unroll 3
+				for(char j = 0; j < 3; j++) {
+	#pragma unroll 3
+					for(char k = 0; k < 3; k++) {
+						pos			  = vec3 {static_cast<float>(i), static_cast<float>(j), static_cast<float>(k)} * config::G_DX - local_pos;
+						const float W = dws(0, i) * dws(1, j) * dws(2, k);
+						const auto wm = mass * W;
+
+						atomicAdd(&p2gbuffer[0][static_cast<size_t>(static_cast<size_t>(new_global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[2]) + k)], wm);
+						atomicAdd(&p2gbuffer[1][static_cast<size_t>(static_cast<size_t>(new_global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[2]) + k)], wm * vel[0] + (contrib[0] * pos[0] + contrib[3] * pos[1] + contrib[6] * pos[2]) * W);
+						atomicAdd(&p2gbuffer[2][static_cast<size_t>(static_cast<size_t>(new_global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[2]) + k)], wm * vel[1] + (contrib[1] * pos[0] + contrib[4] * pos[1] + contrib[7] * pos[2]) * W);
+						atomicAdd(&p2gbuffer[3][static_cast<size_t>(static_cast<size_t>(new_global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[2]) + k)], wm * vel[2] + (contrib[2] * pos[0] + contrib[5] * pos[1] + contrib[8] * pos[2]) * W);
+					}
+				}
+			}
+		}
+	}
+	__syncthreads();
+
+	//Store data from shared memory to grid
+	for(int base = static_cast<int>(threadIdx.x); base < NUM_M_VI_IN_ARENA; base += static_cast<int>(blockDim.x)) {
+		const char local_block_id = static_cast<char>(base / NUM_M_VI_PER_BLOCK);
+		const auto blockno		  = partition.query(ivec3 {blockid[0] + ((local_block_id & 4) != 0 ? 1 : 0), blockid[1] + ((local_block_id & 2) != 0 ? 1 : 0), blockid[2] + ((local_block_id & 1) != 0 ? 1 : 0)});
+		// auto grid_block = next_grid.template ch<0>(blockno);
+		int channelid = static_cast<int>(base & (NUM_M_VI_PER_BLOCK - 1));
+		const char c  = static_cast<char>(channelid % config::G_BLOCKVOLUME);
+
+		const char cz = static_cast<char>(channelid & config::G_BLOCKMASK);
+		channelid >>= config::G_BLOCKBITS;
+
+		const char cy = static_cast<char>(channelid & config::G_BLOCKMASK);
+		channelid >>= config::G_BLOCKBITS;
+
+		const char cx = static_cast<char>(channelid & config::G_BLOCKMASK);
+		channelid >>= config::G_BLOCKBITS;
+
+		float val = p2gbuffer[channelid][static_cast<size_t>(static_cast<size_t>(cx) + (local_block_id & 4 ? config::G_BLOCKSIZE : 0))][static_cast<size_t>(static_cast<size_t>(cy) + (local_block_id & 2 ? config::G_BLOCKSIZE : 0))][static_cast<size_t>(static_cast<size_t>(cz) + (local_block_id & 1 ? config::G_BLOCKSIZE : 0))];
+		if(channelid == 0) {
+			atomicAdd(&next_grid.ch(_0, blockno).val_1d(_0, c), val);
+		} else if(channelid == 1) {
+			atomicAdd(&next_grid.ch(_0, blockno).val_1d(_1, c), val);
+		} else if(channelid == 2) {
+			atomicAdd(&next_grid.ch(_0, blockno).val_1d(_2, c), val);
+		} else {
+			atomicAdd(&next_grid.ch(_0, blockno).val_1d(_3, c), val);
+		}
+	}
+}
+
+template<typename Partition, typename Grid, MaterialE MaterialType>
+__global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialType> particle_buffer, ParticleBuffer<MaterialType> next_particle_buffer, TriangleMesh triangle_mesh, TriangleShell triangle_shell, TriangleShellParticleBuffer triangle_shell_particle_buffer, const Partition prev_partition, Partition partition, const Grid grid) {
+	static constexpr uint64_t NUM_VI_PER_BLOCK = static_cast<uint64_t>(config::G_BLOCKVOLUME) * 3;
+	static constexpr uint64_t NUM_VI_IN_ARENA  = NUM_VI_PER_BLOCK << 3;
+
+	using ViArena	  = std::array<std::array<std::array<std::array<float, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, 3>*;
+	using ViArenaRef  = std::array<std::array<std::array<std::array<float, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, config::G_BLOCKSIZE << 1>, 3>&;
+
+	static constexpr size_t shared_memory_size = static_cast<size_t>((3) * (config::G_BLOCKSIZE << 1) * (config::G_BLOCKSIZE << 1) * (config::G_BLOCKSIZE << 1)) * sizeof(float);
+	__shared__ char shmem[shared_memory_size];//NOLINT(modernize-avoid-c-arrays, readability-redundant-declaration) Cannot declare runtime size shared memory as std::array; extern has different meaning here
+
+	ViArenaRef __restrict__ g2pbuffer  = *static_cast<ViArena>(static_cast<void*>(static_cast<char*>(shmem)));
+
+	//Layout of buffers: 1 dimension is channel. other dimensions range [0, 3] contains current block, range [4, 7] contains next block
+	//The first cell of the next block is handled by the current block only (but may receive values of particles traveling out of next block in negative direction)
+
+	const int src_blockno		   = static_cast<int>(blockIdx.x);
+	const auto blockid			   = partition.active_keys[blockIdx.x];
+	const int particle_bucket_size = next_particle_buffer.particle_bucket_sizes[src_blockno];
+	
+	//If we have no particles in the bucket return
+	if(particle_bucket_size == 0) {
+		return;
+	}
+	
+	const auto face_data = triangle_mesh.ch(_0, 0).ch(_1, 0);
+	const auto shell_data_outer = triangle_shell.ch(_0, 0).ch(_1, 0);
+
+	//Load data from grid to shared memory
+	for(int base = static_cast<int>(threadIdx.x); base < NUM_VI_IN_ARENA; base += static_cast<int>(blockDim.x)) {
+		const char local_block_id = static_cast<char>(base / NUM_VI_PER_BLOCK);
+		const auto blockno		  = partition.query(ivec3 {blockid[0] + ((local_block_id & 4) != 0 ? 1 : 0), blockid[1] + ((local_block_id & 2) != 0 ? 1 : 0), blockid[2] + ((local_block_id & 1) != 0 ? 1 : 0)});
+		const auto grid_block	  = grid.ch(_0, blockno);
+		int channelid			  = static_cast<int>(base % NUM_VI_PER_BLOCK);
+		const char c			  = static_cast<char>(channelid & 0x3f);
+
+		const char cz = static_cast<char>(channelid & config::G_BLOCKMASK);
+		channelid >>= config::G_BLOCKBITS;
+
+		const char cy = static_cast<char>(channelid & config::G_BLOCKMASK);
+		channelid >>= config::G_BLOCKBITS;
+
+		const char cx = static_cast<char>(channelid & config::G_BLOCKMASK);
+		channelid >>= config::G_BLOCKBITS;
+
+		float val;
+		if(channelid == 0) {
+			val = grid_block.val_1d(_1, c);
+		} else if(channelid == 1) {
+			val = grid_block.val_1d(_2, c);
+		} else {
+			val = grid_block.val_1d(_3, c);
+		}
+
+		g2pbuffer[channelid][static_cast<size_t>(static_cast<size_t>(cx) + (local_block_id & 4 ? config::G_BLOCKSIZE : 0))][static_cast<size_t>(static_cast<size_t>(cy) + (local_block_id & 2 ? config::G_BLOCKSIZE : 0))][static_cast<size_t>(static_cast<size_t>(cz) + (local_block_id & 1 ? config::G_BLOCKSIZE : 0))] = val;
+	}
+	__syncthreads();
+
+	//Perform update
+	for(int particle_id_in_block = static_cast<int>(threadIdx.x); particle_id_in_block < particle_bucket_size; particle_id_in_block += static_cast<int>(blockDim.x)) {
+		//Fetch index of the advection source
+		int advection_source_blockno;
+		int source_pidib;
+		{
+			//Fetch advection (direction at high bits, particle in in cell at low bits)
+			const int advect = next_particle_buffer.blockbuckets[src_blockno * config::G_PARTICLE_NUM_PER_BLOCK + particle_id_in_block];
+
+			//Retrieve the direction (first stripping the particle id by division)
+			ivec3 offset;
+			dir_components(advect / config::G_PARTICLE_NUM_PER_BLOCK, offset.data_arr());
+
+			//Retrieve the particle id by AND for lower bits
+			source_pidib = advect & (config::G_PARTICLE_NUM_PER_BLOCK - 1);
+
+			//Get global index by adding blockid and offset
+			const ivec3 global_advection_index = blockid + offset;
+
+			//Get block_no from partition
+			advection_source_blockno = prev_partition.query(global_advection_index);
+		}
+
+		//Fetch position and determinant of deformation gradient
+		FetchParticleBufferDataIntermediate fetch_particle_buffer_tmp = {};
+		fetch_particle_buffer_data<MaterialType>(particle_buffer, advection_source_blockno, source_pidib, fetch_particle_buffer_tmp);
+		//const float mass = fetch_particle_buffer_tmp.mass;
+		vec3 pos {fetch_particle_buffer_tmp.pos[0], fetch_particle_buffer_tmp.pos[1], fetch_particle_buffer_tmp.pos[2]};
+		//float J	 = fetch_particle_buffer_tmp.J;
 
 		//Get position of grid cell
 		ivec3 global_base_index = get_block_id(pos.data_arr()) - 1;
@@ -991,111 +1400,106 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 			}
 		}
 		
-		if(
-			   (blockid[0] == 32 && blockid[1] == 24 && blockid[2] == 32)
-		){
-			printf("C %d %d %d # %d %d # %f %f %f - ", (base_index[0] - 1) / static_cast<int>(config::G_BLOCKSIZE), (base_index[1] - 1) / static_cast<int>(config::G_BLOCKSIZE), (base_index[2] - 1) / static_cast<int>(config::G_BLOCKSIZE), advection_source_blockno, source_pidib, pos[0], pos[1], pos[2]);
+		//Update particle position
+		const vec3 new_pos = pos + vel * dt.count();
+		
+		vec3 direction = new_pos - pos;
+		//Normalize
+		direction = direction / sqrt(direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]);
+		
+		const ivec3 next_block_id = (get_block_id(new_pos.data_arr()) - 2) / static_cast<int>(config::G_BLOCKSIZE);
+		const int next_block_no = partition.query(next_block_id);
+		
+		//TODO: How calculate this
+		const float cohesion_distance = 0.01f;
+		
+		//Find earliest collision in this block and the next block
+		//TODO: Actually this should be something like nearest point smaller cohesion distance, but we just choose the nearest point. This should not make much of a difference
+		int min_index = -1;
+		float min_distance = std::numeric_limits<float>::max();
+		
+		const int face_count_in_current_block = triangle_shell_particle_buffer.face_bucket_sizes[advection_source_blockno];
+		const int face_count_in_next_block = triangle_shell_particle_buffer.face_bucket_sizes[next_block_no];
+		for(int i = 0; i < std::max(face_count_in_current_block, face_count_in_next_block); ++i){
+			//NOTE: Loop for code reduction
+			for(int j = 0; j < 2; ++j){
+				//Fetch face index; Skip if we already reached the end of the buffer
+				int face_index;
+				if(j == 0 && i < face_count_in_current_block){
+					face_index = triangle_shell_particle_buffer.face_blockbuckets[advection_source_blockno * config::G_FACE_NUM_PER_BLOCK + i];
+				}else if(j == 1 && i < face_count_in_next_block){
+					face_index = triangle_shell_particle_buffer.face_blockbuckets[next_block_no * config::G_FACE_NUM_PER_BLOCK + i];
+				}else{
+					continue;
+				}
+
+				vec<uint32_t, 3> vertex_indices;
+				vertex_indices[0] = face_data.val(_0, face_index);
+				vertex_indices[1] = face_data.val(_1, face_index);
+				vertex_indices[2] = face_data.val(_2, face_index);
+				
+				//Fetch positions
+				vec3 positions[3];
+				for(size_t i = 0; i < 3; ++i){
+					const uint32_t current_vertex_index = vertex_indices[i];
+					
+					positions[i][0] = shell_data_outer.val(_1, current_vertex_index);//pos
+					positions[i][1] = shell_data_outer.val(_2, current_vertex_index);
+					positions[i][2] = shell_data_outer.val(_3, current_vertex_index);
+				}
+				
+				vec3 face_normal;
+				vec_cross_vec_3d(face_normal.data_arr(), (positions[1] - positions[0]).data_arr(), (positions[2] - positions[0]).data_arr());
+				//Normalize
+				face_normal = face_normal / sqrt(face_normal[0] * face_normal[0] + face_normal[1] * face_normal[1] + face_normal[2] * face_normal[2]);
+				
+				//Calculate distance to line of particle
+				//FIXME: Verify that this also works for parallel points or generally that this works.
+				/*
+				 * We solve
+				 * mat3(p0-p2, p1-p2, -dir)*(a, b, t) = pos - p2;
+				 */
+				const vec9 A {
+						  positions[0][0] - positions[2][0], positions[1][0] - positions[2][0], -direction[0]
+						, positions[0][1] - positions[2][1], positions[1][1] - positions[2][1], -direction[1]
+						, positions[0][2] - positions[2][2], positions[1][2] - positions[2][2], -direction[2]
+				};
+				const vec3 b = pos - positions[2];
+				vec3 x;
+				solve_linear_system(A.data_arr(), x.data_arr(),  b.data_arr());
+
+				const vec3 barycentric_intersection_point{x[0], x[1], 1.0f - x[0] - x[1]};
+				const float t = x[2];
+				
+				const vec3 nearest_point_on_plane = pos + direction * t;
+				
+				float distances[3];
+				for(size_t i = 0; i < 3; ++i){
+					const vec3 a = nearest_point_on_plane - positions[i];
+					const vec3 b = positions[(i + 1) % 3] - positions[i];
+					
+					const vec3 c = a - a.dot(b) * b;//Distance vector minus the part projected on edge
+					
+					distances[i] = sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+				}
+				
+				const float distance = std::min(distances[0], std::min(distances[1], distances[2]));
+				printf("%f - ", distance);
+				//Keep min distance and index
+				if(distance < min_distance && distance < cohesion_distance){
+					min_index = face_index;
+					min_distance = distance;
+				}
+			}	
 		}
 		
-		//Update particle position
-		pos += vel * dt.count();
-
-		CalculateContributionAndStoreParticleDataIntermediate store_particle_buffer_tmp = {};
-		store_particle_buffer_tmp.mass = mass;
-		store_particle_buffer_tmp.pos													= pos.data_arr();
-		store_particle_buffer_tmp.J														= J;
-
-		vec9 contrib;
-		calculate_contribution_and_store_particle_data<MaterialType>(particle_buffer, next_particle_buffer, advection_source_blockno, source_pidib, src_blockno, particle_id_in_block, dt, A.data_arr(), contrib.data_arr(), store_particle_buffer_tmp);
-
-		//Update momentum?
-		//Multiply A with mass to complete it. Then subtract current momentum?
-		//C = A * D^-1
-		contrib = (A * mass - contrib * new_dt.count()) * config::G_D_INV;
-
-		//Calculate grid index after movement
-		ivec3 new_global_base_index = get_block_id(pos.data_arr()) - 1;
-
-		//Update local position
-		local_pos = pos - new_global_base_index * config::G_DX;
-
-		//Store index and movement direction
-		{
-			//Calculate direction offset
-			const int dirtag = dir_offset(((base_index - 1) / static_cast<int>(config::G_BLOCKSIZE) - (new_global_base_index - 1) / static_cast<int>(config::G_BLOCKSIZE)).data_arr());
-
-			//Store particle in new block
-			next_particle_buffer.add_advection(partition, new_global_base_index - 1, dirtag, particle_id_in_block);
-			// partition.add_advection(new_global_base_index - 1, dirtag, particle_id_in_block);
-		}
-
-		//Calculate weights and mask global index
-#pragma unroll 3
-		for(char dd = 0; dd < 3; ++dd) {
-			const vec3 weight = bspline_weight(local_pos[dd]);
-			dws(dd, 0)		  = weight[0];
-			dws(dd, 1)		  = weight[1];
-			dws(dd, 2)		  = weight[2];
-
-			//Calculate (modulo (config::G_BLOCKMASK + 1)) + 1 of index (== (..., -4, -3, -2, -1, 0, 1, 2, 3, 4, ...) -> (..., 4, 1, 2, 3, 4, 1, 2, 3, 4, ...)) and add offset (may not be out of range max [-4, 4] min [-1, 1])
-			new_global_base_index[dd] = (((base_index[dd] - 1) & config::G_BLOCKMASK) + 1) + (new_global_base_index[dd] - base_index[dd]);
-		}
-
-		//Dim of p2gbuffer is (4, 8, 8, 8). So if values are too big, discard whole particle
-		if(new_global_base_index[0] < 0 || new_global_base_index[1] < 0 || new_global_base_index[2] < 0 || new_global_base_index[0] + 2 >= 8 || new_global_base_index[1] + 2 >= 8 || new_global_base_index[2] + 2 >= 8) {
-			//NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) Cuda has no other way to print; Numbers are array indices to be printed
-			printf("new_global_base_index out of range: %d %d %d\n", new_global_base_index[0], new_global_base_index[1], new_global_base_index[2]);
-			return;
-		}
-
-		//Calculate new gird momentum and mass
-		//m_i * v_i = sum(p, w_i_p * m_p * vel_p + ?)
-#pragma unroll 3
-		for(char i = 0; i < 3; i++) {
-#pragma unroll 3
-			for(char j = 0; j < 3; j++) {
-#pragma unroll 3
-				for(char k = 0; k < 3; k++) {
-					pos			  = vec3 {static_cast<float>(i), static_cast<float>(j), static_cast<float>(k)} * config::G_DX - local_pos;
-					const float W = dws(0, i) * dws(1, j) * dws(2, k);
-					const auto wm = mass * W;
-
-					atomicAdd(&p2gbuffer[0][static_cast<size_t>(static_cast<size_t>(new_global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[2]) + k)], wm);
-					atomicAdd(&p2gbuffer[1][static_cast<size_t>(static_cast<size_t>(new_global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[2]) + k)], wm * vel[0] + (contrib[0] * pos[0] + contrib[3] * pos[1] + contrib[6] * pos[2]) * W);
-					atomicAdd(&p2gbuffer[2][static_cast<size_t>(static_cast<size_t>(new_global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[2]) + k)], wm * vel[1] + (contrib[1] * pos[0] + contrib[4] * pos[1] + contrib[7] * pos[2]) * W);
-					atomicAdd(&p2gbuffer[3][static_cast<size_t>(static_cast<size_t>(new_global_base_index[0]) + i)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[1]) + j)][static_cast<size_t>(static_cast<size_t>(new_global_base_index[2]) + k)], wm * vel[2] + (contrib[2] * pos[0] + contrib[5] * pos[1] + contrib[8] * pos[2]) * W);
-				}
-			}
-		}
-	}
-	__syncthreads();
-
-	//Store data from shared memory to grid
-	for(int base = static_cast<int>(threadIdx.x); base < NUM_M_VI_IN_ARENA; base += static_cast<int>(blockDim.x)) {
-		const char local_block_id = static_cast<char>(base / NUM_M_VI_PER_BLOCK);
-		const auto blockno		  = partition.query(ivec3 {blockid[0] + ((local_block_id & 4) != 0 ? 1 : 0), blockid[1] + ((local_block_id & 2) != 0 ? 1 : 0), blockid[2] + ((local_block_id & 1) != 0 ? 1 : 0)});
-		// auto grid_block = next_grid.template ch<0>(blockno);
-		int channelid = static_cast<int>(base & (NUM_M_VI_PER_BLOCK - 1));
-		const char c  = static_cast<char>(channelid % config::G_BLOCKVOLUME);
-
-		const char cz = static_cast<char>(channelid & config::G_BLOCKMASK);
-		channelid >>= config::G_BLOCKBITS;
-
-		const char cy = static_cast<char>(channelid & config::G_BLOCKMASK);
-		channelid >>= config::G_BLOCKBITS;
-
-		const char cx = static_cast<char>(channelid & config::G_BLOCKMASK);
-		channelid >>= config::G_BLOCKBITS;
-
-		float val = p2gbuffer[channelid][static_cast<size_t>(static_cast<size_t>(cx) + (local_block_id & 4 ? config::G_BLOCKSIZE : 0))][static_cast<size_t>(static_cast<size_t>(cy) + (local_block_id & 2 ? config::G_BLOCKSIZE : 0))][static_cast<size_t>(static_cast<size_t>(cz) + (local_block_id & 1 ? config::G_BLOCKSIZE : 0))];
-		if(channelid == 0) {
-			atomicAdd(&next_grid.ch(_0, blockno).val_1d(_0, c), val);
-		} else if(channelid == 1) {
-			atomicAdd(&next_grid.ch(_0, blockno).val_1d(_1, c), val);
-		} else if(channelid == 2) {
-			atomicAdd(&next_grid.ch(_0, blockno).val_1d(_2, c), val);
-		} else {
-			atomicAdd(&next_grid.ch(_0, blockno).val_1d(_3, c), val);
+		//If we have faces, test if we are near enogh
+		if(min_index != -1){
+			//TODO: Merge into shell
+			
+			//Delete particle by setting mass to 0.0
+			auto source_particle_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
+			source_particle_bin.val(_0, source_pidib % config::G_BIN_CAPACITY) = 0.0f;//mass
 		}
 	}
 }
@@ -1407,12 +1811,12 @@ __global__ void grid_to_shell(Duration dt, Duration new_dt, const ParticleBuffer
 }
 
 template<typename Partition, MaterialE MaterialType>
-__forceinline__ __device__ void spawn_new_particles(ParticleBuffer<MaterialType> next_particle_buffer, Partition partition, int partition_block_count, const float drop_out_mass, const std::array<float, 3> prev_pos, const std::array<float, 3> pos, int blockno){
+__forceinline__ __device__ float spawn_new_particles(ParticleBuffer<MaterialType> next_particle_buffer, Partition partition, int partition_block_count, const float drop_out_mass, const std::array<float, 3> prev_pos, const std::array<float, 3> pos, int blockno){
 	int bin_count;
 	if(blockno == partition_block_count - 1){
-		bin_count = next_particle_buffer.bin_offsets[blockno + 1] - next_particle_buffer.bin_offsets[blockno];
-	}else{
 		bin_count = partition_block_count - next_particle_buffer.bin_offsets[blockno];
+	}else{
+		bin_count = next_particle_buffer.bin_offsets[blockno + 1] - next_particle_buffer.bin_offsets[blockno];
 	}
 
 	//Calculate grid index before and after movement
@@ -1423,6 +1827,7 @@ __forceinline__ __device__ void spawn_new_particles(ParticleBuffer<MaterialType>
 	
 	const int cellno = ((cellid[0] & config::G_BLOCKMASK) << (config::G_BLOCKBITS << 1)) | ((cellid[1] & config::G_BLOCKMASK) << config::G_BLOCKBITS) | (cellid[2] & config::G_BLOCKMASK);
 
+	//NOTE: Don't fully rely on this size calculation, as it might be a race condition.
 	const size_t space_left = std::min(config::G_MAX_PARTICLES_IN_CELL - next_particle_buffer.cell_particle_counts[blockno * config::G_BLOCKVOLUME + cellno], bin_count * config::G_BIN_CAPACITY - next_particle_buffer.particle_bucket_sizes[blockno]);
 
 	//TODO: More variation/different algorithm
@@ -1431,8 +1836,11 @@ __forceinline__ __device__ void spawn_new_particles(ParticleBuffer<MaterialType>
 	
 	const float mass = drop_out_mass / static_cast<float>(count_particles);
 	
-	ivec3 blockid = cellid / static_cast<int>(config::G_BLOCKSIZE);
-	printf("B %d # %d %d %d - ", (int)count_particles, blockid[0], blockid[1], blockid[2]);
+	//If mass could not be dropped out, print error message and return 0.0
+	if(count_particles == 0){
+		printf("Could not drop out mass: block(%d)\n", blockno);
+		return 0.0f;
+	}
 	
 	//TODO: Correct parameters
 	curandState random_state;
@@ -1442,30 +1850,29 @@ __forceinline__ __device__ void spawn_new_particles(ParticleBuffer<MaterialType>
 		//TODO: Different way to calculate this?
 		//NOTE: 0.0 is excluded by curand_uniform so we take 0.5 - curand_uniform to get range [-0.5; 0.5[;
 		const vec3 particle_pos {
-			  (static_cast<float>(new_global_base_index[0]) + (0.5f - curand_uniform(&random_state))) * config::G_DX
-			, (static_cast<float>(new_global_base_index[1]) + (0.5f - curand_uniform(&random_state))) * config::G_DX
-			, (static_cast<float>(new_global_base_index[2]) + (0.5f - curand_uniform(&random_state))) * config::G_DX
+			  (static_cast<float>(new_global_base_index[0] + 1) + (0.5f - curand_uniform(&random_state))) * config::G_DX
+			, (static_cast<float>(new_global_base_index[1] + 1) + (0.5f - curand_uniform(&random_state))) * config::G_DX
+			, (static_cast<float>(new_global_base_index[2] + 1) + (0.5f - curand_uniform(&random_state))) * config::G_DX
 		};
 
 		//TODO: Ensure particle_pos is in the right cell. Or calc cell by particle pos and store momentum in the right place
-		//const ivec3 new_global_base_index1 = get_block_id(particle_pos.data_arr());
+		//const ivec3 new_global_base_index1 = get_block_id(particle_pos.data_arr()) - 1;
 		//const ivec3 blockid0 = (new_global_base_index - 1) / static_cast<int>(config::G_BLOCKSIZE);
 		//const ivec3 blockid1 = (new_global_base_index1 - 1) / static_cast<int>(config::G_BLOCKSIZE);
-		//printf("%d %d %d # %d %d %d - ", blockid0[0], blockid0[1], blockid0[2], blockid1[0], blockid1[1], blockid1[2]);
+		//printf("A %d %d %d # %d %d %d - ", blockid0[0], blockid0[1], blockid0[2], blockid1[0], blockid1[1], blockid1[2]);
 		
 		int particle_id_in_block = atomicAdd(next_particle_buffer.particle_bucket_sizes + blockno, 1);
 		
-		//If no space is left, don't store the particle
-		if(particle_id_in_block >= config::G_PARTICLE_NUM_PER_BLOCK) {
-			//Reduce count again
-			atomicSub(next_particle_buffer.particle_bucket_sizes + blockno, 1);
-			printf("No space left in block: block(%d)\n", blockno);
-			return;
-		}
-		
 		const int bin_no = next_particle_buffer.bin_offsets[blockno] + particle_id_in_block / config::G_BIN_CAPACITY;
 		
-		printf("G %d %d %d # %d %d # %f %f %f- ", blockid[0], blockid[1], blockid[2], bin_no, particle_id_in_block, particle_pos[0], particle_pos[1], particle_pos[2]);
+		//If no space is left, don't store the particle
+		if(particle_id_in_block >= config::G_PARTICLE_NUM_PER_BLOCK || bin_no >= (next_particle_buffer.bin_offsets[blockno] + bin_count)) {
+			//Reduce count again
+			atomicSub(next_particle_buffer.particle_bucket_sizes + blockno, 1);
+			printf("No space left in block: block(%d) bin(%d)\n", blockno, bin_no);
+			//Return dropped mass
+			return static_cast<float>(i) * mass;
+		}
 		
 		//TODO: Fill in values
 		StoreParticleDataIntermediate store_particle_data_tmp = {};
@@ -1476,7 +1883,7 @@ __forceinline__ __device__ void spawn_new_particles(ParticleBuffer<MaterialType>
 		//store_particle_data_tmp.log_jp														= log_jp;
 
 		//Create new particle
-		store_particle_data<MaterialType>(next_particle_buffer, bin_no, particle_id_in_block, store_particle_data_tmp);
+		store_particle_data<MaterialType>(next_particle_buffer, blockno, particle_id_in_block, store_particle_data_tmp);
 
 		//Store index and movement direction
 		{
@@ -1487,6 +1894,8 @@ __forceinline__ __device__ void spawn_new_particles(ParticleBuffer<MaterialType>
 			next_particle_buffer.add_advection(partition, cellid, dirtag, particle_id_in_block);
 		}
 	}
+	
+	return drop_out_mass;
 }
 
 template<typename Partition, typename Grid, MaterialE MaterialType>
@@ -1582,21 +1991,22 @@ __global__ void shell_to_grid(Duration dt, Duration new_dt, int partition_block_
 			//If too much stress, separate and regenerate pos (Done at different stage, we just mark buffer)
 			if(distance > config::G_DX * 0.1f) {
 				//TODO: How much mass drops out?
-				//TODO: Too small mass causes system to explode. Investigate why!
-				const float drop_out_mass = (mass_outer > 0.0001f) ? std::min(mass_outer, 0.01f) : 0.0f;
+				//TODO: Too small mass causes system to explode( Not sure if this still occures?). Investigate why!
+				const float drop_out_mass = std::min(mass_outer, 0.01f);//TODO:(mass_outer - 0.01f > 0.0001f) ? 0.01f : mass_outer;
 
 				//TODO: Momentum transfer happens via grid?!
 				//TODO: How correctly calculate new momentum
 				//const vec3 drop_out_momentum = momentum * 0.5f;
 				
 				//Only drop out if mass is not 0.0
+				float dropped_mass = 0.0f;
 				if(drop_out_mass > 0.0f){
 					//Create new particles
-					spawn_new_particles(next_particle_buffer, partition, partition_block_count, drop_out_mass, shell_pos.data_arr(), extrapolated_pos.data_arr(), src_blockno);
+					dropped_mass = spawn_new_particles(next_particle_buffer, partition, partition_block_count, drop_out_mass, shell_pos.data_arr(), extrapolated_pos.data_arr(), src_blockno);
 				}
 				
 				//Recalculate pos and velocity
-				const float new_mass = mass_outer - drop_out_mass;
+				const float new_mass = mass_outer - dropped_mass;
 				
 				//const vec3 new_momentum = momentum - drop_out_momentum;
 				//const vec3 new_velocity = new_momentum / new_mass;
@@ -1781,6 +2191,36 @@ __global__ void update_buckets(uint32_t block_count, const int* __restrict__ sou
 	const auto particle_counts = next_particle_buffer.particle_bucket_sizes[blockno];
 	for(int particle_id_in_block = static_cast<int>(threadIdx.x); particle_id_in_block < particle_counts; particle_id_in_block += static_cast<int>(blockDim.x)) {
 		next_particle_buffer.blockbuckets[blockno * config::G_PARTICLE_NUM_PER_BLOCK + particle_id_in_block] = particle_buffer.blockbuckets[source_no[0] * config::G_PARTICLE_NUM_PER_BLOCK + particle_id_in_block];
+	}
+}
+
+template<typename ParticleBuffer>
+__global__ void update_buckets_triangle_shell(uint32_t block_count, const int* __restrict__ source_nos, const ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer) {
+	__shared__ std::size_t source_no[1];//NOLINT(modernize-avoid-c-arrays) Cannot declare shared memory as std::array?
+	const std::size_t blockno = blockIdx.x;
+	if(blockno >= block_count) {
+		return;
+	}
+
+	//Copy size and set source_no
+	if(threadIdx.x == 0) {
+		//Index of block in old layout
+		source_no[0]										= source_nos[blockno];
+		next_particle_buffer.particle_bucket_sizes[blockno] = particle_buffer.particle_bucket_sizes[source_no[0]];
+		next_particle_buffer.face_bucket_sizes[blockno] = particle_buffer.face_bucket_sizes[source_no[0]];
+	}
+	__syncthreads();
+
+	//Copy buckets
+	const auto particle_counts = next_particle_buffer.particle_bucket_sizes[blockno];
+	const auto face_counts = next_particle_buffer.face_bucket_sizes[blockno];
+	for(int id_in_block = static_cast<int>(threadIdx.x); id_in_block < std::max(particle_counts, face_counts); id_in_block += static_cast<int>(blockDim.x)) {
+		if(id_in_block < particle_counts){
+			next_particle_buffer.blockbuckets[blockno * config::G_PARTICLE_NUM_PER_BLOCK + id_in_block] = particle_buffer.blockbuckets[source_no[0] * config::G_PARTICLE_NUM_PER_BLOCK + id_in_block];
+		}
+		if(id_in_block < face_counts){
+			next_particle_buffer.face_blockbuckets[blockno * config::G_PARTICLE_NUM_PER_BLOCK + id_in_block] = particle_buffer.face_blockbuckets[source_no[0] * config::G_PARTICLE_NUM_PER_BLOCK + id_in_block];
+		}
 	}
 }
 
@@ -2370,8 +2810,10 @@ __global__ void update_triangle_shell_inner(TriangleMesh triangle_mesh, Triangle
 	//current_velocity = (mesh_velocity + current_velocity) * 0.5f;
 	
 	//Currently just transfer mass
-	const vec3 momentum = mesh_velocity * triangle_mesh.mass;
+	const vec3 mesh_momentum = mesh_velocity * triangle_mesh.mass;
 	
+	//FIXME:: As momentum is not yet transfered back to mesh we need to reduce it artificially
+	const vec3 new_momentum = current_momentum ;
 	
 	//TODO: Also apply friction somehow (either here or in later step!)
 	
@@ -2382,9 +2824,9 @@ __global__ void update_triangle_shell_inner(TriangleMesh triangle_mesh, Triangle
 	//current_velocity[1] += config::G_GRAVITY * dt.count();
 	
 	//Store data
-	shell_data.val(_1, idx) = momentum[0];
-	shell_data.val(_2, idx) = momentum[1];
-	shell_data.val(_3, idx) = momentum[2];
+	shell_data.val(_1, idx) = new_momentum[0];
+	shell_data.val(_2, idx) = new_momentum[1];
+	shell_data.val(_3, idx) = new_momentum[2];
 }
 /*
 __global__ void update_triangle_shell_subdomain(TriangleMesh triangle_mesh, TriangleShell triangle_shell, TriangleShell next_triangle_shell, uint32_t face_count){
@@ -2505,9 +2947,9 @@ __global__ void update_triangle_shell_subdomain(TriangleShell triangle_shell, Tr
 	next_shell_data_inner.val(_0, idx) = mass_inner;
 	next_shell_data_outer.val(_0, idx) = mass_outer;
 	
-	next_shell_data_inner.val(_1, idx) = 0.0f;
-	next_shell_data_inner.val(_2, idx) = 0.0f;
-	next_shell_data_inner.val(_3, idx) = 0.0f;
+	next_shell_data_inner.val(_1, idx) = momentum_inner[0];
+	next_shell_data_inner.val(_2, idx) = momentum_inner[1];
+	next_shell_data_inner.val(_3, idx) = momentum_inner[2];
 	next_shell_data_outer.val(_4, idx) = total_momentum[0];
 	next_shell_data_outer.val(_5, idx) = total_momentum[1];
 	next_shell_data_outer.val(_6, idx) = total_momentum[2];

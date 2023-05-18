@@ -107,7 +107,9 @@ struct TriangleMesh : Instance<TriangleMeshBuffer<TriangleMeshData>> {
 struct TriangleShellParticleBuffer{
 	std::size_t num_active_blocks;
 	int* particle_bucket_sizes;
+	int* face_bucket_sizes;
 	int* blockbuckets;
+	int* face_blockbuckets;
 
 	TriangleShellParticleBuffer() = default;
 		
@@ -115,11 +117,15 @@ struct TriangleShellParticleBuffer{
 	void reserve_buckets(Allocator allocator, std::size_t num_block_count) {
 		if(blockbuckets) {
 			allocator.deallocate(particle_bucket_sizes, sizeof(int) * num_active_blocks);
+			allocator.deallocate(face_bucket_sizes, sizeof(int) * num_active_blocks);
 			allocator.deallocate(blockbuckets, sizeof(int) * num_active_blocks * config::G_PARTICLE_NUM_PER_BLOCK);
+			allocator.deallocate(face_blockbuckets, sizeof(int) * num_active_blocks * config::G_FACE_NUM_PER_BLOCK);
 		}
 		num_active_blocks	  = num_block_count;
 		particle_bucket_sizes = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks));
+		face_bucket_sizes = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks));
 		blockbuckets		  = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks * config::G_PARTICLE_NUM_PER_BLOCK));
+		face_blockbuckets		  = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks * config::G_FACE_NUM_PER_BLOCK));
 	}
 };
 

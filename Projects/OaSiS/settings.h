@@ -79,6 +79,10 @@ namespace config {
 	constexpr int G_MAX_PARTICLES_IN_CELL  = MAX_PARTICLES_IN_CELL;
 	constexpr int G_BIN_CAPACITY		   = 32;
 	constexpr int G_PARTICLE_NUM_PER_BLOCK = (MAX_PARTICLES_IN_CELL * (1 << (BLOCK_BITS * 3)));
+	
+	constexpr int MAX_FACE_IN_CELL	   = 16;
+	constexpr int G_FACE_NUM_PER_BLOCK = (MAX_FACE_IN_CELL * (1 << (BLOCK_BITS * 3)));
+	constexpr int MAX_GENERATED_PARTICLE_PER_VERTEX = 32;
 
 	// material parameters
 	constexpr float DENSITY		   = 1e3;

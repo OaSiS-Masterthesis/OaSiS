@@ -80,11 +80,13 @@ inline std::function<mn::vec3(mn::Duration, mn::Duration)> parse_animation_curve
 			, params["speed"].GetFloat()
 		);
 	}else if(type == std::string("RotateAroundY")){
-		if(!check_member(params, "magnitude")) {
+		if(!check_member(params, "magnitude") || !check_member(params, "time_start") || !check_member(params, "time_end")) {
 			return std::function<mn::vec3(mn::Duration, mn::Duration)>();
 		}
 		return RotateAroundY(
 			  params["magnitude"].GetFloat()
+			, params["time_start"].GetFloat()
+			, params["time_end"].GetFloat()
 		);
 	}else{
 		fmt::print("Unknown animation curve: {}", type);

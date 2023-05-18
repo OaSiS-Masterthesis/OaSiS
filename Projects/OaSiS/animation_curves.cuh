@@ -50,15 +50,23 @@ struct UpAndDown{
 
 struct RotateAroundY{
 	const float magnitude;
+	const float time_start;
+	const float time_end;
 	
-	RotateAroundY(float magnitude)
-	:magnitude(magnitude)
+	RotateAroundY(float magnitude, float time_start, float time_end)
+	:magnitude(magnitude), time_start(time_start), time_end(time_end)
 	{}
 	
 	mn::vec3 operator()(const mn::Duration& curr_time, const mn::Duration& dt) const noexcept{
-		return mn::vec3{0.0f, magnitude, 0.0f};
+		if(curr_time.count() >= time_start && curr_time.count() <= time_end){
+			return mn::vec3{0.0f, magnitude, 0.0f};
+		}else{
+			return mn::vec3{0.0f, 0.0f, 0.0f};
+		}
 	}
 };
+
+//TODO: Wrapper to combine animations and add starttime/endtime and such.
 
 
 #endif
