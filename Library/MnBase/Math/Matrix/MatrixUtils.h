@@ -146,6 +146,167 @@ __forceinline__ __host__ __device__ void solve_linear_system(const std::array<T,
 	x[0] = (y[0] - x[2] * r[6] - x[1] * r[3]) / (std::abs(r[0]) < 1e-4 ? static_cast<T>(1.0) : r[0]);
 }
 
+template <typename T, std::size_t Dim>
+__forceinline__ __host__ __device__ void solve_linear_system(const std::array<T, Dim * Dim>& a, std::array<T, Dim>& x, const std::array<T, Dim>& b){
+	constexpr size_t num_rotations = (Dim * (Dim - 1))/2;
+	
+	//Calculate QR
+	std::array<T, Dim * Dim> r = a;
+	
+	std::array<T, Dim * Dim> rot_mat[num_rotations];
+	size_t index = 0;
+	for(size_t i = 0; i < Dim - 1; ++i){
+		for(size_t j = 0; j < (Dim - i - 1); ++j){
+			const T row0 = Dim - j - 1;
+			const T row1 = Dim - j;
+			
+			const mn::math::GivensRotation rot(r[Dim * i + row0], r[row1], row0, row1);
+			rot.template mat_rotation<Dim, T>(r);
+			rot.template fill<3, T>(rot_mat[index++]);
+		}
+	}
+	
+	std::array<T, Dim * Dim> q_transpose_tmp = rot_mat[0];
+	std::array<T, Dim * Dim> q_transpose;
+	for(size_t i = 1; i < num_rotations; ++i){
+		matrix_matrix_multiplication(rot_mat[i], q_transpose_tmp, q_transpose);
+		q_transpose_tmp = q_transpose;
+	}
+	
+	//Calculate y
+	std::array<T, Dim> y;
+	matrix_vector_multiplication(q_transpose, b, y);
+	
+	//Back substitution
+	for(size_t i = Dim - 1; (i + 1) >= 1; ++i){
+		T summed_y = y[i];
+		for(size_t j = Dim - 1; j > i; ++j){
+			summed_y -= x[j] * r[j * Dim + i];
+		}
+		x[i] = summed_y / (std::abs(r[i * Dim + i]) < 1e-4 ? static_cast<T>(1.0) : r[i * Dim + i]);
+	}
+}
+
+//Not tested
+/*
+//Matrix a should be definite for stability
+template <typename T, std::size_t Dim>
+__forceinline__ __host__ __device__ void cholesky_decomposition_definite(const std::array<T, Dim * Dim>& a, std::array<T, Dim * Dim>& r, std::array<T, Dim * Dim>& r_t){
+	//Calculate decomposition
+	std::array<T, Dim> d;
+	std::array<T, Dim * Dim> l;
+	for(size_t i = 0; i < Dim - 1; ++i){
+		d[i] = a[Dim * i + i];
+		if(i > 0){
+			for(size_t k = 0; k < i - 1; ++k){
+				d[i] += l[Dim * i + k] * l[Dim * i + k] * d[k];
+			}
+		}
+		
+		for(size_t j = i + 1; j < Dim - 1; ++j){
+			l[Dim * i + j] = a[Dim * i + j] / d[i];
+			if(i > 0){
+				for(size_t k = 0; k < i - 1; ++k){
+					l[Dim * i + j] += l[Dim * j + k] * l[Dim * i + k] * d[k] / d[i];
+				}
+			}
+		}
+	}
+	
+	//Fill matrices
+	for(size_t i = 0; i < Dim - 1; ++i){
+		for(size_t j = 0; j < Dim - 1; ++j){
+			if(i < j){
+				r[Dim * i + j] = l[Dim * i + j];
+				r_t[Dim * i + j] = 0.0f;
+			}else if(i < j){
+				r[Dim * i + j] = 0.0f;
+				r_t[Dim * i + j] = l[Dim * j + i];
+			}else{//i == j
+				r[Dim * i + j] = d[i];
+				r_t[Dim * i + j] = d[i];
+			}
+		}
+	}
+}
+*/
+
+//Not needed, not finished, not tested
+/*
+template <typename T, std::size_t Dim>
+__forceinline__ __host__ __device__ void minimize(const std::array<T, Dim * Dim>& a, std::array<T, Dim>& x, const std::array<T, Dim>& b, const T t, const T epsilon){
+	//Calculate delta x
+	solve_linear_system(a, x, b);
+	
+	x += t * delta_x;
+}
+
+//https://web.stanford.edu/~boyd/cvxbook/bv_cvxbook.pdf
+//NOTE: Remember to set x to a feasible staring point
+//NOTE: This assumes that g and gradient of f are linear combinations Ax + b
+template <typename T, std::size_t Dim, std::size_t NumberOfInequalityConstraints>
+__forceinline__ __host__ __device__ void constraint_convex_optimization(const std::array<T, Dim * Dim>& a, const std::array<T, Dim>& b, const std::array<T, Dim * Dim>& gradient_f_mat, const std::array<T, Dim>& gradient_f_const, const std::array<T, Dim * Dim>& g_mat[NumberOfInequalityConstraints], const std::array<T, Dim>& g_const[NumberOfInequalityConstraints], const std::array<T, Dim>& x_0, std::array<T, Dim>& x, const T t_0, const T mu, const T epsilon){
+	//Init x and t
+	x = x_0;
+	T t = t_0;
+	
+	//Calculate second gradients
+	std::array<T, Dim>& second_gradient_f_const;
+	std::array<T, Dim>& gradient_g_const[NumberOfInequalityConstraints];
+	for(size_t i = 0; i < Dim; ++i){
+		second_gradient_f_const[i] = gradient_f_const[i * Dim + i];
+		for(size_t j = 0; j < NumberOfInequalityConstraints; ++j){
+			gradient_g_const[j][i] = g_mat[j][i * Dim + i];
+		}
+	}
+	
+	//Break if condition is reached
+	while((static_cast<T>(NumberOfInequalityConstraints) / t) < epsilon){
+		//Centering
+		
+		//H = t * second_gradient_f_const + sum(1/g(x)^2 * gradient_g * gradient_g^T) + sum(1/-g(x) * gradient_g^2)
+		//g = t * gradient_f + sum(1/-g * gradient_g)
+		std::array<T, Dim> h;
+		std::array<T, Dim> g;
+		for(size_t i = 0; i < Dim; ++i){
+			H[i] = t * second_gradient_f_const[i];
+			g[i] = t * gradient_f_const * x;
+			for(size_t k = 0; k < NumberOfInequalityConstraints; ++k){
+				const T g_k = (g_mat[k] * x);
+				//FIXME: Gradient^T correct?
+				H[i] += static_cast<T>(1.0) / (g_k * g_k) * (gradient_g_const[i] * gradient_g_const[i]);
+				g[i] -= static_cast<T>(1.0) / g_k * gradient_g_const[i];
+			}
+		}
+		
+		// H A^T  x  = -g
+		// A 0    v     0
+		std::array<T, (2 * Dim) * (Dim + 1)> min_a;
+		std::array<T, 2 * Dim> min_b;
+		std::array<T, 2 * Dim> min_x;
+		for(size_t i = 0; i < Dim; ++i){
+			min_a[i] = H[i];//Store H
+			min_b[i] = -g[i];//Store -g
+			for(size_t j = 0; j < Dim; ++j){
+				min_a[i * (2 * Dim) + Dim + j] = a[i * Dim + j];//Store A
+				min_a[(1 + i) * (2 * Dim) + j] = a[j * Dim + i];//Store A^T
+			}
+		}
+		
+		//Minimize
+		minimize(min_a, min_x, min_b);
+		
+		//Update x
+		for(size_t i = 0; i < Dim; ++i){
+			x[i] += min_x[i];
+		}
+		
+		//Update t
+		t *= mu;
+	}
+}
+*/
+
 //Gram-Schmidt orthogonalization
 template <typename T>
 constexpr void matrix_orthogonalize(const std::array<T, 9>& x, std::array<T, 9>& orth)
@@ -229,6 +390,18 @@ constexpr void matrix_matrix_multiplication_3d(const std::array<T, 9>& a, const 
 	c[8] = a[2] * b[6] + a[5] * b[7] + a[8] * b[8];
 }
 
+template<typename T, size_t Dim>
+constexpr void matrix_matrix_multiplication(const std::array<T, Dim * Dim>& a, const std::array<T, Dim * Dim>& b, std::array<T, Dim * Dim>& c) {
+	for(size_t i = 0; i < Dim; ++i){
+		for(size_t j = 0; j < Dim; ++j){
+			c[i * Dim + j] = 0;
+			for(size_t k = 0; k < Dim; ++k){
+				c[i * Dim + j] += a[k * Dim + i] * b[j * Dim + k];
+			}
+		}
+	}
+}
+
 template<typename T>
 constexpr void matrix_matrix_multiplication_2d(const std::array<T, 4>& a, const std::array<T, 4>& b, std::array<T, 4>& c) {
 	c[0] = a[0] * b[0] + a[2] * b[1];
@@ -284,6 +457,16 @@ constexpr void matrix_vector_multiplication_3d(const std::array<T, 9>& x, const 
 	result[0] = x[0] * v[0] + x[3] * v[1] + x[6] * v[2];
 	result[1] = x[1] * v[0] + x[4] * v[1] + x[7] * v[2];
 	result[2] = x[2] * v[0] + x[5] * v[1] + x[8] * v[2];
+}
+
+template<typename T, size_t Dim>
+constexpr void matrix_vector_multiplication(const std::array<T, Dim * Dim>& x, const std::array<T, Dim>& v, std::array<T, Dim>& result) {
+	for(size_t i = 0; i < Dim; ++i){
+		result[i] = 0;
+		for(size_t j = 0; j < Dim; ++j){
+			result[i] += x[j * Dim + i] * v[j];
+		}
+	}
 }
 
 template<typename T>
