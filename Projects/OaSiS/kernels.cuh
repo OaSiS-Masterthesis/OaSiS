@@ -190,12 +190,12 @@ __global__ void store_triangle_shell_faces_in_bucket(uint32_t face_count, const 
 	//Create bounding box
 	ivec3 min_blockid;
 	ivec3 max_blockid;
-	min_blockid[0] = std::min(blockids[0][0], std::min(blockids[1][0], blockids[1][0]));
-	min_blockid[1] = std::min(blockids[0][1], std::min(blockids[1][1], blockids[1][1]));
-	min_blockid[2] = std::min(blockids[0][2], std::min(blockids[1][2], blockids[1][2]));
-	max_blockid[0] = std::max(blockids[0][0], std::max(blockids[1][0], blockids[1][0]));
-	max_blockid[1] = std::max(blockids[0][1], std::max(blockids[1][1], blockids[1][1]));
-	max_blockid[2] = std::max(blockids[0][2], std::max(blockids[1][2], blockids[1][2]));
+	min_blockid[0] = std::min(blockids[0][0], std::min(blockids[1][0], blockids[2][0]));
+	min_blockid[1] = std::min(blockids[0][1], std::min(blockids[1][1], blockids[2][1]));
+	min_blockid[2] = std::min(blockids[0][2], std::min(blockids[1][2], blockids[2][2]));
+	max_blockid[0] = std::max(blockids[0][0], std::max(blockids[1][0], blockids[2][0]));
+	max_blockid[1] = std::max(blockids[0][1], std::max(blockids[1][1], blockids[2][1]));
+	max_blockid[2] = std::max(blockids[0][2], std::max(blockids[1][2], blockids[2][2]));
 	
 	//Perform intersection test for ech cell with the triangle
 	
@@ -256,36 +256,38 @@ __global__ void store_triangle_shell_faces_in_bucket(uint32_t face_count, const 
 		proj_triangle_max[normal_index] = std::max(projected[0], std::max(projected[1], projected[2]));
 	}
 	
-	//Performe intersection test
+	//Perform intersection test
 	for(int i = min_blockid[0]; i <= max_blockid[0]; ++i){
 		for(int j = min_blockid[1]; j <= max_blockid[1]; ++j){
 			for(int k = min_blockid[2]; k <= max_blockid[2]; ++k){
 				const ivec3 blockid {i, j, k};
+				const vec3 coord_center = ((blockid * static_cast<int>(config::G_BLOCKSIZE)).cast<float>() + 3.5f) * config::G_DX;//0->3.5 1->7.5 ...; 1.5 is lower bound of block 0, 5.5 is lower bound of block 1, ...
 
 				//Fetch block number
 				auto blockno = partition.query(blockid);
 				
-				//Skip invalid blocks
+				//Skip invalid blocks, they also don't contain particle that could collide and their neighbours also do not.
 				if(blockno == -1) {
 					continue;
 				}
 				
-				bool intersect = false;
+				bool intersect = true;
 				for(size_t normal_index = 0; normal_index < 13; ++normal_index){
 					const vec3 current_normal = intersection_normals[normal_index];
 					
-					const float projected_center = ((blockid.cast<float>() + 0.5f) * config::G_DX).dot(current_normal);
-					const float projected_length = 0.5f * config::G_DX * (std::abs(current_normal[0]) + std::abs(current_normal[1]) + std::abs(current_normal[2]));
+					const float projected_center = coord_center.dot(current_normal);
+					const float projected_radius = 0.5f * static_cast<float>(config::G_BLOCKSIZE) * config::G_DX * (std::abs(current_normal[0]) + std::abs(current_normal[1]) + std::abs(current_normal[2]));
 					
-					const float proj_box_min = projected_center - projected_length;
-					const float proj_box_max = projected_center + projected_length;
+					const float proj_box_min = projected_center - projected_radius;
+					const float proj_box_max = projected_center + projected_radius;
 					
-					if(!(proj_box_max <= proj_triangle_min[normal_index] || proj_box_min >= proj_triangle_max[normal_index])){
-						intersect = true;
+					//If they do not overlap the axis is separating and we do not intersect
+					if(proj_box_max <= proj_triangle_min[normal_index] || proj_box_min >= proj_triangle_max[normal_index]){
+						intersect = false;
 						break;
 					}
 				}
-				
+
 				if(intersect){
 					//Increase face count of cell and get id of face in cell
 					auto face_id_in_block = atomicAdd(triangle_shell_particle_buffer.face_bucket_sizes + blockno, 1);
@@ -297,9 +299,9 @@ __global__ void store_triangle_shell_faces_in_bucket(uint32_t face_count, const 
 						printf("No space left in block: block(%d)\n", blockno);
 						continue;
 					}
-
+					
 					//Insert face id in cell bucket
-					triangle_shell_particle_buffer.face_blockbuckets[blockno * config::G_PARTICLE_NUM_PER_BLOCK + face_id_in_block] = face_id;
+					triangle_shell_particle_buffer.face_blockbuckets[blockno * config::G_FACE_NUM_PER_BLOCK + face_id_in_block] = (int) face_id;
 				}
 			}
 		}
@@ -1409,16 +1411,14 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 		//Update particle position
 		const vec3 new_pos = pos + vel * dt.count();
 		
-		vec3 direction;
-		direction = vel;
-		//Normalize
-		direction = direction / sqrt(direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]);
+		const vec3 difference_pos = new_pos - pos;
+		const vec3 direction = difference_pos / sqrt(difference_pos[0] * difference_pos[0] + difference_pos[1] * difference_pos[1] + difference_pos[2] * difference_pos[2]);
 		
 		const ivec3 next_block_id = (get_block_id(new_pos.data_arr()) - 2) / static_cast<int>(config::G_BLOCKSIZE);
 		const int next_block_no = partition.query(next_block_id);
 		
 		//TODO: How calculate this
-		const float cohesion_distance = 0.01f;
+		const float cohesion_distance = 0.02f;
 		
 		//Find earliest collision in this block and the next block
 		//NOTE: We do not ensure, that it is the earliest point y cohesion_distance, but it is the smallest miniml_distance to a triangle
@@ -1442,6 +1442,7 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 		int min_index = -1;
 		float min_t = std::numeric_limits<float>::max();
 		
+		//TODO: Don't check common faces twice
 		const int face_count_in_current_block = triangle_shell_particle_buffer.face_bucket_sizes[advection_source_blockno];
 		const int face_count_in_next_block = triangle_shell_particle_buffer.face_bucket_sizes[next_block_no];
 		for(int i = 0; i < std::max(face_count_in_current_block, face_count_in_next_block); ++i){
@@ -1456,7 +1457,7 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 				}else{
 					continue;
 				}
-
+				
 				vec<uint32_t, 3> vertex_indices;
 				vertex_indices[0] = face_data.val(_0, face_index);
 				vertex_indices[1] = face_data.val(_1, face_index);
@@ -1484,11 +1485,11 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 				//Not tested
 				/*
 				//Dot products
-				const float d01 = pos.dot(new_pos - pos);
-				const float d11 = (new_pos - pos).dot(new_pos - pos);
-				const float d12 = (new_pos - pos).dot(positions[0]);
-				const float d13 = (new_pos - pos).dot(positions[1]);
-				const float d14 = (new_pos - pos).dot(positions[2]);
+				const float d01 = pos.dot(difference_pos);
+				const float d11 = difference_pos.dot(difference_pos);
+				const float d12 = difference_pos.dot(positions[0]);
+				const float d13 = difference_pos.dot(positions[1]);
+				const float d14 = difference_pos.dot(positions[2]);
 				const float d22 = positions[0].dot(positions[0]);
 				const float d23 = positions[0].dot(positions[1]);
 				const float d24 = positions[0].dot(positions[2]);
@@ -1562,8 +1563,9 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 				}
 				*/
 				
-				//If parallel to each other, solve 2d problem, choosing solution with lowest t
-				if(face_normal.dot(direction) == 1){
+				//If (nearly) parallel to each other, solve 2d problem, choosing solution with lowest t
+				//TODO: Correct threshold
+				if(std::abs(face_normal.dot(direction)) < 0.0001f){
 					//TODO: Is this 2d version correct?
 					//Project points
 					const vec3 e0 = direction;
@@ -1605,17 +1607,21 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 						const float denom = ((point0[0] - point1[0]) * (point2[1] - point3[1]) - (point0[1] - point1[1]) * (point2[0] - point3[0]));
 						
 						//If lines are parallel we have no intersetion.
+						//NOTE: We have at least one intersection
 						if(denom != 0.0f){
 							const float t_2d = ((point0[0] - point2[0]) * (point2[1] - point3[1]) - (point0[1] - point2[1]) * (point2[0] - point3[0])) / denom;
 							
 							const vec<float, 2> current_intersection = point0 + t_2d * (point0 - point1);
 						
+							//Calculate nearest points on the triangle edges
 							const float nearest0_t = (projected_positions[1] - projected_positions[0]).dot(current_intersection - projected_positions[0]) / (projected_positions[1] - projected_positions[0]).dot(projected_positions[1] - projected_positions[0]);
 							const float nearest1_t = (projected_positions[2] - projected_positions[1]).dot(current_intersection - projected_positions[1]) / (projected_positions[2] - projected_positions[1]).dot(projected_positions[2] - projected_positions[1]);
 							const float nearest2_t = (projected_positions[0] - projected_positions[2]).dot(current_intersection - projected_positions[2]) / (projected_positions[0] - projected_positions[2]).dot(projected_positions[0] - projected_positions[2]);
 							const vec<float, 2> nearest0 = projected_positions[0] + nearest0_t * (projected_positions[1] - projected_positions[0]);
 							const vec<float, 2> nearest1 = projected_positions[1] + nearest1_t * (projected_positions[2] - projected_positions[1]);
 							const vec<float, 2> nearest2 = projected_positions[2] + nearest2_t * (projected_positions[0] - projected_positions[2]);
+							
+							//Get nearest point on an edge and calculate shortest distance
 							const vec<float, 2> diff0 = nearest0 - current_intersection;
 							const vec<float, 2> diff1 = nearest1 - current_intersection;
 							const vec<float, 2> diff2 = nearest2 - current_intersection;
@@ -1626,6 +1632,7 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 							
 							const float distance_2d = std::min(distance0, std::min(distance1, distance2));
 							
+							//Keep nearest intersection or interestion with lowest t
 							if(distance_2d < min_distance_2d){
 								min_distance_2d = distance_2d;
 								min_t_2d = t_2d;
@@ -1635,15 +1642,16 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 						}
 					}
 					
+					//Clamp to range
 					x[0] = std::max(0.0f, std::min(min_t_2d, 1.0f));
 					
-					const vec3 nearest_intersection = pos + min_t_2d * (pos - new_pos);
+					const vec3 nearest_intersection = pos + min_t_2d * difference_pos;
 					
 					//Calculate barycentric coords
 					const vec9 A {
-							  positions[0][0], positions[1][0], positions[2][0]
-							, positions[0][1], positions[1][1], positions[2][1]
-							, positions[0][2], positions[1][2], positions[2][2]
+							  positions[0][0], positions[0][1], positions[0][2]
+							, positions[1][0], positions[1][1], positions[1][2]
+							, positions[2][0], positions[2][1], positions[2][2]
 					};
 					const vec3 b = nearest_intersection;
 					vec3 x_tmp;
@@ -1652,7 +1660,7 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 					vec3 barycentric_intersection_point;
 					barycentric_intersection_point[0] = x_tmp[0];
 					barycentric_intersection_point[1] = x_tmp[1];
-					barycentric_intersection_point[2] = 1.0f - x_tmp[0] -x_tmp[1];
+					barycentric_intersection_point[2] = 1.0f - x_tmp[0] - x_tmp[1];
 					
 					//Project on triangle
 						
@@ -1661,21 +1669,22 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 					barycentric_intersection_point[1] = std::max(barycentric_intersection_point[1], 0.0f);
 					barycentric_intersection_point[2] = std::max(barycentric_intersection_point[2], 0.0f);
 					
-					const float length = std::sqrt(barycentric_intersection_point[0] * barycentric_intersection_point[0] + barycentric_intersection_point[1] * barycentric_intersection_point[1] + barycentric_intersection_point[2] * barycentric_intersection_point[2]);
+					const float length = barycentric_intersection_point[0] + barycentric_intersection_point[1] + barycentric_intersection_point[2];
 					
 					x[1] = barycentric_intersection_point[0] / length;
 					x[2] = barycentric_intersection_point[1] / length;
 					x[3] = barycentric_intersection_point[2] / length;
 				}else{
-					//Calculate intersection point. Nearest point to triangle is nearest point to line
+
+					//Calculate intersection point. Nearest point on triangle is nearest point to line
 					/*
 					 * We solve
 					 * mat3(p0-p2, p1-p2, -dir)*(a, b, t) = pos - p2;
 					 */
 					const vec9 A {
-							  positions[0][0] - positions[2][0], positions[1][0] - positions[2][0], -direction[0]
-							, positions[0][1] - positions[2][1], positions[1][1] - positions[2][1], -direction[1]
-							, positions[0][2] - positions[2][2], positions[1][2] - positions[2][2], -direction[2]
+							  positions[0][0] - positions[2][0], positions[0][1] - positions[2][1], positions[0][2] - positions[2][2]
+							, positions[1][0] - positions[2][0], positions[1][1] - positions[2][1], positions[1][2] - positions[2][2]
+							, -difference_pos[0], -difference_pos[1], -difference_pos[2]
 					};
 					const vec3 b = pos - positions[2];
 					vec3 x_tmp;
@@ -1684,16 +1693,21 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 					vec3 barycentric_intersection_point;
 					barycentric_intersection_point[0] = x_tmp[0];
 					barycentric_intersection_point[1] = x_tmp[1];
-					barycentric_intersection_point[2] = 1.0f - x_tmp[0] -x_tmp[1];
+					barycentric_intersection_point[2] = 1.0f - x_tmp[0] - x_tmp[1];
 					
 					//Project on triangle
-						
+					//FIXME:
+					x[0] =  x_tmp[2];
+					x[1] =  barycentric_intersection_point[0];
+					x[2] =  barycentric_intersection_point[1];
+					x[3] =  barycentric_intersection_point[2];
+					/*
 					//Clamp to 0.0 and normalize
 					barycentric_intersection_point[0] = std::max(barycentric_intersection_point[0], 0.0f);
 					barycentric_intersection_point[1] = std::max(barycentric_intersection_point[1], 0.0f);
 					barycentric_intersection_point[2] = std::max(barycentric_intersection_point[2], 0.0f);
 					
-					const float length = std::sqrt(barycentric_intersection_point[0] * barycentric_intersection_point[0] + barycentric_intersection_point[1] * barycentric_intersection_point[1] + barycentric_intersection_point[2] * barycentric_intersection_point[2]);
+					const float length = barycentric_intersection_point[0] + barycentric_intersection_point[1] + barycentric_intersection_point[2];
 					
 					x[1] = barycentric_intersection_point[0] / length;
 					x[2] = barycentric_intersection_point[1] / length;
@@ -1702,20 +1716,22 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 					const vec3 nearest_point_on_triangle = x[1] * positions[0] + x[2] * positions[1] + x[3] * positions[2];
 				
 					//Recalculate nearest point on line (this can be another point than the intersection point)
-					x[0] = (new_pos - pos).dot(nearest_point_on_triangle - pos) / (new_pos - pos).dot(new_pos - pos);
+					x[0] = difference_pos.dot(nearest_point_on_triangle - pos) / difference_pos.dot(difference_pos);
 					
 					//Clamp to range
 					x[0] = std::max(0.0f, std::min(x[0], 1.0f));
+					*/
 				}
-				
+
+				//FIXME: Somehow we do not get distance 0.0f for exact intersections
 				const float t = x[0];
 				const vec3 nearest_point_on_triangle = x[1] * positions[0] + x[2] * positions[1] + x[3] * positions[2];
-				const vec3 nearest_point_on_line = pos + t * (new_pos - pos);
+				const vec3 nearest_point_on_line = pos + t * difference_pos;
 				const vec3 difference = nearest_point_on_triangle - nearest_point_on_line;
 				
 				const float distance = std::sqrt(difference[0] * difference[0] + difference[1] * difference[1] + difference[2] * difference[2]);
-				
-				//Keep min distance and index
+					
+				//Keep smallest t and index
 				if(t < min_t && distance < cohesion_distance){
 					min_index = face_index;
 					min_t = t;
@@ -1723,7 +1739,7 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 			}	
 		}
 		
-		//If we have faces, test if we are near enogh
+		//If we have faces we collide
 		if(min_index != -1){
 			//TODO: Merge into shell
 			
@@ -2449,7 +2465,7 @@ __global__ void update_buckets_triangle_shell(uint32_t block_count, const int* _
 			next_particle_buffer.blockbuckets[blockno * config::G_PARTICLE_NUM_PER_BLOCK + id_in_block] = particle_buffer.blockbuckets[source_no[0] * config::G_PARTICLE_NUM_PER_BLOCK + id_in_block];
 		}
 		if(id_in_block < face_counts){
-			next_particle_buffer.face_blockbuckets[blockno * config::G_PARTICLE_NUM_PER_BLOCK + id_in_block] = particle_buffer.face_blockbuckets[source_no[0] * config::G_PARTICLE_NUM_PER_BLOCK + id_in_block];
+			next_particle_buffer.face_blockbuckets[blockno * config::G_FACE_NUM_PER_BLOCK + id_in_block] = particle_buffer.face_blockbuckets[source_no[0] * config::G_FACE_NUM_PER_BLOCK + id_in_block];
 		}
 	}
 }
