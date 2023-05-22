@@ -1418,7 +1418,8 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 		const int next_block_no = partition.query(next_block_id);
 		
 		//TODO: How calculate this
-		const float cohesion_distance = 0.02f;
+		//NOTE:This may be small but not too small due to numerical errors
+		const float cohesion_distance = 0.0001f;
 		
 		//Find earliest collision in this block and the next block
 		//NOTE: We do not ensure, that it is the earliest point y cohesion_distance, but it is the smallest miniml_distance to a triangle
@@ -1457,7 +1458,7 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 				}else{
 					continue;
 				}
-				
+
 				vec<uint32_t, 3> vertex_indices;
 				vertex_indices[0] = face_data.val(_0, face_index);
 				vertex_indices[1] = face_data.val(_1, face_index);
@@ -1565,72 +1566,143 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 				
 				//If (nearly) parallel to each other, solve 2d problem, choosing solution with lowest t
 				//TODO: Correct threshold
+				//TODO: Maybe more generic solution for 2d?
+				//TODO: Solve 2d in barycentric space?!
+				//TODO: Use more accurate algorithm?
 				if(std::abs(face_normal.dot(direction)) < 0.0001f){
-					//TODO: Is this 2d version correct?
-					//Project points
-					const vec3 e0 = direction;
-					vec3 e1;
-					vec_cross_vec_3d(e1.data_arr(), direction.data_arr(), face_normal.data_arr());
-					
-					const vec<float, 2> projected_pos {
-						  e0.dot(pos)
-						, e1.dot(pos)
-					};
-					const vec<float, 2> projected_new_pos {
-						  e0.dot(new_pos)
-						, e1.dot(new_pos)
-					};
-					const vec<float, 2> projected_positions[3] {
-						  vec<float, 2>(
-						  	   e0.dot(positions[0])
-						 	 , e1.dot(positions[0])
-						  )
-						, vec<float, 2>(
-						  	   e0.dot(positions[1])
-						 	 , e1.dot(positions[1])
-						  )
-						, vec<float, 2>(
-						       e0.dot(positions[2])
-						 	 , e1.dot(positions[2])
-						  )
+					//Project points to barycentric space
+					const vec9 barycentric_projection_matrix {
+							  positions[0][0] - positions[2][0], positions[0][1] - positions[2][1], positions[0][2] - positions[2][2]
+							, positions[1][0] - positions[2][0], positions[1][1] - positions[2][1], positions[1][2] - positions[2][2]
+							, -face_normal[0], -face_normal[1], -face_normal[2]
 					};
 					
-					//Calculate intersection points with all triangle halfspaces and get the nearest point on the triangle
-					float min_t_2d = std::numeric_limits<float>::max();
-					float min_distance_2d = std::numeric_limits<float>::max();
-					for(size_t i = 0; i < 3; ++i){
-						const vec<float, 2> point0 = projected_pos;
-						const vec<float, 2> point1 = projected_new_pos;
-						const vec<float, 2> point2 = projected_positions[i];
-						const vec<float, 2> point3 = projected_positions[(i + 1) % 3];
+					vec3 barycentric_tmp;
+					solve_linear_system(barycentric_projection_matrix.data_arr(), barycentric_tmp.data_arr(),  (pos - positions[2]).data_arr());
+
+					vec3 barycentric_pos;
+					barycentric_pos[0] = barycentric_tmp[0];
+					barycentric_pos[1] = barycentric_tmp[1];
+					barycentric_pos[2] = 1.0f - barycentric_tmp[0] - barycentric_tmp[1];
+					
+					solve_linear_system(barycentric_projection_matrix.data_arr(), barycentric_tmp.data_arr(),  (new_pos - positions[2]).data_arr());
+					
+					vec3 barycentric_new_pos;
+					barycentric_new_pos[0] = barycentric_tmp[0];
+					barycentric_new_pos[1] = barycentric_tmp[1];
+					barycentric_new_pos[2] = 1.0f - barycentric_tmp[0] - barycentric_tmp[1];
+					
+					if(barycentric_pos[0] > 0.0f && barycentric_pos[1] > 0.0f){
+						x[0] = 0.0f;
+						x[1] = barycentric_pos[0];
+						x[2] = barycentric_pos[1];
+						x[3] = barycentric_pos[2];
+					}else if(barycentric_new_pos[0] > 0.0f && barycentric_new_pos[1] > 0.0f){
+						x[0] = 1.0f;
+						x[1] = barycentric_new_pos[0];
+						x[2] = barycentric_new_pos[1];
+						x[3] = barycentric_new_pos[2];
+					}else{
+						/*
+						const vec3 projected_pos = barycentric_pos[0] * positions[0] + barycentric_pos[1] * positions[1] + barycentric_pos[2] * positions[2];
+						const vec3 projected_new_pos = barycentric_new_pos[0] * positions[0] + barycentric_new_pos[1] * positions[1] + barycentric_new_pos[2] * positions[2];
+						*/
+						//Project points
+						const vec3 e0 = direction;
+						vec3 e1;
+						vec_cross_vec_3d(e1.data_arr(), direction.data_arr(), face_normal.data_arr());
 						
-						const float denom = ((point0[0] - point1[0]) * (point2[1] - point3[1]) - (point0[1] - point1[1]) * (point2[0] - point3[0]));
+						const vec<float, 2> projected_pos {
+							  e0.dot(pos)
+							, e1.dot(pos)
+						};
+						const vec<float, 2> projected_new_pos {
+							  e0.dot(new_pos)
+							, e1.dot(new_pos)
+						};
+						const vec<float, 2> projected_positions[3] {
+							  vec<float, 2>(
+								   e0.dot(positions[0])
+								 , e1.dot(positions[0])
+							  )
+							, vec<float, 2>(
+								   e0.dot(positions[1])
+								 , e1.dot(positions[1])
+							  )
+							, vec<float, 2>(
+								   e0.dot(positions[2])
+								 , e1.dot(positions[2])
+							  )
+						};
 						
-						//If lines are parallel we have no intersetion.
-						//NOTE: We have at least one intersection
-						if(denom != 0.0f){
-							const float t_2d = ((point0[0] - point2[0]) * (point2[1] - point3[1]) - (point0[1] - point2[1]) * (point2[0] - point3[0])) / denom;
+						//Calculate intersection points with all triangle halfspaces and get the nearest point on the triangle
+						float min_t_2d = std::numeric_limits<float>::max();
+						float min_distance_2d = std::numeric_limits<float>::max();
+						for(size_t i = 0; i < 3; ++i){
+							const vec<float, 2> point0 = projected_pos;
+							const vec<float, 2> point1 = projected_new_pos;
+							const vec<float, 2> point2 = projected_positions[i];
+							const vec<float, 2> point3 = projected_positions[(i + 1) % 3];
 							
-							const vec<float, 2> current_intersection = point0 + t_2d * (point0 - point1);
+							//Based on https://en.wikipedia.org/wiki/Line%E2%80%93line_intersection
+							vec<float, 2> normal_line;
+							normal_line[0] = (point1 - point0)[1];
+							normal_line[1] = -(point1 - point0)[0];
+							normal_line = normal_line / sqrt(normal_line[0] * normal_line[0] + normal_line[1] * normal_line[1]);
+							
+							vec<float, 2> normal_triangle;
+							normal_triangle[0] = (point3 - point2)[1];
+							normal_triangle[1] = -(point3 - point2)[0];
+							normal_triangle = normal_triangle / sqrt(normal_triangle[0] * normal_triangle[0] + normal_triangle[1] * normal_triangle[1]);
+							
+							//sum(nn^T) * x = sum(nn^tp);
+							//=> nearest point between two lines == intersection or exactly between the lines
+							const vec<float, 4> A {
+									  normal_line[0] * normal_line[0] + normal_triangle[0] * normal_triangle[0], normal_line[0] * normal_line[1] + normal_triangle[0] * normal_triangle[1]
+									, normal_line[1] * normal_line[0] + normal_triangle[1] * normal_triangle[0], normal_line[1] * normal_line[1] + normal_triangle[1] * normal_triangle[1]
+							};
+							const vec<float, 2> b {
+								  normal_line[0] * normal_line.dot(point0) + normal_triangle[0] * normal_triangle.dot(point2)
+								, normal_line[1] * normal_line.dot(point0) + normal_triangle[1] * normal_triangle.dot(point2)
+							};
+							
+							vec<float, 2> x_tmp;
+							const float divisor0 = (A[0] == 0.0f ? 1.0f: A[0]);
+							const float divisor1 = (((A[3] - A[1] * A[1] / divisor0)) == 0.0f ? 1.0f: (A[3] - A[1] * A[1] / divisor0));
+							x_tmp[1] = b[1] / divisor1;
+							x_tmp[0] = (b[0] - A[1] * x_tmp[1]) / divisor0;
+							
+							float t_2d = (point1 - point0).dot(x_tmp - point0) / (point1 - point0).dot(point1 - point0);
+							
+							//Clamp to range
+							t_2d = std::max(0.0f, std::min(t_2d, 1.0f));
 						
-							//Calculate nearest points on the triangle edges
-							const float nearest0_t = (projected_positions[1] - projected_positions[0]).dot(current_intersection - projected_positions[0]) / (projected_positions[1] - projected_positions[0]).dot(projected_positions[1] - projected_positions[0]);
-							const float nearest1_t = (projected_positions[2] - projected_positions[1]).dot(current_intersection - projected_positions[1]) / (projected_positions[2] - projected_positions[1]).dot(projected_positions[2] - projected_positions[1]);
-							const float nearest2_t = (projected_positions[0] - projected_positions[2]).dot(current_intersection - projected_positions[2]) / (projected_positions[0] - projected_positions[2]).dot(projected_positions[0] - projected_positions[2]);
-							const vec<float, 2> nearest0 = projected_positions[0] + nearest0_t * (projected_positions[1] - projected_positions[0]);
-							const vec<float, 2> nearest1 = projected_positions[1] + nearest1_t * (projected_positions[2] - projected_positions[1]);
-							const vec<float, 2> nearest2 = projected_positions[2] + nearest2_t * (projected_positions[0] - projected_positions[2]);
+							const vec3 nearest_point_on_line = pos + t_2d * difference_pos;
 							
-							//Get nearest point on an edge and calculate shortest distance
-							const vec<float, 2> diff0 = nearest0 - current_intersection;
-							const vec<float, 2> diff1 = nearest1 - current_intersection;
-							const vec<float, 2> diff2 = nearest2 - current_intersection;
+							//Calculate barycentric coords by projecting on triangle/calculating intersection with line from point in normal direction
+							solve_linear_system(barycentric_projection_matrix.data_arr(), barycentric_tmp.data_arr(), (nearest_point_on_line - positions[2]).data_arr());
+
+							vec3 barycentric_nearest_point_on_line;
+							barycentric_nearest_point_on_line[0] = barycentric_tmp[0];
+							barycentric_nearest_point_on_line[1] = barycentric_tmp[1];
+							barycentric_nearest_point_on_line[2] = 1.0f - barycentric_tmp[0] - barycentric_tmp[1];
 							
-							const float distance0 = diff0[0] * diff0[0] + diff0[1] * diff0[1];
-							const float distance1 = diff1[0] * diff1[0] + diff1[1] * diff1[1];
-							const float distance2 = diff2[0] * diff2[0] + diff2[1] * diff2[1];
+							//Project on triangle
+								
+							//Clamp to 0.0 and normalize
+							barycentric_nearest_point_on_line[0] = std::max(barycentric_nearest_point_on_line[0], 0.0f);
+							barycentric_nearest_point_on_line[1] = std::max(barycentric_nearest_point_on_line[1], 0.0f);
+							barycentric_nearest_point_on_line[2] = std::max(barycentric_nearest_point_on_line[2], 0.0f);
 							
-							const float distance_2d = std::min(distance0, std::min(distance1, distance2));
+							const float length = barycentric_nearest_point_on_line[0] + barycentric_nearest_point_on_line[1] + barycentric_nearest_point_on_line[2];
+							
+							barycentric_nearest_point_on_line[0] = barycentric_nearest_point_on_line[0] / length;
+							barycentric_nearest_point_on_line[1] = barycentric_nearest_point_on_line[1] / length;
+							barycentric_nearest_point_on_line[2] = barycentric_nearest_point_on_line[2] / length;
+							
+							const vec3 nearest_point_on_triangle = x[1] * positions[0] + x[2] * positions[1] + x[3] * positions[2];
+							const vec3 diff = nearest_point_on_triangle - nearest_point_on_line;
+							const float distance_2d = diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2];
 							
 							//Keep nearest intersection or interestion with lowest t
 							if(distance_2d < min_distance_2d){
@@ -1640,40 +1712,34 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 								min_t_2d = t_2d;
 							}
 						}
-					}
-					
-					//Clamp to range
-					x[0] = std::max(0.0f, std::min(min_t_2d, 1.0f));
-					
-					const vec3 nearest_intersection = pos + min_t_2d * difference_pos;
-					
-					//Calculate barycentric coords
-					const vec9 A {
-							  positions[0][0], positions[0][1], positions[0][2]
-							, positions[1][0], positions[1][1], positions[1][2]
-							, positions[2][0], positions[2][1], positions[2][2]
-					};
-					const vec3 b = nearest_intersection;
-					vec3 x_tmp;
-					solve_linear_system(A.data_arr(), x_tmp.data_arr(),  b.data_arr());
-
-					vec3 barycentric_intersection_point;
-					barycentric_intersection_point[0] = x_tmp[0];
-					barycentric_intersection_point[1] = x_tmp[1];
-					barycentric_intersection_point[2] = 1.0f - x_tmp[0] - x_tmp[1];
-					
-					//Project on triangle
 						
-					//Clamp to 0.0 and normalize
-					barycentric_intersection_point[0] = std::max(barycentric_intersection_point[0], 0.0f);
-					barycentric_intersection_point[1] = std::max(barycentric_intersection_point[1], 0.0f);
-					barycentric_intersection_point[2] = std::max(barycentric_intersection_point[2], 0.0f);
-					
-					const float length = barycentric_intersection_point[0] + barycentric_intersection_point[1] + barycentric_intersection_point[2];
-					
-					x[1] = barycentric_intersection_point[0] / length;
-					x[2] = barycentric_intersection_point[1] / length;
-					x[3] = barycentric_intersection_point[2] / length;
+						//Clamp to range
+						x[0] = min_t_2d;
+						
+						const vec3 nearest_intersection = pos + x[0] * difference_pos;
+						
+						//Calculate barycentric coords by projecting on triangle/calculating intersection with line from point in normal direction
+						const vec3 b = nearest_intersection - positions[2];
+						solve_linear_system(barycentric_projection_matrix.data_arr(), barycentric_tmp.data_arr(),  b.data_arr());
+
+						vec3 barycentric_intersection_point;
+						barycentric_intersection_point[0] = barycentric_tmp[0];
+						barycentric_intersection_point[1] = barycentric_tmp[1];
+						barycentric_intersection_point[2] = 1.0f - barycentric_tmp[0] - barycentric_tmp[1];
+						
+						//Project on triangle
+							
+						//Clamp to 0.0 and normalize
+						barycentric_intersection_point[0] = std::max(barycentric_intersection_point[0], 0.0f);
+						barycentric_intersection_point[1] = std::max(barycentric_intersection_point[1], 0.0f);
+						barycentric_intersection_point[2] = std::max(barycentric_intersection_point[2], 0.0f);
+						
+						const float length = barycentric_intersection_point[0] + barycentric_intersection_point[1] + barycentric_intersection_point[2];
+						
+						x[1] = barycentric_intersection_point[0] / length;
+						x[2] = barycentric_intersection_point[1] / length;
+						x[3] = barycentric_intersection_point[2] / length;
+					}
 				}else{
 
 					//Calculate intersection point. Nearest point on triangle is nearest point to line
@@ -1688,7 +1754,8 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 					};
 					const vec3 b = pos - positions[2];
 					vec3 x_tmp;
-					solve_linear_system(A.data_arr(), x_tmp.data_arr(),  b.data_arr());
+					bool tmp_b = (pos[0] < 0.505f && pos[0] > 0.50f && pos[2] < 0.51f && pos[2] > 0.505f && (pos[1] > 0.41f && new_pos[1] < 0.41f) && (face_index == 11 || face_index==10));
+					solve_linear_system(A.data_arr(), x_tmp.data_arr(),  b.data_arr(), tmp_b);
 
 					vec3 barycentric_intersection_point;
 					barycentric_intersection_point[0] = x_tmp[0];
@@ -1696,12 +1763,6 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 					barycentric_intersection_point[2] = 1.0f - x_tmp[0] - x_tmp[1];
 					
 					//Project on triangle
-					//FIXME:
-					x[0] =  x_tmp[2];
-					x[1] =  barycentric_intersection_point[0];
-					x[2] =  barycentric_intersection_point[1];
-					x[3] =  barycentric_intersection_point[2];
-					/*
 					//Clamp to 0.0 and normalize
 					barycentric_intersection_point[0] = std::max(barycentric_intersection_point[0], 0.0f);
 					barycentric_intersection_point[1] = std::max(barycentric_intersection_point[1], 0.0f);
@@ -1720,17 +1781,15 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 					
 					//Clamp to range
 					x[0] = std::max(0.0f, std::min(x[0], 1.0f));
-					*/
 				}
 
-				//FIXME: Somehow we do not get distance 0.0f for exact intersections
 				const float t = x[0];
 				const vec3 nearest_point_on_triangle = x[1] * positions[0] + x[2] * positions[1] + x[3] * positions[2];
 				const vec3 nearest_point_on_line = pos + t * difference_pos;
 				const vec3 difference = nearest_point_on_triangle - nearest_point_on_line;
 				
 				const float distance = std::sqrt(difference[0] * difference[0] + difference[1] * difference[1] + difference[2] * difference[2]);
-					
+				
 				//Keep smallest t and index
 				if(t < min_t && distance < cohesion_distance){
 					min_index = face_index;

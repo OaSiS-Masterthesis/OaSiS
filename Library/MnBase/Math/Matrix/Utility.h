@@ -1,6 +1,9 @@
 #ifndef MATRIX_UTILITY_H
 #define MATRIX_UTILITY_H
 
+#include <array>
+
+
 namespace mn {
 
 namespace math {

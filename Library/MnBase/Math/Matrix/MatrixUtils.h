@@ -1,6 +1,7 @@
 #ifndef MATRIX_UTILS_H
 #define MATRIX_UTILS_H
 
+#include "MnBase/Math/Vec.h"
 #include "Utility.h"
 #include "Givens.cuh"
 
@@ -113,7 +114,7 @@ constexpr void matrix_inverse(const std::array<T, 9>& x, std::array<T, 9>& inv)
 
 //Solves ax = b for x
 template <typename T>
-__forceinline__ __host__ __device__ void solve_linear_system(const std::array<T, 9>& a, std::array<T, 3>& x, const std::array<T, 3>& b){
+__forceinline__ __host__ __device__ void solve_linear_system(const std::array<T, 9>& a, std::array<T, 3>& x, const std::array<T, 3>& b, bool print_values = false){
 	//Calculate QR
 	std::array<T, 9> r = a;
 	
@@ -141,9 +142,9 @@ __forceinline__ __host__ __device__ void solve_linear_system(const std::array<T,
 	matrix_vector_multiplication_3d(q_transpose, b, y);
 	
 	//Back substitution
-	x[2] = y[2] / (std::abs(r[8]) < 1e-4 ? static_cast<T>(1.0) : r[8]);
-	x[1] = (y[1] - x[2] * r[7]) / (std::abs(r[4]) < 1e-4 ? static_cast<T>(1.0) : r[4]);
-	x[0] = (y[0] - x[2] * r[6] - x[1] * r[3]) / (std::abs(r[0]) < 1e-4 ? static_cast<T>(1.0) : r[0]);
+	x[2] = y[2] / (r[8] == 0.0 ? static_cast<T>(1.0) : r[8]);
+	x[1] = (y[1] - x[2] * r[7]) / (r[4]  == 0.0 ? static_cast<T>(1.0) : r[4]);
+	x[0] = (y[0] - x[2] * r[6] - x[1] * r[3]) / (r[0]  == 0.0 ? static_cast<T>(1.0) : r[0]);
 }
 
 template <typename T, std::size_t Dim>
@@ -162,7 +163,7 @@ __forceinline__ __host__ __device__ void solve_linear_system(const std::array<T,
 			
 			const mn::math::GivensRotation rot(r[Dim * i + row0], r[row1], row0, row1);
 			rot.template mat_rotation<Dim, T>(r);
-			rot.template fill<3, T>(rot_mat[index++]);
+			rot.template fill<Dim, T>(rot_mat[index++]);
 		}
 	}
 	
@@ -183,7 +184,7 @@ __forceinline__ __host__ __device__ void solve_linear_system(const std::array<T,
 		for(size_t j = Dim - 1; j > i; ++j){
 			summed_y -= x[j] * r[j * Dim + i];
 		}
-		x[i] = summed_y / (std::abs(r[i * Dim + i]) < 1e-4 ? static_cast<T>(1.0) : r[i * Dim + i]);
+		x[i] = summed_y / (r[i * Dim + i] == 0.0 ? static_cast<T>(1.0) : r[i * Dim + i]);
 	}
 }
 
