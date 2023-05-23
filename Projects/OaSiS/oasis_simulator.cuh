@@ -743,7 +743,7 @@ struct OasisSimulator {
 
 					//Check size
 					if(neighbor_block_count > config::G_MAX_ACTIVE_BLOCK) {
-						std::cerr << "Too much neighbour blocks: " << partition_block_count << std::endl;
+						std::cerr << "Too much neighbour blocks: " << neighbor_block_count << std::endl;
 						std::abort();
 					}
 
@@ -806,7 +806,7 @@ struct OasisSimulator {
 
 					//Check size
 					if(exterior_block_count > config::G_MAX_ACTIVE_BLOCK) {
-						std::cerr << "Too much exterior blocks: " << partition_block_count << std::endl;
+						std::cerr << "Too much exterior blocks: " << exterior_block_count << std::endl;
 						std::abort();
 					}
 
@@ -849,7 +849,7 @@ struct OasisSimulator {
 			match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &particle_count](const auto& particle_buffer) {
 				auto policy = thrust::cuda::par.on(static_cast<cudaStream_t>(cu_dev.stream_compute()));
 				thrust::device_ptr<int> host_particle_bucket_sizes = thrust::device_pointer_cast(particle_buffer.particle_bucket_sizes);
-				particle_count = thrust::reduce(policy, host_particle_bucket_sizes, host_particle_bucket_sizes + partition_block_count + 1);
+				particle_count = thrust::reduce(policy, host_particle_bucket_sizes, host_particle_bucket_sizes + partition_block_count);
 			});
 			
 			//Reallocate particle array if necessary
@@ -959,11 +959,12 @@ struct OasisSimulator {
 					//Clear triangle_shell data
 					cu_dev.compute_launch({(triangle_mesh_vertex_counts[i] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, init_triangle_shell, triangle_meshes[i], triangle_shells[rollid][j][i], triangle_mesh_vertex_counts[i]);
 					
-					//FIXME: Remove this, cause initial mass is just != 0 for testing reason?
+					//TODO: Remove this, cause initial mass is just != 0 for testing reason?
+					/*
 					cu_dev.compute_launch({(triangle_mesh_vertex_counts[i] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, activate_blocks_for_shell, triangle_mesh_vertex_counts[i], triangle_shells[rollid][j][i], partitions[(rollid + 1) % BIN_COUNT]);
 					check_cuda_errors(cudaMemsetAsync(triangle_shells[0][i][j].particle_buffer.particle_bucket_sizes, 0, sizeof(int) * (exterior_block_count + 1), cu_dev.stream_compute()));
 					cu_dev.compute_launch({(triangle_mesh_vertex_counts[j] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, store_triangle_shell_vertices_in_bucket, triangle_mesh_vertex_counts[j], triangle_shells[rollid][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer, partitions[(rollid + 1) % BIN_COUNT]);
-						
+					*/
 				}
 			}
 			cudaDeviceSynchronize();
@@ -1057,7 +1058,7 @@ struct OasisSimulator {
 
 			//Check size
 			if(neighbor_block_count > config::G_MAX_ACTIVE_BLOCK) {
-				std::cerr << "Too much neighbour blocks: " << partition_block_count << std::endl;
+				std::cerr << "Too much neighbour blocks: " << neighbor_block_count << std::endl;
 				std::abort();
 			}
 
@@ -1072,7 +1073,7 @@ struct OasisSimulator {
 
 			//Check size
 			if(exterior_block_count > config::G_MAX_ACTIVE_BLOCK) {
-				std::cerr << "Too much exterior blocks: " << partition_block_count << std::endl;
+				std::cerr << "Too much exterior blocks: " << exterior_block_count << std::endl;
 				std::abort();
 			}
 

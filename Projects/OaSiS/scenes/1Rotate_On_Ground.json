@@ -50,8 +50,8 @@
 			},
 			"animation_rotational": {
 				"type": "RotateAroundY",
-				"magnitude" : 1000.0,
-				"time_start": 0.0
+				"magnitude" : 0.8,
+				"time_start": 0.0,
 				"time_end": 0.1
 			}
 		}

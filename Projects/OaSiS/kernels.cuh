@@ -831,7 +831,7 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 
 	//TODO: What is calculated here?
 	{
-		float voln	   = data.J * particle_buffer.volume;
+		float voln	   = data.J * (data.mass / particle_buffer.rho);
 		float pressure = particle_buffer.bulk * (powf(data.J, -particle_buffer.gamma) - 1.f);
 		//? - stress; stress = pressure * identity;
 		{
@@ -890,7 +890,7 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 		store_particle_data<MaterialE::FIXED_COROTATED>(next_particle_buffer, src_blockno, particle_id_in_block, store_particle_data_tmp);
 
 		ComputeStressIntermediate compute_stress_tmp = {};
-		compute_stress<float, MaterialE::FIXED_COROTATED>(particle_buffer.volume, particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
+		compute_stress<float, MaterialE::FIXED_COROTATED>((data.mass / particle_buffer.rho), particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
 	}
 }
 
@@ -925,7 +925,7 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 		compute_stress_tmp.yield_surface			 = particle_buffer.yield_surface;
 		compute_stress_tmp.volume_correction		 = particle_buffer.volume_correction;
 		compute_stress_tmp.log_jp					 = log_jp;
-		compute_stress<float, MaterialE::SAND>(particle_buffer.volume, particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
+		compute_stress<float, MaterialE::SAND>((data.mass / particle_buffer.rho), particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
 		log_jp = compute_stress_tmp.log_jp;
 		
 		StoreParticleDataIntermediate store_particle_data_tmp = {};
@@ -970,7 +970,7 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 		compute_stress_tmp.msqr						 = particle_buffer.msqr;
 		compute_stress_tmp.hardening_on				 = particle_buffer.hardening_on;
 		compute_stress_tmp.log_jp					 = log_jp;
-		compute_stress<float, MaterialE::NACC>(particle_buffer.volume, particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
+		compute_stress<float, MaterialE::NACC>((data.mass / particle_buffer.rho), particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
 		log_jp = compute_stress_tmp.log_jp;
 		
 		StoreParticleDataIntermediate store_particle_data_tmp = {};
@@ -1285,7 +1285,7 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 	}
 	
 	const auto face_data = triangle_mesh.ch(_0, 0).ch(_1, 0);
-	const auto shell_data_outer = triangle_shell.ch(_0, 0).ch(_1, 0);
+	auto shell_data_outer = triangle_shell.ch(_0, 0).ch(_1, 0);
 
 	//Load data from grid to shared memory
 	for(int base = static_cast<int>(threadIdx.x); base < NUM_VI_IN_ARENA; base += static_cast<int>(blockDim.x)) {
@@ -1343,7 +1343,7 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 		//Fetch position and determinant of deformation gradient
 		FetchParticleBufferDataIntermediate fetch_particle_buffer_tmp = {};
 		fetch_particle_buffer_data<MaterialType>(particle_buffer, advection_source_blockno, source_pidib, fetch_particle_buffer_tmp);
-		//const float mass = fetch_particle_buffer_tmp.mass;
+		const float mass = fetch_particle_buffer_tmp.mass;
 		vec3 pos {fetch_particle_buffer_tmp.pos[0], fetch_particle_buffer_tmp.pos[1], fetch_particle_buffer_tmp.pos[2]};
 		//float J	 = fetch_particle_buffer_tmp.J;
 
@@ -1442,6 +1442,7 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 		
 		int min_index = -1;
 		float min_t = std::numeric_limits<float>::max();
+		vec3 barycentric_intersection_point;
 		
 		//TODO: Don't check common faces twice
 		const int face_count_in_current_block = triangle_shell_particle_buffer.face_bucket_sizes[advection_source_blockno];
@@ -1592,12 +1593,13 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 					barycentric_new_pos[1] = barycentric_tmp[1];
 					barycentric_new_pos[2] = 1.0f - barycentric_tmp[0] - barycentric_tmp[1];
 					
-					if(barycentric_pos[0] > 0.0f && barycentric_pos[1] > 0.0f){
+					//If one of theend points lies in triangle we can use that one as nearest point
+					if(barycentric_pos[0] > 0.0f && barycentric_pos[1] > 0.0f && (barycentric_pos[0] + barycentric_pos[1]) <= 1.0f){
 						x[0] = 0.0f;
 						x[1] = barycentric_pos[0];
 						x[2] = barycentric_pos[1];
 						x[3] = barycentric_pos[2];
-					}else if(barycentric_new_pos[0] > 0.0f && barycentric_new_pos[1] > 0.0f){
+					}else if(barycentric_new_pos[0] > 0.0f && barycentric_new_pos[1] > 0.0f && (barycentric_new_pos[0] + barycentric_new_pos[1]) <= 1.0f){
 						x[0] = 1.0f;
 						x[1] = barycentric_new_pos[0];
 						x[2] = barycentric_new_pos[1];
@@ -1794,13 +1796,23 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 				if(t < min_t && distance < cohesion_distance){
 					min_index = face_index;
 					min_t = t;
+					barycentric_intersection_point = vec3(x[1], x[2], x[3]);
 				}
 			}	
 		}
 		
 		//If we have faces we collide
 		if(min_index != -1){
-			//TODO: Merge into shell
+			vec<uint32_t, 3> vertex_indices;
+			vertex_indices[0] = face_data.val(_0, min_index);
+			vertex_indices[1] = face_data.val(_1, min_index);
+			vertex_indices[2] = face_data.val(_2, min_index);
+			
+			//Merge into shell
+			//TODO: Different distribution?
+			shell_data_outer.val(_0, vertex_indices[0]) = mass * barycentric_intersection_point[0];
+			shell_data_outer.val(_0, vertex_indices[1]) = mass * barycentric_intersection_point[1];
+			shell_data_outer.val(_0, vertex_indices[2]) = mass * barycentric_intersection_point[2];
 			
 			//Delete particle by setting mass to 0.0
 			auto source_particle_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
@@ -1811,6 +1823,7 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 
 //Need this, cause we cannot partially instantiate function templates in current c++ version
 struct CalculateContributionIntermediate {
+	float mass;
 	std::array<float, 3> pos;
 	float J;
 	std::array<float, 9> deformation_gradient;
@@ -1834,7 +1847,7 @@ __forceinline__ __device__ void calculate_contribution<MaterialE::J_FLUID>(const
 
 	//TODO: What is calculated here?
 	{
-		float voln	   = data.J * particle_buffer.volume;
+		float voln	   = data.J * (data.mass / particle_buffer.rho);
 		float pressure = particle_buffer.bulk * (powf(data.J, -particle_buffer.gamma) - 1.f);
 		//? - stress; stress = pressure * identity;
 		{
@@ -1875,7 +1888,7 @@ __forceinline__ __device__ void calculate_contribution<MaterialE::FIXED_COROTATE
 		contrib[8]				 = data.deformation_gradient[8];
 		matrix_matrix_multiplication_3d(dws.data_arr(), contrib, F.data_arr());
 		ComputeStressIntermediate compute_stress_tmp = {};
-		compute_stress<float, MaterialE::FIXED_COROTATED>(particle_buffer.volume, particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
+		compute_stress<float, MaterialE::FIXED_COROTATED>((data.mass / particle_buffer.rho), particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
 	}
 }
 
@@ -1909,7 +1922,7 @@ __forceinline__ __device__ void calculate_contribution<MaterialE::SAND>(const Pa
 		compute_stress_tmp.yield_surface			 = particle_buffer.yield_surface;
 		compute_stress_tmp.volume_correction		 = particle_buffer.volume_correction;
 		compute_stress_tmp.log_jp					 = log_jp;
-		compute_stress<float, MaterialE::SAND>(particle_buffer.volume, particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
+		compute_stress<float, MaterialE::SAND>((data.mass / particle_buffer.rho), particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
 		log_jp = compute_stress_tmp.log_jp;
 	}
 }
@@ -1945,7 +1958,7 @@ __forceinline__ __device__ void calculate_contribution<MaterialE::NACC>(const Pa
 		compute_stress_tmp.msqr						 = particle_buffer.msqr;
 		compute_stress_tmp.hardening_on				 = particle_buffer.hardening_on;
 		compute_stress_tmp.log_jp					 = log_jp;
-		compute_stress<float, MaterialE::NACC>(particle_buffer.volume, particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
+		compute_stress<float, MaterialE::NACC>((data.mass / particle_buffer.rho), particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
 		log_jp = compute_stress_tmp.log_jp;
 	}
 }
@@ -2345,6 +2358,7 @@ __global__ void shell_to_grid(Duration dt, Duration new_dt, int partition_block_
 		//TODO: Fill in values
 		//TODO: Advection?
 		CalculateContributionIntermediate calculate_contribution_tmp = {};
+		calculate_contribution_tmp.mass = mass_outer;
 		calculate_contribution_tmp.pos													= extrapolated_pos.data_arr();
 		calculate_contribution_tmp.J														= 1.0f;
 		//calculate_contribution_tmp.deformation_gradient														= deformation_gradient;
@@ -2978,7 +2992,7 @@ __global__ void init_triangle_shell(TriangleMesh triangle_mesh, TriangleShell tr
 	
 	//Store data
 	vertex_data_inner.val(_0, idx) = 0.0f;//mass
-	vertex_data_outer.val(_0, idx) = 0.01f;//FIXME:0.0f;//mass
+	vertex_data_outer.val(_0, idx) = 0.0f;//mass
 	
 	//TODO:Do we have to clear this or is it reset at each step?
 	vertex_data_inner.val(_1, idx) = 0.0f;
@@ -2989,12 +3003,12 @@ __global__ void init_triangle_shell(TriangleMesh triangle_mesh, TriangleShell tr
 	vertex_data_outer.val(_5, idx) = 0.0f;
 	vertex_data_outer.val(_6, idx) = 0.0f;
 	
-	//FIXME:vertex_data_outer.val(_1, idx) = mesh_data.val(_3, idx);//pos
-	//FIXME:vertex_data_outer.val(_2, idx) = mesh_data.val(_4, idx);
-	//FIXME:vertex_data_outer.val(_3, idx) = mesh_data.val(_5, idx);
+	vertex_data_outer.val(_1, idx) = mesh_data.val(_3, idx);//pos
+	vertex_data_outer.val(_2, idx) = mesh_data.val(_4, idx);
+	vertex_data_outer.val(_3, idx) = mesh_data.val(_5, idx);
 	
-	//FIXME: Remove when we don't have initial mass anymore
-	{
+	//TODO: Remove when we don't have initial mass anymore
+	/*{
 		vec3 mesh_pos;
 		mesh_pos[0] = mesh_data.val(_3, idx);//global_pos
 		mesh_pos[1] = mesh_data.val(_4, idx);
@@ -3015,9 +3029,7 @@ __global__ void init_triangle_shell(TriangleMesh triangle_mesh, TriangleShell tr
 		vertex_data_outer.val(_1, idx) = new_pos[0];
 		vertex_data_outer.val(_2, idx) = new_pos[1];
 		vertex_data_outer.val(_3, idx) = new_pos[2];
-	}
-	
-	
+	}*/
 }
 
 __global__ void clear_triangle_shell(TriangleShell triangle_shell, uint32_t vertex_count){
