@@ -16,12 +16,12 @@ using TriangleShellDomain  = CompactDomain<int, 1>;
 
 
 //NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables, readability-identifier-naming) Check is buggy and reports variable errors for template arguments
-using TriangleMeshVertexData  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, TriangleBinDomain, attrib_layout::SOA, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_>;//relative_pos, global_pos, velocity, normal
+using TriangleMeshVertexData  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, TriangleBinDomain, attrib_layout::SOA, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_>;//relative_pos, global_pos, velocity, normal, sum(angle * face_normal / (1/3 * face_area))
 using TriangleMeshFaceData  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, TriangleBinDomain, attrib_layout::SOA, u32_, u32_, u32_>;//index
 using TriangleMeshData  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, TriangleMeshDataDomain, attrib_layout::AOS, TriangleMeshVertexData, TriangleMeshFaceData>;
 
 using TriangleShellInnerData  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, TriangleBinDomain, attrib_layout::SOA, f32_, f32_, f32_, f32_>;//mass, momentum
-using TriangleShellOuterData  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, TriangleBinDomain, attrib_layout::SOA, f32_, f32_, f32_, f32_, f32_, f32_, f32_>;//mass, pos (actually no need to store it, but can be useful for debugging), momentum	
+using TriangleShellOuterData  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, TriangleBinDomain, attrib_layout::SOA, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_>;//mass, pos (actually no need to store it, but can be useful for debugging), momentum, deformation_gradient	
 using TriangleShellData  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, TriangleShellDataDomain, attrib_layout::AOS, TriangleShellInnerData, TriangleShellOuterData>;
 
 template<typename TriangleMeshStruct>

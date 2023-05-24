@@ -1168,7 +1168,7 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 
 			//Update momentum?
 			//Multiply A with mass to complete it. Then subtract current momentum?
-			//C = A * D^-1
+			//C * m = A * D^-1
 			contrib = (A * mass - contrib * new_dt.count()) * config::G_D_INV;
 
 			//Calculate grid index after movement
@@ -2044,6 +2044,17 @@ __global__ void grid_to_shell(Duration dt, Duration new_dt, const ParticleBuffer
 		momentum[1] = vertex_data.val(_5, vertex_id);
 		momentum[2] = vertex_data.val(_6, vertex_id);
 		
+		vec9 deformation_gradient;
+		deformation_gradient[0] = vertex_data.val(_7, vertex_id);//F
+		deformation_gradient[1] = vertex_data.val(_8, vertex_id);
+		deformation_gradient[2] = vertex_data.val(_9, vertex_id);
+		deformation_gradient[3] = vertex_data.val(_10, vertex_id);
+		deformation_gradient[4] = vertex_data.val(_11, vertex_id);
+		deformation_gradient[5] = vertex_data.val(_12, vertex_id);
+		deformation_gradient[6] = vertex_data.val(_13, vertex_id);
+		deformation_gradient[7] = vertex_data.val(_14, vertex_id);
+		deformation_gradient[8] = vertex_data.val(_15, vertex_id);
+		
 		//Get position of grid cell
 		ivec3 global_base_index = get_block_id(pos.data_arr()) - 1;
 
@@ -2125,6 +2136,34 @@ __global__ void grid_to_shell(Duration dt, Duration new_dt, const ParticleBuffer
 		vertex_data.val(_4, vertex_id) = vel[0] * mass;
 		vertex_data.val(_5, vertex_id) = vel[1] * mass;
 		vertex_data.val(_6, vertex_id) = vel[2] * mass;
+		
+		/*
+		//Update deformation_gradient with new momentum
+		vec9 new_deformation_gradient_multiplier;
+		new_deformation_gradient_multiplier[0] = (1.0f + dt.count() * A[0] * (3.0 * config::G_DX_INV * config::G_DX_INV));
+		new_deformation_gradient_multiplier[1] = (dt.count() * A[1] * (3.0 * config::G_DX_INV * config::G_DX_INV));
+		new_deformation_gradient_multiplier[2] = (dt.count() * A[2] * (3.0 * config::G_DX_INV * config::G_DX_INV));
+		new_deformation_gradient_multiplier[3] = (dt.count() * A[3] * (3.0 * config::G_DX_INV * config::G_DX_INV));
+		new_deformation_gradient_multiplier[4] = (1.0f + dt.count() * A[4] * (3.0 * config::G_DX_INV * config::G_DX_INV));
+		new_deformation_gradient_multiplier[5] = (dt.count() * A[5] * (3.0 * config::G_DX_INV * config::G_DX_INV));
+		new_deformation_gradient_multiplier[6] = (dt.count() * A[6] * (3.0 * config::G_DX_INV * config::G_DX_INV));
+		new_deformation_gradient_multiplier[7] = (dt.count() * A[7] * (3.0 * config::G_DX_INV * config::G_DX_INV));
+		new_deformation_gradient_multiplier[8] = (1.0f + dt.count() * A[8] * (3.0 * config::G_DX_INV * config::G_DX_INV));
+		vec9 new_deformation_gradient;
+		matrix_matrix_multiplication_3d(new_deformation_gradient_multiplier, deformation_gradient, new_deformation_gradient);
+		
+		
+		//Store new_deformation_gradient
+		vertex_data.val(_7, vertex_id)	 = new_deformation_gradient[0];//F
+		vertex_data.val(_8, vertex_id)	 = new_deformation_gradient[1];
+		vertex_data.val(_9, vertex_id)	 = new_deformation_gradient[2];
+		vertex_data.val(_10, vertex_id) = new_deformation_gradient[3];
+		vertex_data.val(_11, vertex_id) = new_deformation_gradient[4];
+		vertex_data.val(_12, vertex_id) = new_deformation_gradient[5];
+		vertex_data.val(_13, vertex_id) = new_deformation_gradient[6];
+		vertex_data.val(_14, vertex_id) = new_deformation_gradient[7];
+		vertex_data.val(_15, vertex_id) = new_deformation_gradient[8];
+		*/
 	}
 }
 
@@ -2285,6 +2324,11 @@ __global__ void shell_to_grid(Duration dt, Duration new_dt, int partition_block_
 		normal[1] = mesh_data.val(_10, vertex_id);
 		normal[2] = mesh_data.val(_11, vertex_id);
 		
+		vec3 summed_base_area;
+		summed_base_area[0] = mesh_data.val(_12, vertex_id);//base_area
+		summed_base_area[1] = mesh_data.val(_13, vertex_id);
+		summed_base_area[2] = mesh_data.val(_14, vertex_id);
+		
 		vec3 shell_pos;
 		shell_pos[0] = prev_shell_data_outer.val(_1, vertex_id);//pos
 		shell_pos[1] = prev_shell_data_outer.val(_2, vertex_id);
@@ -2294,6 +2338,17 @@ __global__ void shell_to_grid(Duration dt, Duration new_dt, int partition_block_
 		momentum[0] = shell_data_outer.val(_4, vertex_id);//momentum
 		momentum[1] = shell_data_outer.val(_5, vertex_id);
 		momentum[2] = shell_data_outer.val(_6, vertex_id);
+		
+		vec9 deformation_gradient;
+		deformation_gradient[0] = shell_data_outer.val(_7, vertex_id);//F
+		deformation_gradient[1] = shell_data_outer.val(_8, vertex_id);
+		deformation_gradient[2] = shell_data_outer.val(_9, vertex_id);
+		deformation_gradient[3] = shell_data_outer.val(_10, vertex_id);
+		deformation_gradient[4] = shell_data_outer.val(_11, vertex_id);
+		deformation_gradient[5] = shell_data_outer.val(_12, vertex_id);
+		deformation_gradient[6] = shell_data_outer.val(_13, vertex_id);
+		deformation_gradient[7] = shell_data_outer.val(_14, vertex_id);
+		deformation_gradient[8] = shell_data_outer.val(_15, vertex_id);
 		
 		//If we have no mass at the point, the height at the point is 0.0
 		vec3 extrapolated_pos = mesh_pos;
@@ -2307,10 +2362,12 @@ __global__ void shell_to_grid(Duration dt, Duration new_dt, int partition_block_
 			vec3 diff = shell_pos - mesh_pos;
 			const float distance = sqrt(diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]);
 			//If too much stress, separate and regenerate pos (Done at different stage, we just mark buffer)
-			if(distance > config::G_DX * 0.1f) {
+			if(true){//FIXME:distance > config::G_DX * 0.1f) {
 				//TODO: How much mass drops out?
 				//TODO: Too small mass causes system to explode( Not sure if this still occures?). Investigate why!
-				const float drop_out_mass = std::min(mass_outer, 0.01f);//TODO:(mass_outer - 0.01f > 0.0001f) ? 0.01f : mass_outer;
+				//FIXME:const float drop_out_mass = std::min(mass_outer, 0.01f);//TODO:(mass_outer - 0.01f > 0.0001f) ? 0.01f : mass_outer;
+				const float drop_out_mass = 0.0f;//TODO:(mass_outer - 0.01f > 0.0001f) ? 0.01f : mass_outer;
+				
 
 				//TODO: Momentum transfer happens via grid?!
 				//TODO: How correctly calculate new momentum
@@ -2332,7 +2389,7 @@ __global__ void shell_to_grid(Duration dt, Duration new_dt, int partition_block_
 				//Calculate new outer vertex pos
 				//TODO: Correct algorithm. Currently we just update the position based on the new veloicity, but actually it should be based on current fluid distribution
 				//TODO: Ensure that new pos is not farer away than one grid cell from previous pos
-				new_pos = mesh_pos + normal * std::min(new_mass, config::G_DX * 0.9f);
+				new_pos = mesh_pos + summed_base_area * (new_mass / particle_buffer.rho);
 				
 				//Store data
 				shell_data_outer.val(_0, vertex_id) = new_mass;
@@ -2355,22 +2412,56 @@ __global__ void shell_to_grid(Duration dt, Duration new_dt, int partition_block_
 		//Get position of grid cell
 		ivec3 base_index = get_block_id(shell_pos.data_arr()) - 1;
 
-		//TODO: Fill in values
 		//TODO: Advection?
 		CalculateContributionIntermediate calculate_contribution_tmp = {};
 		calculate_contribution_tmp.mass = mass_outer;
 		calculate_contribution_tmp.pos													= extrapolated_pos.data_arr();
-		calculate_contribution_tmp.J														= 1.0f;
+		
+		
+		
+		//TODO:Calculate or keep stored/update dynamically
 		//calculate_contribution_tmp.deformation_gradient														= deformation_gradient;
+		//calculate_contribution_tmp.J														= (deformation_gradient[0] * deformation_gradient[4] * deformation_gradient[8] + deformation_gradient[3] * deformation_gradient[7] * deformation_gradient[2] + deformation_gradient[6] * deformation_gradient[1] * deformation_gradient[5]) - (deformation_gradient[2] * deformation_gradient[4] * deformation_gradient[6] + deformation_gradient[5] * deformation_gradient[7] * deformation_gradient[0] + deformation_gradient[8] * deformation_gradient[1] * deformation_gradient[3]);
 		//calculate_contribution_tmp.log_jp														= log_jp;
+		calculate_contribution_tmp.J = 1.0f;
 
 		vec9 contrib;
 		calculate_contribution(particle_buffer, dt, A.data_arr(), contrib.data_arr(), calculate_contribution_tmp);
 		
 		//Update momentum?
 		//Multiply A with mass to complete it. Then subtract current momentum?
-		//C = A * D^-1
+		//C * m = A * D^-1
 		contrib = (A * mass_outer - contrib * new_dt.count()) * config::G_D_INV;
+		
+		/*
+		//FIXME: Do we have to calculate this on grid_to_shell? Or can we use the deformation_gradient of the alst timestamp? Depends on reference? But momentum is new! Maybe add momentum to deformation gradient somehow?
+		//Calculate new deformation_gradient
+		//new_deformation_gradient = (I + dt.count() * contrib / mass) * deformation_gradient;
+		//TODO: Currently we are doing this twice for some materials
+		vec9 new_deformation_gradient_multiplier;
+		new_deformation_gradient_multiplier[0] = (1.0f + dt.count() * contrib[0] / mass);
+		new_deformation_gradient_multiplier[1] = (dt.count() * contrib[1] / mass);
+		new_deformation_gradient_multiplier[2] = (dt.count() * contrib[2] / mass);
+		new_deformation_gradient_multiplier[3] = (dt.count() * contrib[3] / mass);
+		new_deformation_gradient_multiplier[4] = (1.0f + dt.count() * contrib[4] / mass);
+		new_deformation_gradient_multiplier[5] = (dt.count() * contrib[5] / mass);
+		new_deformation_gradient_multiplier[6] = (dt.count() * contrib[6] / mass);
+		new_deformation_gradient_multiplier[7] = (dt.count() * contrib[7] / mass);
+		new_deformation_gradient_multiplier[8] = (1.0f + dt.count() * contrib[8] / mass);
+		vec9 new_deformation_gradient;
+		matrix_matrix_multiplication_3d(new_deformation_gradient_multiplier, deformation_gradient, new_deformation_gradient);
+		
+		//Store new_deformation_gradient
+		shell_data_outer.val(_7, vertex_id)	 = new_deformation_gradient[0];//F
+		shell_data_outer.val(_8, vertex_id)	 = new_deformation_gradient[1];
+		shell_data_outer.val(_9, vertex_id)	 = new_deformation_gradient[2];
+		shell_data_outer.val(_10, vertex_id) = new_deformation_gradient[3];
+		shell_data_outer.val(_11, vertex_id) = new_deformation_gradient[4];
+		shell_data_outer.val(_12, vertex_id) = new_deformation_gradient[5];
+		shell_data_outer.val(_13, vertex_id) = new_deformation_gradient[6];
+		shell_data_outer.val(_14, vertex_id) = new_deformation_gradient[7];
+		shell_data_outer.val(_15, vertex_id) = new_deformation_gradient[8];
+		*/
 
 		//Calculate grid index after movement
 		ivec3 new_global_base_index = get_block_id(extrapolated_pos.data_arr()) - 1;
@@ -2850,7 +2941,7 @@ __global__ void calculate_count_faces(TriangleMesh triangle_mesh, uint32_t face_
 	}
 }
 
-__global__ void calculate_normals(TriangleMesh triangle_mesh, uint32_t face_count){
+__global__ void calculate_normals_and_base_area(TriangleMesh triangle_mesh, uint32_t face_count){
 	const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
 	if(idx >= face_count) {
 		return;
@@ -2877,8 +2968,12 @@ __global__ void calculate_normals(TriangleMesh triangle_mesh, uint32_t face_coun
 	vec3 face_normal;
 	vec_cross_vec_3d(face_normal.data_arr(), (positions[1] - positions[0]).data_arr(), (positions[2] - positions[0]).data_arr());
 	
+	const float face_normal_length = sqrt(face_normal[0] * face_normal[0] + face_normal[1] * face_normal[1] + face_normal[2] * face_normal[2]);
+	
 	//Normalize
-	face_normal = face_normal / sqrt(face_normal[0] * face_normal[0] + face_normal[1] * face_normal[1] + face_normal[2] * face_normal[2]);
+	face_normal = face_normal / face_normal_length;
+	
+	const float face_area = 0.5f * face_normal_length;
 	
 	for(size_t i = 0; i < 3; ++i){
 		const int current_vertex_index = vertex_indices[i];
@@ -2891,6 +2986,11 @@ __global__ void calculate_normals(TriangleMesh triangle_mesh, uint32_t face_coun
 		atomicAdd(&vertex_data.val(_9, current_vertex_index), face_normal[0] * angle);//normal
 		atomicAdd(&vertex_data.val(_10, current_vertex_index), face_normal[1] * angle);
 		atomicAdd(&vertex_data.val(_11, current_vertex_index), face_normal[2] * angle);
+		
+		//Must be one third of whole area, otherwise height field calculation must be adjusted
+		atomicAdd(&vertex_data.val(_12, current_vertex_index), (face_normal[0] * angle) / (face_area * (1.0f / 3.0f)));//base_area
+		atomicAdd(&vertex_data.val(_13, current_vertex_index), (face_normal[1] * angle) / (face_area * (1.0f / 3.0f)));
+		atomicAdd(&vertex_data.val(_14, current_vertex_index), (face_normal[2] * angle) / (face_area * (1.0f / 3.0f)));
 	}
 }
 
@@ -3006,6 +3106,16 @@ __global__ void init_triangle_shell(TriangleMesh triangle_mesh, TriangleShell tr
 	vertex_data_outer.val(_1, idx) = mesh_data.val(_3, idx);//pos
 	vertex_data_outer.val(_2, idx) = mesh_data.val(_4, idx);
 	vertex_data_outer.val(_3, idx) = mesh_data.val(_5, idx);
+	
+	vertex_data_outer.val(_7, idx)	 = 1.0f;//F
+	vertex_data_outer.val(_8, idx)	 = 0.0f;
+	vertex_data_outer.val(_9, idx)	 = 0.0f;
+	vertex_data_outer.val(_10, idx)	 = 0.0f;
+	vertex_data_outer.val(_11, idx)	 = 1.0f;
+	vertex_data_outer.val(_12, idx)	 = 0.0f;
+	vertex_data_outer.val(_13, idx) = 0.0f;
+	vertex_data_outer.val(_14, idx) = 0.0f;
+	vertex_data_outer.val(_15, idx) = 1.0f;
 	
 	//TODO: Remove when we don't have initial mass anymore
 	/*{
@@ -3262,7 +3372,7 @@ __global__ void update_triangle_shell_subdomain(TriangleShell triangle_shell, Tr
 	const vec3 total_momentum = momentum_inner + momentum_outer;
 	
 	next_shell_data_inner.val(_0, idx) = mass_inner;
-	next_shell_data_outer.val(_0, idx) = mass_outer;
+	//next_shell_data_outer.val(_0, idx) = mass_outer;
 	
 	next_shell_data_inner.val(_1, idx) = momentum_inner[0];
 	next_shell_data_inner.val(_2, idx) = momentum_inner[1];

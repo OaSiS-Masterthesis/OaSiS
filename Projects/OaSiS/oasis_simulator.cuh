@@ -523,6 +523,8 @@ struct OasisSimulator {
 					}
 				}
 				
+				//TODO: Also divide this into two parts
+				
 				//TODO: Inner shell part (part of rigid body motion directly transfered; gravity;) (Navier stokes!) (We have to keep track of current state (for outer shell the grid does so))
 				//mesh => shell: vel(t-1) => vel(t);
 				//TODO: mass(t-1) => mass(t)
@@ -948,7 +950,7 @@ struct OasisSimulator {
 				check_cuda_errors(cudaMemcpyAsync(triangle_meshes[i].inertia.data(), init_tmp, sizeof(float) * 9, cudaMemcpyDefault, cu_dev.stream_compute()));
 				
 				//Calculate normals per vertex
-				cu_dev.compute_launch({(triangle_mesh_face_counts[i] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, calculate_normals, triangle_meshes[i], triangle_mesh_face_counts[i]);
+				cu_dev.compute_launch({(triangle_mesh_face_counts[i] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, calculate_normals_and_base_area, triangle_meshes[i], triangle_mesh_face_counts[i]);
 				cu_dev.compute_launch({(triangle_mesh_vertex_counts[i] + config::DEFAULT_CUDA_BLOCK_SIZE - 1) / config::DEFAULT_CUDA_BLOCK_SIZE, config::DEFAULT_CUDA_BLOCK_SIZE}, normalize_normals, triangle_meshes[i], triangle_mesh_vertex_counts[i]);
 				
 				//Apply rigid body pose for timestamp 0
