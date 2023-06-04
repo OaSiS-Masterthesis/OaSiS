@@ -33,6 +33,8 @@ template<>
 struct particle_bin_<MaterialE::SAND> : particle_bin13_ {};
 template<>
 struct particle_bin_<MaterialE::NACC> : particle_bin13_ {};
+template<>
+struct particle_bin_<MaterialE::FIXED_COROTATED_GHOST> : particle_bin13_ {};
 
 //NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables, readability-identifier-naming) Check is buggy and reporst variable errors fro template arguments
 template<typename ParticleBin>
@@ -263,9 +265,36 @@ struct ParticleBuffer<MaterialE::NACC> : ParticleBufferImpl<MaterialE::NACC> {
 		: base_t {allocator, count} {}
 };
 
+template<>
+struct ParticleBuffer<MaterialE::FIXED_COROTATED_GHOST> : ParticleBufferImpl<MaterialE::FIXED_COROTATED_GHOST> {
+	using base_t = ParticleBufferImpl<MaterialE::FIXED_COROTATED_GHOST>;
+
+	//NOLINTBEGIN(readability-magic-numbers) Parameter definitions
+	float rho	 = config::DENSITY;
+	float volume = (10.f / (1u << config::DOMAIN_BITS) / (1u << config::DOMAIN_BITS) / (1u << config::DOMAIN_BITS) / config::MODEL_PPC);
+	float mass	 = (config::DENSITY / (1u << config::DOMAIN_BITS) / (1u << config::DOMAIN_BITS) / (1u << config::DOMAIN_BITS) / config::MODEL_PPC);
+	float e		 = config::YOUNGS_MODULUS;
+	float nu	 = config::POISSON_RATIO;
+	float lambda = config::YOUNGS_MODULUS * config::POISSON_RATIO / ((1 + config::POISSON_RATIO) * (1 - 2 * config::POISSON_RATIO));
+	float mu	 = config::YOUNGS_MODULUS / (2 * (1 + config::POISSON_RATIO));
+
+	void update_parameters(float density, float vol, float e, float nu) {
+		rho	   = density;
+		volume = vol;
+		mass   = volume * density;
+		lambda = 0.5f * (e * nu / ((1 + nu) * (1 - 2 * nu)));//NOTE: lambda is half of traditional
+		mu	   = e / (2 * (1 + nu));
+	}
+	//NOLINTEND(readability-magic-numbers)
+
+	template<typename Allocator>
+	ParticleBuffer(Allocator allocator, std::size_t count)
+		: base_t {allocator, count} {}
+};
+
 /// conversion
 /// http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p0608r3.html
-using particle_buffer_t = variant<ParticleBuffer<MaterialE::J_FLUID>, ParticleBuffer<MaterialE::FIXED_COROTATED>, ParticleBuffer<MaterialE::SAND>, ParticleBuffer<MaterialE::NACC>>;
+using particle_buffer_t = variant<ParticleBuffer<MaterialE::J_FLUID>, ParticleBuffer<MaterialE::FIXED_COROTATED>, ParticleBuffer<MaterialE::SAND>, ParticleBuffer<MaterialE::NACC>, ParticleBuffer<MaterialE::FIXED_COROTATED_GHOST>>;
 
 struct ParticleArray : Instance<particle_array_> {
 	using base_t = Instance<particle_array_>;

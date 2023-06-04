@@ -151,30 +151,37 @@ void parse_scene(const std::string& fn, std::unique_ptr<mn::OasisSimulator>& ben
 
 							fmt::print(fg(fmt::color::green), "model constitutive[{}], file[{}]\n", constitutive, model["file"].GetString());
 
-							auto init_model = [&](auto& positions, auto& velocity) {
+							auto init_model = [&](auto& positions, auto& velocity, auto& grid_offset) {
 								if(constitutive == "fixed_corotated") {
 									if(!check_member(model, "rho") || !check_member(model, "volume") || !check_member(model, "youngs_modulus") || !check_member(model, "poisson_ratio")) {
 										return;
 									}
 
-									benchmark->init_model<mn::MaterialE::FIXED_COROTATED>(positions, velocity);
+									benchmark->init_model<mn::MaterialE::FIXED_COROTATED>(positions, velocity, grid_offset);
 									benchmark->update_fr_parameters(model["rho"].GetFloat(), model["volume"].GetFloat(), model["youngs_modulus"].GetFloat(), model["poisson_ratio"].GetFloat());
 								} else if(constitutive == "jfluid") {
 									if(!check_member(model, "rho") || !check_member(model, "volume") || !check_member(model, "bulk_modulus") || !check_member(model, "gamma") || !check_member(model, "viscosity")) {
 										return;
 									}
 
-									benchmark->init_model<mn::MaterialE::J_FLUID>(positions, velocity);
+									benchmark->init_model<mn::MaterialE::J_FLUID>(positions, velocity, grid_offset);
 									benchmark->update_j_fluid_parameters(model["rho"].GetFloat(), model["volume"].GetFloat(), model["bulk_modulus"].GetFloat(), model["gamma"].GetFloat(), model["viscosity"].GetFloat());
 								} else if(constitutive == "nacc") {
 									if(!check_member(model, "rho") || !check_member(model, "volume") || !check_member(model, "youngs_modulus") || !check_member(model, "poisson_ratio") || !check_member(model, "beta") || !check_member(model, "xi")) {
 										return;
 									}
 
-									benchmark->init_model<mn::MaterialE::NACC>(positions, velocity);
+									benchmark->init_model<mn::MaterialE::NACC>(positions, velocity, grid_offset);
 									benchmark->update_nacc_parameters(model["rho"].GetFloat(), model["volume"].GetFloat(), model["youngs_modulus"].GetFloat(), model["poisson_ratio"].GetFloat(), model["beta"].GetFloat(), model["xi"].GetFloat());
 								} else if(constitutive == "sand") {
-									benchmark->init_model<mn::MaterialE::SAND>(positions, velocity);
+									benchmark->init_model<mn::MaterialE::SAND>(positions, velocity, grid_offset);
+								} else if(constitutive == "fixed_corotated_ghost") {
+									if(!check_member(model, "rho") || !check_member(model, "volume") || !check_member(model, "youngs_modulus") || !check_member(model, "poisson_ratio")) {
+										return;
+									}
+
+									benchmark->init_model<mn::MaterialE::FIXED_COROTATED_GHOST>(positions, velocity, grid_offset);
+									benchmark->update_frg_parameters(model["rho"].GetFloat(), model["volume"].GetFloat(), model["youngs_modulus"].GetFloat(), model["poisson_ratio"].GetFloat());
 								} else {
 									fmt::print("Unknown constitutive: {}", constitutive);
 								}
@@ -182,6 +189,7 @@ void parse_scene(const std::string& fn, std::unique_ptr<mn::OasisSimulator>& ben
 							mn::vec<float, mn::config::NUM_DIMENSIONS> offset;
 							mn::vec<float, mn::config::NUM_DIMENSIONS> span;
 							mn::vec<float, mn::config::NUM_DIMENSIONS> velocity;
+							mn::vec<float, mn::config::NUM_DIMENSIONS> grid_offset {0.0f, 0.0f, 0.0f};
 							if(!check_member(model, "offset") || !check_member(model, "span") || !check_member(model, "velocity")) {
 								return;
 							}
@@ -191,13 +199,19 @@ void parse_scene(const std::string& fn, std::unique_ptr<mn::OasisSimulator>& ben
 								span[d]		= model["span"].GetArray()[d].GetFloat();
 								velocity[d] = model["velocity"].GetArray()[d].GetFloat();
 							}
+							
+							if(check_member(model, "grid_offset")) {
+								for(int d = 0; d < mn::config::NUM_DIMENSIONS; ++d) {
+									grid_offset[d] = model["grid_offset"].GetArray()[d].GetFloat();
+								}
+							}
 						
 							auto positions = mn::read_sdf(model["file"].GetString(), mn::config::MODEL_PPC, mn::config::G_DX, mn::config::G_DOMAIN_SIZE, offset, span);
 							mn::IO::insert_job([&]() {
 								mn::write_partio<float, mn::config::NUM_DIMENSIONS>(p.stem().string() + ".bgeo", positions);
 							});
 							mn::IO::flush();
-							init_model(positions, velocity);
+							init_model(positions, velocity, grid_offset);
 						}else if(p.extension() == ".obj"){
 							if(!check_member(model, "mass") || !check_member(model, "animation_linear") || !check_member(model, "animation_rotational")) {
 								return;

@@ -16,10 +16,14 @@ using grid_buffer_ = Structural<StructuralType::DYNAMIC, Decorator<StructuralAll
 
 struct GridBuffer : Instance<grid_buffer_> {
 	using base_t = Instance<grid_buffer_>;
+	
+	//TODO: check that this is small enough (smaller than 1.0, bigger than 0.0)?
+	const std::array<float, 3> relative_offset;
 
 	template<typename Allocator>
-	explicit GridBuffer(Allocator allocator)
-		: base_t {spawn<grid_buffer_, orphan_signature>(allocator)} {}
+	explicit GridBuffer(Allocator allocator, const std::array<float, 3>& relative_offset = {0.0f, 0.0f, 0.0f})
+		: base_t {spawn<grid_buffer_, orphan_signature>(allocator)}
+		, relative_offset(relative_offset){}
 
 	template<typename Allocator>
 	void check_capacity(Allocator allocator, std::size_t capacity) {
@@ -32,6 +36,10 @@ struct GridBuffer : Instance<grid_buffer_> {
 	void reset(int block_count, CudaContext& cu_dev) {
 		//check_cuda_errors(cudaMemsetAsync((void *)&this->val_1d(_0, 0), 0, grid_block_::size * block_count, cu_dev.stream_compute()));
 		cu_dev.compute_launch({block_count, config::G_BLOCKVOLUME}, clear_grid, *this);
+	}
+	
+	__forceinline__ __host__ __device__ const std::array<float, 3>& get_offset() const{
+		return relative_offset;
 	}
 };
 

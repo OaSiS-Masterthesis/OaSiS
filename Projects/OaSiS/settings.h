@@ -26,6 +26,7 @@ enum class MaterialE {
 	FIXED_COROTATED,
 	SAND,
 	NACC,
+	FIXED_COROTATED_GHOST,
 	TOTAL
 };
 
