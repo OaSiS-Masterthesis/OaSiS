@@ -21,6 +21,7 @@
 #include "particle_buffer.cuh"
 #include "settings.h"
 #include "triangle_mesh.cuh"
+#include "alpha_shapes.cuh"
 
 #define OUTPUT_TRIANGLE_SHELL_OUTER_POS 1
 
@@ -102,6 +103,7 @@ struct OasisSimulator {
 	std::array<std::vector<particle_buffer_t>, BIN_COUNT> particle_bins = {};
 	std::vector<Partition<1>> partitions								= {};///< with halo info
 	std::vector<ParticleArray> particles								= {};
+	std::vector<AlphaShapesParticleBuffer> alpha_shapes_particle_buffers = {};
 
 	Intermediates tmps;
 
@@ -231,6 +233,7 @@ struct OasisSimulator {
 			});
 			grid_blocks[copyid].emplace_back(DeviceAllocator {}, grid_offset.data_arr());
 		}
+		alpha_shapes_particle_buffers.emplace_back(AlphaShapesParticleBuffer(DeviceAllocator {}, model.size() / config::G_BIN_CAPACITY + config::G_MAX_ACTIVE_BLOCK));
 
 		//Set initial velocity
 		vel0.emplace_back();
@@ -460,6 +463,29 @@ struct OasisSimulator {
 				max_vel = std::sqrt(max_vel);// this is a bug, should insert this line
 				next_dt = compute_dt(max_vel, current_step_time, seconds_per_frame, dt_default);
 				fmt::print(fmt::emphasis::bold, "{} --{}--> {}, defaultDt: {}, max_vel: {}\n", cur_time.count(), next_dt.count(), next_time.count(), dt_default.count(), max_vel);
+				
+				//TODO: IQ-Solve!
+				{
+					auto& cu_dev = Cuda::ref_cuda_context(gpuid);
+					CudaTimer timer {cu_dev.stream_compute()};
+					
+					timer.tick();
+					
+					//Alpha shapes
+					for(int i = 0; i < get_model_count(); ++i) {
+						//Resize particle buffers if we increased the size of active bins
+						if(checked_bin_counts[i] > 0) {
+							alpha_shapes_particle_buffers[i].resize(DeviceAllocator {}, cur_num_active_bins[i]);
+						}
+						
+						match(particle_bins[rollid][i])([this, &cu_dev, &i](const auto& particle_buffer) {
+							//partition_block_count; 1
+							cu_dev.compute_launch({partition_block_count, 1}, alpha_shapes, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], alpha_shapes_particle_buffers[i]);
+						});
+					}
+					
+					timer.tock(fmt::format("GPU[{}] frame {} step {} alpha_shapes", gpuid, cur_frame, cur_step));
+				}
 
 				/// g2p2g
 				{
@@ -539,9 +565,6 @@ struct OasisSimulator {
 						checked_counts[0]--;
 					}
 				}
-				
-				//TODO: IQ-Solve!
-				
 				
 				//TODO: Also divide this into two parts
 				

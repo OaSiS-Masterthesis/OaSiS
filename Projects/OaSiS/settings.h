@@ -91,6 +91,10 @@ namespace config {
 	constexpr float POISSON_RATIO  = 0.4f;
 
 	constexpr float G_GRAVITY = -9.8f;
+	
+	constexpr float MAX_ALPHA = 0.1f;//FIXME:Set to correct value
+	//FIXME: Maybe smaller amount?
+	constexpr size_t ALPHA_SHAPES_TRIANGLES_PER_BLOCK = 2 * G_PARTICLE_NUM_PER_BLOCK - 4;//By euler characteristic
 
 	/// only used on host
 	constexpr int G_MAX_PARTICLE_NUM = 1000000;

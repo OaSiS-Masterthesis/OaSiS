@@ -1276,7 +1276,6 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 			vec9 contrib;
 			calculate_contribution_and_store_particle_data<MaterialType>(particle_buffer, next_particle_buffer, advection_source_blockno, source_pidib, src_blockno, particle_id_in_block, dt, A.data_arr(), contrib.data_arr(), store_particle_buffer_tmp);
 
-vec9 contrib_prev = contrib;
 			//Update momentum?
 			//Multiply A with mass to complete it. Then subtract current momentum?
 			//C * m = A * D^-1

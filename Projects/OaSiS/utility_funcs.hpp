@@ -103,6 +103,32 @@ constexpr Duration compute_dt(float max_vel, const Duration cur_time, const Dura
 }
 //NOLINTEND(readability-magic-numbers) Magic numbers are formula-specific
 
+//Copied from https://stackoverflow.com/questions/8622256/in-c11-is-sqrt-defined-as-constexpr
+namespace Detail
+{
+	template<typename T>
+    constexpr T sqrtNewtonRaphson(T x, T curr, T prev)
+    {
+        return curr == prev
+            ? curr
+            : sqrtNewtonRaphson(x, static_cast<T>(0.5) * (curr + x / curr), curr);
+    }
+}
+
+/*
+* Constexpr version of the square root
+* Return value:
+*   - For a finite and non-negative value of "x", returns an approximation for the square root of "x"
+*   - Otherwise, returns NaN
+*/
+template<typename T>
+constexpr T const_sqrt(T x)
+{
+    return x >= static_cast<T>(0.0) && x < std::numeric_limits<T>::infinity()
+        ? Detail::sqrtNewtonRaphson(x, x, static_cast<T>(0.0))
+        : std::numeric_limits<T>::quiet_NaN();
+}
+
 }// namespace mn
 
 #endif

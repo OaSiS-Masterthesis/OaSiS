@@ -246,7 +246,7 @@ __forceinline__ __host__ __device__ void minimize(const std::array<T, Dim * Dim>
 //NOTE: Remember to set x to a feasible staring point
 //NOTE: This assumes that g and gradient of f are linear combinations Ax + b
 template <typename T, std::size_t Dim, std::size_t NumberOfInequalityConstraints>
-__forceinline__ __host__ __device__ void constraint_convex_optimization(const std::array<T, Dim * Dim>& a, const std::array<T, Dim>& b, const std::array<T, Dim * Dim>& gradient_f_mat, const std::array<T, Dim>& gradient_f_const, const std::array<T, Dim * Dim>& g_mat[NumberOfInequalityConstraints], const std::array<T, Dim>& g_const[NumberOfInequalityConstraints], const std::array<T, Dim>& x_0, std::array<T, Dim>& x, const T t_0, const T mu, const T epsilon){
+__forceinline__ __host__ __device__ __forceinline__ __host__ __device__ void constraint_convex_optimization(const std::array<T, Dim * Dim>& a, const std::array<T, Dim>& b, const std::array<T, Dim * Dim>& gradient_f_mat, const std::array<T, Dim>& gradient_f_const, const std::array<T, Dim * Dim>& g_mat[NumberOfInequalityConstraints], const std::array<T, Dim>& g_const[NumberOfInequalityConstraints], const std::array<T, Dim>& x_0, std::array<T, Dim>& x, const T t_0, const T mu, const T epsilon){
 	//Init x and t
 	x = x_0;
 	T t = t_0;
