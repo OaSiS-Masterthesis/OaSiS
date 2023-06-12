@@ -29,7 +29,7 @@ __global__ void activate_blocks(uint32_t particle_count, ParticleArray particle_
 	}
 
 	//Get block id by particle pos
-	const ivec3 coord	= get_block_id({particle_array.val(_0, particle_id), particle_array.val(_1, particle_id), particle_array.val(_2, particle_id)}, grid.get_offset()) - 2;
+	const ivec3 coord	= get_cell_id({particle_array.val(_0, particle_id), particle_array.val(_1, particle_id), particle_array.val(_2, particle_id)}, grid.get_offset()) - 2;
 	const ivec3 blockid = coord / static_cast<int>(config::G_BLOCKSIZE);
 
 	//Create block in partition
@@ -52,7 +52,7 @@ __global__ void activate_blocks_for_shell(uint32_t particle_count, const Triangl
 	pos[2] = vertex_data.val(_3, particle_id);
 	
 	//Get block id by particle pos
-	const ivec3 coord	= get_block_id(pos.data_arr(), grid.get_offset()) - 2;
+	const ivec3 coord	= get_cell_id(pos.data_arr(), grid.get_offset()) - 2;
 	const ivec3 blockid = coord / static_cast<int>(config::G_BLOCKSIZE);
 
 	//Create block in partition
@@ -67,7 +67,7 @@ __global__ void build_particle_cell_buckets(uint32_t particle_count, ParticleArr
 	}
 
 	//Get block id by particle pos
-	const ivec3 coord	= get_block_id({particle_array.val(_0, particle_id), particle_array.val(_1, particle_id), particle_array.val(_2, particle_id)}, grid.get_offset()) - 2;
+	const ivec3 coord	= get_cell_id({particle_array.val(_0, particle_id), particle_array.val(_1, particle_id), particle_array.val(_2, particle_id)}, grid.get_offset()) - 2;
 	const ivec3 blockid = coord / static_cast<int>(config::G_BLOCKSIZE);
 
 	//Fetch block number
@@ -125,7 +125,7 @@ __global__ void store_triangle_shell_vertices_in_bucket(uint32_t particle_count,
 	pos[2] = vertex_data.val(_3, particle_id);
 	
 	//Get block id by particle pos
-	const ivec3 coord	= get_block_id(pos.data_arr(), grid.get_offset()) - 2;
+	const ivec3 coord	= get_cell_id(pos.data_arr(), grid.get_offset()) - 2;
 	const ivec3 blockid = coord / static_cast<int>(config::G_BLOCKSIZE);
 
 	//Fetch block number
@@ -179,7 +179,7 @@ __global__ void store_triangle_shell_faces_in_bucket(uint32_t face_count, const 
 		positions[i][1] = shell_data_outer.val(_2, current_vertex_index);
 		positions[i][2] = shell_data_outer.val(_3, current_vertex_index);
 		
-		const ivec3 coord = get_block_id(positions[i].data_arr(), grid.get_offset()) - 2;
+		const ivec3 coord = get_cell_id(positions[i].data_arr(), grid.get_offset()) - 2;
 		blockids[i] = coord / static_cast<int>(config::G_BLOCKSIZE);
 	}
 	
@@ -414,10 +414,10 @@ __global__ void rasterize(uint32_t particle_counts, const ParticleArray particle
 	//contrib = (c * mass - contrib * dt.count()) * config::G_D_INV;
 
 	//Calculate grid index
-	const ivec3 global_base_index = get_block_id(global_pos.data_arr(), grid.get_offset()) - 1;
+	const ivec3 global_base_index = get_cell_id(global_pos.data_arr(), grid.get_offset()) - 1;
 
 	//Calculate position relative to grid cell
-	const vec3 local_pos = global_pos - (global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2])) * config::G_DX;
+	const vec3 local_pos = global_pos - (global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
 
 	//Calc kernel
 	vec<vec3, 3> dws;
@@ -1205,10 +1205,10 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 		//Delete particle with mass 0.0
 		if(mass > 0.0f){
 			//Get position of grid cell
-			ivec3 global_base_index = get_block_id(pos.data_arr(), grid.get_offset()) - 1;
+			ivec3 global_base_index = get_cell_id(pos.data_arr(), grid.get_offset()) - 1;
 
 			//Get position relative to grid cell
-			vec3 local_pos = pos - (global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2])) * config::G_DX;
+			vec3 local_pos = pos - (global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
 
 			//Save global_base_index
 			ivec3 base_index = global_base_index;
@@ -1282,10 +1282,10 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 			contrib = (A * mass - contrib * new_dt.count()) * config::G_D_INV;
 
 			//Calculate grid index after movement
-			ivec3 new_global_base_index = get_block_id(pos.data_arr(), grid.get_offset()) - 1;
+			ivec3 new_global_base_index = get_cell_id(pos.data_arr(), grid.get_offset()) - 1;
 
 			//Update local position
-			local_pos = pos - (new_global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2])) * config::G_DX;
+			local_pos = pos - (new_global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
 			
 			//Store index and movement direction
 			{
@@ -1458,10 +1458,10 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 		//float J	 = fetch_particle_buffer_tmp.J;
 
 		//Get position of grid cell
-		ivec3 global_base_index = get_block_id(pos.data_arr(), grid.get_offset()) - 1;
+		ivec3 global_base_index = get_cell_id(pos.data_arr(), grid.get_offset()) - 1;
 
 		//Get position relative to grid cell
-		vec3 local_pos = pos - (global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2])) * config::G_DX;
+		vec3 local_pos = pos - (global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
 
 		//Save global_base_index
 		ivec3 base_index = global_base_index;
@@ -1524,7 +1524,7 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 		const vec3 difference_pos = new_pos - pos;
 		const vec3 direction = difference_pos / sqrt(difference_pos[0] * difference_pos[0] + difference_pos[1] * difference_pos[1] + difference_pos[2] * difference_pos[2]);
 		
-		const ivec3 next_block_id = (get_block_id(new_pos.data_arr(), grid.get_offset()) - 2) / static_cast<int>(config::G_BLOCKSIZE);
+		const ivec3 next_block_id = (get_cell_id(new_pos.data_arr(), grid.get_offset()) - 2) / static_cast<int>(config::G_BLOCKSIZE);
 		const int next_block_no = partition.query(next_block_id);
 		
 		//TODO: How calculate this
@@ -2205,10 +2205,10 @@ __global__ void grid_to_shell(Duration dt, Duration new_dt, const ParticleBuffer
 		deformation_gradient[8] = vertex_data.val(_15, vertex_id);
 		
 		//Get position of grid cell
-		ivec3 global_base_index = get_block_id(pos.data_arr(), grid.get_offset()) - 1;
+		ivec3 global_base_index = get_cell_id(pos.data_arr(), grid.get_offset()) - 1;
 
 		//Get position relative to grid cell
-		vec3 local_pos = pos - (global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2])) * config::G_DX;
+		vec3 local_pos = pos - (global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
 
 		//Save global_base_index
 		ivec3 base_index = global_base_index;
@@ -2326,8 +2326,8 @@ __forceinline__ __device__ float spawn_new_particles(ParticleBuffer<MaterialType
 	}
 
 	//Calculate grid index before and after movement
-	const ivec3 global_base_index = get_block_id(prev_pos, grid.get_offset()) - 1;
-	const ivec3 new_global_base_index = get_block_id(pos, grid.get_offset()) - 1;
+	const ivec3 global_base_index = get_cell_id(prev_pos, grid.get_offset()) - 1;
+	const ivec3 new_global_base_index = get_cell_id(pos, grid.get_offset()) - 1;
 	
 	const ivec3 cellid = new_global_base_index - 1;
 	
@@ -2356,13 +2356,13 @@ __forceinline__ __device__ float spawn_new_particles(ParticleBuffer<MaterialType
 		//TODO: Different way to calculate this?
 		//NOTE: 0.0 is excluded by curand_uniform so we take 0.5 - curand_uniform to get range [-0.5; 0.5[;
 		const vec3 particle_pos {
-			  (static_cast<float>(new_global_base_index[0] + 1) + grid.get_offset()[0] + (0.5f - curand_uniform(&random_state))) * config::G_DX
-			, (static_cast<float>(new_global_base_index[1] + 1) + grid.get_offset()[1] + (0.5f - curand_uniform(&random_state))) * config::G_DX
-			, (static_cast<float>(new_global_base_index[2] + 1) + grid.get_offset()[2] + (0.5f - curand_uniform(&random_state))) * config::G_DX
+			  (static_cast<float>(new_global_base_index[0] + 1) + grid.get_offset()[0] * config::G_BLOCKSIZE + (0.5f - curand_uniform(&random_state))) * config::G_DX
+			, (static_cast<float>(new_global_base_index[1] + 1) + grid.get_offset()[1] * config::G_BLOCKSIZE + (0.5f - curand_uniform(&random_state))) * config::G_DX
+			, (static_cast<float>(new_global_base_index[2] + 1) + grid.get_offset()[2] * config::G_BLOCKSIZE + (0.5f - curand_uniform(&random_state))) * config::G_DX
 		};
 
 		//TODO: Ensure particle_pos is in the right cell. Or calc cell by particle pos and store momentum in the right place
-		//const ivec3 new_global_base_index1 = get_block_id(particle_pos.data_arr(), grid.get_offset()) - 1;
+		//const ivec3 new_global_base_index1 = get_cell_id(particle_pos.data_arr(), grid.get_offset()) - 1;
 		//const ivec3 blockid0 = (new_global_base_index - 1) / static_cast<int>(config::G_BLOCKSIZE);
 		//const ivec3 blockid1 = (new_global_base_index1 - 1) / static_cast<int>(config::G_BLOCKSIZE);
 		//printf("A %d %d %d # %d %d %d - ", blockid0[0], blockid0[1], blockid0[2], blockid1[0], blockid1[1], blockid1[2]);
@@ -2559,7 +2559,7 @@ __global__ void shell_to_grid(Duration dt, Duration new_dt, int partition_block_
 		vec9 A = {};
 			
 		//Get position of grid cell
-		ivec3 base_index = get_block_id(shell_pos.data_arr(), next_grid.get_offset()) - 1;
+		ivec3 base_index = get_cell_id(shell_pos.data_arr(), next_grid.get_offset()) - 1;
 
 		//TODO: Advection?
 		CalculateContributionIntermediate calculate_contribution_tmp = {};
@@ -2613,10 +2613,10 @@ __global__ void shell_to_grid(Duration dt, Duration new_dt, int partition_block_
 		*/
 
 		//Calculate grid index after movement
-		ivec3 new_global_base_index = get_block_id(extrapolated_pos.data_arr(), next_grid.get_offset()) - 1;
+		ivec3 new_global_base_index = get_cell_id(extrapolated_pos.data_arr(), next_grid.get_offset()) - 1;
 
 		//Get position relative to grid cell
-		const vec3 local_pos = extrapolated_pos - (new_global_base_index + vec3(next_grid.get_offset()[0], next_grid.get_offset()[1], next_grid.get_offset()[2])) * config::G_DX;
+		const vec3 local_pos = extrapolated_pos - (new_global_base_index + vec3(next_grid.get_offset()[0], next_grid.get_offset()[1], next_grid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
 
 		//Calculate weights and mask global index
 		vec3x3 dws;
@@ -2889,8 +2889,8 @@ __global__ void check_partition_domain(uint32_t block_count, int did, Domain con
 	}
 }
 
-template<typename Partition, typename ParticleBuffer, typename ParticleArray>
-__global__ void retrieve_particle_buffer(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, ParticleArray particle_array, int* parcount) {
+template<typename Partition, typename ParticleBuffer, typename AlphaShapesParticleBuffer, typename ParticleArray>
+__global__ void retrieve_particle_buffer(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, const AlphaShapesParticleBuffer alpha_shapes_particle_buffer, ParticleArray particle_array, int* alpha_shapes_point_type_transfer_device_buffer, float* alpha_shapes_normal_transfer_device_buffer, float* alpha_shapes_mean_curvature_transfer_device_buffer, float* alpha_shapes_gauss_curvature_transfer_device_buffer, int* parcount) {
 	const int particle_counts	= next_particle_buffer.particle_bucket_sizes[blockIdx.x];
 	const ivec3 blockid			= partition.active_keys[blockIdx.x];
 	const auto advection_bucket = next_particle_buffer.blockbuckets + blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK;
@@ -2915,6 +2915,7 @@ __global__ void retrieve_particle_buffer(Partition partition, Partition prev_par
 
 		//Get bin from particle buffer
 		const auto source_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib / config::G_BIN_CAPACITY);
+		const auto alpha_shapes_source_bin = alpha_shapes_particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib / config::G_BIN_CAPACITY);
 
 		//Calculate particle id in destination buffer
 		const auto particle_id = atomicAdd(parcount, 1);
@@ -2923,6 +2924,13 @@ __global__ void retrieve_particle_buffer(Partition partition, Partition prev_par
 		particle_array.val(_0, particle_id) = source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
 		particle_array.val(_1, particle_id) = source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
 		particle_array.val(_2, particle_id) = source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
+		
+		alpha_shapes_point_type_transfer_device_buffer[particle_id] = alpha_shapes_source_bin.val(_0, source_pidib % config::G_BIN_CAPACITY);
+		alpha_shapes_normal_transfer_device_buffer[3 * particle_id] = alpha_shapes_source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
+		alpha_shapes_normal_transfer_device_buffer[3 * particle_id + 1] = alpha_shapes_source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
+		alpha_shapes_normal_transfer_device_buffer[3 * particle_id + 2] = alpha_shapes_source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
+		alpha_shapes_mean_curvature_transfer_device_buffer[particle_id] = alpha_shapes_source_bin.val(_4, source_pidib % config::G_BIN_CAPACITY);
+		alpha_shapes_gauss_curvature_transfer_device_buffer[particle_id] = alpha_shapes_source_bin.val(_5, source_pidib % config::G_BIN_CAPACITY);
 	}
 }
 

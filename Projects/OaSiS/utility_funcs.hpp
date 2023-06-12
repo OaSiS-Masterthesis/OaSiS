@@ -72,8 +72,8 @@ constexpr vec<float, 4> bspline_weight<float, 3>(float p)
 	return dw;
 }
 
-constexpr ivec3 get_block_id(const std::array<float, 3>& position, const std::array<float, 3>& relative_offset) {
-	return ivec3(static_cast<int>(std::lround(position[0] * config::G_DX_INV - relative_offset[0])), static_cast<int>(std::lround(position[1] * config::G_DX_INV - relative_offset[1])), static_cast<int>(std::lround(position[2] * config::G_DX_INV - relative_offset[2])));
+constexpr ivec3 get_cell_id(const std::array<float, 3>& position, const std::array<float, 3>& relative_offset) {
+	return ivec3(static_cast<int>(std::lround(position[0] * config::G_DX_INV - relative_offset[0] * config::G_BLOCKSIZE)), static_cast<int>(std::lround(position[1] * config::G_DX_INV - relative_offset[1] * config::G_BLOCKSIZE)), static_cast<int>(std::lround(position[2] * config::G_DX_INV - relative_offset[2] * config::G_BLOCKSIZE)));
 }
 
 constexpr int dir_offset(const std::array<int, 3>& d) {

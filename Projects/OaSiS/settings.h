@@ -92,9 +92,10 @@ namespace config {
 
 	constexpr float G_GRAVITY = -9.8f;
 	
-	constexpr float MAX_ALPHA = 0.1f;//FIXME:Set to correct value
-	//FIXME: Maybe smaller amount?
-	constexpr size_t ALPHA_SHAPES_TRIANGLES_PER_BLOCK = 2 * G_PARTICLE_NUM_PER_BLOCK - 4;//By euler characteristic
+	constexpr float MAX_ALPHA = config::G_DX;//FIXME:Set to correct value
+	//TODO: Adjust this? (maybe smaller)
+	constexpr size_t ALPHA_SHAPES_TRIANGLES_PER_CELL = MAX_PARTICLES_IN_CELL;//Max value by euler characteristic: 2 * G_PARTICLE_NUM_PER_BLOCK - 4
+	constexpr size_t ALPHA_SHAPES_TRIANGLES_PER_BLOCK = (ALPHA_SHAPES_TRIANGLES_PER_CELL * (1 << (BLOCK_BITS * 3)));
 
 	/// only used on host
 	constexpr int G_MAX_PARTICLE_NUM = 1000000;

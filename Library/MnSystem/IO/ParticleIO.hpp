@@ -28,6 +28,48 @@ void write_partio(const std::string& filename, const std::vector<std::array<T, d
 	parts->release();
 }
 
+void begin_write_partio(Partio::ParticlesDataMutable** parts, const size_t particle_count) {
+	*parts = Partio::create();
+	(*parts)->addParticles(particle_count);
+}
+
+void end_write_partio(const std::string& filename, Partio::ParticlesDataMutable* parts) {
+	Partio::write(filename.c_str(), *parts);
+	parts->release();
+}
+
+template<typename T, typename std::enable_if<std::is_floating_point<T>::value, bool>::type = true>
+void write_partio_add(const std::vector<T>& data, const std::string& tag, Partio::ParticlesDataMutable* parts){
+	Partio::ParticleAttribute attrib = parts->addAttribute(tag.c_str(), Partio::FLOAT, 1);
+
+	for(int idx = 0; idx < (int) data.size(); ++idx) {
+		float* val = parts->dataWrite<float>(attrib, idx);
+		*val = data[idx];
+	}
+}
+
+template<typename T, typename std::enable_if<std::is_integral<T>::value, bool>::type = true>
+void write_partio_add(const std::vector<T>& data, const std::string& tag, Partio::ParticlesDataMutable* parts){
+	Partio::ParticleAttribute attrib = parts->addAttribute(tag.c_str(), Partio::INT, 1);
+
+	for(int idx = 0; idx < (int) data.size(); ++idx) {
+		int* val = parts->dataWrite<int>(attrib, idx);
+		*val = data[idx];
+	}
+}
+
+template<typename T, std::size_t dim, typename std::enable_if<std::is_floating_point<T>::value, bool>::type = true>
+void write_partio_add(const std::vector<std::array<T, dim>>& data, const std::string& tag, Partio::ParticlesDataMutable* parts){
+	Partio::ParticleAttribute attrib = parts->addAttribute(tag.c_str(), Partio::VECTOR, dim);
+
+	for(int idx = 0; idx < (int) data.size(); ++idx) {
+		float* val = parts->dataWrite<float>(attrib, idx);
+		for(int k = 0; k < dim; k++) {
+			val[k] = data[idx][k];
+		}
+	}
+}
+
 /// have issues
 auto read_sdf(const std::string& fn, float ppc, float dx, vec<float, 3> offset, vec<float, 3> lengths) {
 	std::vector<std::array<float, 3>> data;

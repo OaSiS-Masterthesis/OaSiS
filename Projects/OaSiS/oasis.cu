@@ -200,7 +200,7 @@ void parse_scene(const std::string& fn, std::unique_ptr<mn::OasisSimulator>& ben
 								velocity[d] = model["velocity"].GetArray()[d].GetFloat();
 							}
 							
-							if(check_member(model, "grid_offset")) {
+							if(model.HasMember("grid_offset")) {
 								for(int d = 0; d < mn::config::NUM_DIMENSIONS; ++d) {
 									grid_offset[d] = model["grid_offset"].GetArray()[d].GetFloat();
 								}
