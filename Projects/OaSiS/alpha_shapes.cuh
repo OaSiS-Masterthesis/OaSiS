@@ -25,17 +25,19 @@
 namespace mn {
 	
 //Big enough to cover all cells near the current cell that can contain particles near enough to make a face an alpha face
-constexpr size_t ALPHA_SHAPES_KERNEL_SIZE = static_cast<size_t>(config::G_DX / const_sqrt(config::MAX_ALPHA)) + 1;//NOTE:Static cast required for expression being const
+constexpr size_t ALPHA_SHAPES_KERNEL_SIZE = static_cast<size_t>(const_sqrt(config::MAX_ALPHA) / config::G_DX) + 1;//NOTE:Static cast required for expression being const
 constexpr size_t ALPHA_SHAPES_KERNEL_LENGTH = 2 * ALPHA_SHAPES_KERNEL_SIZE + 1;//Sidelength of the kernel cube
 constexpr size_t ALPHA_SHAPES_NUMBER_OF_CELLS = ALPHA_SHAPES_KERNEL_LENGTH * ALPHA_SHAPES_KERNEL_LENGTH * ALPHA_SHAPES_KERNEL_LENGTH;
 
-//constexpr size_t ALPHA_SHAPES_MAX_PARTICLE_COUNT = ALPHA_SHAPES_NUMBER_OF_CELLS * config::G_MAX_PARTICLES_IN_CELL;
+constexpr size_t ALPHA_SHAPES_MAX_PARTICLE_COUNT = ALPHA_SHAPES_NUMBER_OF_CELLS * config::G_MAX_PARTICLES_IN_CELL;
 constexpr size_t ALPHA_SHAPES_MAX_TRIANGLE_COUNT = ALPHA_SHAPES_NUMBER_OF_CELLS * config::ALPHA_SHAPES_TRIANGLES_PER_CELL;
 
 //FIXME: Instead this allocate additional temporary array? Or find different solution (e.g. by maximum count at which other triangles get negligtable; then olny use these with biggest angle)
 constexpr size_t MAX_TRIANGLE_COUNT_PER_VERTEX = 256;
 
 constexpr unsigned int ALPHA_SHAPES_MAX_KERNEL_SIZE = config::G_MAX_ACTIVE_BLOCK;
+
+constexpr float ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD = 1e-9;//TODO: Maybe adjust threshold
 
 using AlphaShapesBlockDomain	   = CompactDomain<char, config::G_BLOCKSIZE, config::G_BLOCKSIZE, config::G_BLOCKSIZE>;
 using AlphaShapesGridBufferDomain  = CompactDomain<int, config::G_MAX_ACTIVE_BLOCK>;
@@ -212,7 +214,7 @@ __forceinline__ __host__ __device__ std::array<float, 3> alpha_shapes_calculate_
 	return face_normal.data_arr();
 }
 
-//Basically copied from https://rodolphe-vaillant.fr/entry/127/find-a-tetrahedron-circumcenter
+//Basically copied from https://rodolphe-vaillant.fr/entry/127/find-a-tetrahedron-circumcenter and https://www.mcs.anl.gov/~fathom/meshkit-docs/html/circumcenter_8cpp_source.html
 __forceinline__ __device__ void alpha_shapes_get_circumsphere(const std::array<float, 3>& a, const std::array<float, 3>& b, const std::array<float, 3>& c, const std::array<float, 3>& d, std::array<float, 3>& center, float& radius){
     // Use coordinates relative to point 'a' of the tetrahedron.
  
@@ -266,7 +268,7 @@ __forceinline__ __device__ void alpha_shapes_get_circumsphere(const std::array<f
     center[0] = a[0] + circ_x * denominator;
     center[1] = a[1] + circ_y * denominator;
     center[2] = a[2] + circ_z * denominator;
-	radius = std::sqrt(circ_x * circ_x + circ_y * circ_y + circ_z * circ_z) * denominator;
+	radius = std::sqrt(circ_x * circ_x + circ_y * circ_y + circ_z * circ_z) * std::abs(denominator);
 }
 
 template<typename Partition, MaterialE MaterialType>
@@ -346,8 +348,10 @@ __forceinline__ __device__ bool alpha_shapes_get_fourth_point(const ParticleBuff
 	
 	const vec3 triangle_normal_vec {triangle_normal[0], triangle_normal[1], triangle_normal[2]};
 	
+	const vec3 p0_position {triangle_positions[0][0], triangle_positions[0][1], triangle_positions[0][2]};
+	
 	//Only search in normal direction
-	ForwardIterator p3_iter = thrust::min_element(thrust::seq, begin, end, [&particle_buffer, &next_particle_buffer, &prev_partition, &partition, &blockid, &triangle_positions, &triangle_normal_vec](const int& a, const int& b){
+	ForwardIterator p3_iter = thrust::min_element(thrust::seq, begin, end, [&particle_buffer, &next_particle_buffer, &prev_partition, &partition, &blockid, &triangle_positions, &triangle_normal_vec, &p0_position](const int& a, const int& b){
 		const std::array<float, 3> particle_position_arr_a = alpha_shapes_get_particle_position(particle_buffer, next_particle_buffer, prev_partition, partition, a, blockid);
 		const std::array<float, 3> particle_position_arr_b = alpha_shapes_get_particle_position(particle_buffer, next_particle_buffer, prev_partition, partition, b, blockid);
 		
@@ -355,8 +359,8 @@ __forceinline__ __device__ bool alpha_shapes_get_fourth_point(const ParticleBuff
 		const vec3 particle_position_b {particle_position_arr_b[0], particle_position_arr_b[1], particle_position_arr_b[2]};
 		
 		//Test if in half_space; Also sorts out particles that lie in a plane with the triangle
-		bool in_halfspace_a = triangle_normal_vec.dot(particle_position_a) > 0;
-		bool in_halfspace_b = triangle_normal_vec.dot(particle_position_b) > 0;
+		bool in_halfspace_a = triangle_normal_vec.dot(particle_position_a - p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
+		bool in_halfspace_b = triangle_normal_vec.dot(particle_position_b - p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
 		
 		if(!in_halfspace_a && !in_halfspace_b){
 			//Calculate delaunay spheres
@@ -387,20 +391,19 @@ __forceinline__ __device__ bool alpha_shapes_get_fourth_point(const ParticleBuff
 	//FIXME: Do we have to recheck that no other point lies in circumsphere or is this guranteed?
 		
 	//Test if in half_space; Also sorts out particles that lie in a plane with the triangle
-	return (triangle_normal_vec.dot(p3_position) > 0);
+	return (triangle_normal_vec.dot(p3_position - p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD);
 }
 
-__forceinline__ __device__ void alpha_shapes_check_contact_condition(std::array<int, 3>* triangles, bool* triangles_is_alpha, std::array<int, 3>* alpha_triangles, int& alpha_triangle_count, int& current_triangle_count, int& next_triangle_count, int& current_triangle_index, const int p3_id, const bool is_alpha){
-	const std::array<int, 3>& current_triangle = triangles[current_triangle_index];
+__forceinline__ __device__ void alpha_shapes_check_contact_condition(std::array<int, 3>* triangles, bool* triangles_is_alpha, int& alpha_triangle_count, int& current_triangle_count, int& next_triangle_count, const int p3_id, const bool is_alpha){
+	const std::array<int, 3> current_triangle = triangles[0];
 	
 	std::array<int, 4> contact_indices;
-	int face_contacts = 1;
-	
-	contact_indices[0] = current_triangle_index;
+	int face_contacts = 0;
 	
 	//Find triangles in touch
-	for(int contact_triangle_index = 0; contact_triangle_index < current_triangle_count; contact_triangle_index++) {
-		const std::array<int, 3>& contact_triangle = triangles[current_triangle_index];
+	//NOTE: current_triangle always is in contact
+	for(int contact_triangle_index = 0; contact_triangle_index < current_triangle_count + next_triangle_count; contact_triangle_index++) {
+		const std::array<int, 3>& contact_triangle = triangles[contact_triangle_index];
 		
 		//Test for face contact
 		if(
@@ -412,14 +415,15 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(std::array<
 		}
 	}
 	
-	//Next triangle list starts at end of active triangle list
 	int next_triangle_start = current_triangle_count;
 	
-	for(int contact_triangle_index = 0; contact_triangle_index < face_contacts; contact_triangle_index++) {
+	for(int contact_triangle_index = face_contacts - 1; contact_triangle_index >= 0; contact_triangle_index--) {//NOTE: Loop goes backwards to handle big indices first which allows easier swapping
 		//If the new tetrahedron is in alpha and the current face is not, then the current face is a boundary face that has to be kept; Same the other way round
 		if(triangles_is_alpha[contact_indices[contact_triangle_index]] != is_alpha){
-			assert(alpha_triangle_count < ALPHA_SHAPES_MAX_TRIANGLE_COUNT && "Too much triangles");
-			alpha_triangles[alpha_triangle_count++] = triangles[contact_indices[contact_triangle_index]];
+			if((static_cast<int>(ALPHA_SHAPES_MAX_TRIANGLE_COUNT) - alpha_triangle_count) < current_triangle_count + next_triangle_count){
+				printf("Lists intersect: alpha_triangle is %d, triangles is %d\n", (static_cast<int>(ALPHA_SHAPES_MAX_TRIANGLE_COUNT) - alpha_triangle_count), current_triangle_count + next_triangle_count);
+			}
+			triangles[ALPHA_SHAPES_MAX_TRIANGLE_COUNT - 1 - alpha_triangle_count++] = triangles[contact_indices[contact_triangle_index]];
 		}
 		
 		//Swap contact triangles to end of list to remove them
@@ -430,11 +434,7 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(std::array<
 			//Decrease triangle count
 			current_triangle_count--;
 		}else{
-			assert(next_triangle_start < ALPHA_SHAPES_MAX_TRIANGLE_COUNT && "Too much triangles");
-			swap_index = next_triangle_start;//Swap with first next triangle
-			
-			//Increase start
-			next_triangle_start++;
+			swap_index = next_triangle_start + next_triangle_count - 1;//Swap with first next triangle
 			
 			//Decrease next triangle count
 			next_triangle_count--;
@@ -445,27 +445,38 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(std::array<
 		thrust::swap(triangles_is_alpha[contact_indices[contact_triangle_index]], triangles_is_alpha[swap_index]);
 	}
 	
-	//Empty space is now from [current_triangle_count; next_triangle_start[
+	//Fill gap between current list and next list
+	for(int i = 0; i < next_triangle_start - current_triangle_count; ++i) {
+		thrust::swap(triangles[next_triangle_start - 1 - i], triangles[next_triangle_start + next_triangle_count - 1 - i]);
+		thrust::swap(triangles_is_alpha[next_triangle_start - 1 - i], triangles_is_alpha[next_triangle_start + next_triangle_count - 1 - i]);
+	}
+	
+	int next_triangle_end = current_triangle_count + next_triangle_count;
+	next_triangle_count += (4 - face_contacts);
+	
+	if((static_cast<int>(ALPHA_SHAPES_MAX_TRIANGLE_COUNT) - 1 - alpha_triangle_count) < current_triangle_count + next_triangle_count){
+		printf("Lists intersect: alpha_triangle is %d, triangles is %d\n", (static_cast<int>(ALPHA_SHAPES_MAX_TRIANGLE_COUNT) - 1 - alpha_triangle_count), current_triangle_count + next_triangle_count);
+	}
 	
 	//Add new triangles
 	//Ensure correct order (current_triangle cw normal points outwards)
 	if(face_contacts == 1){
-		triangles[next_triangle_start - 3][0] = current_triangle[0];
-		triangles[next_triangle_start - 3][1] = current_triangle[1];
-		triangles[next_triangle_start - 3][2] = p3_id;
-		triangles[next_triangle_start - 2][0] = current_triangle[1];
-		triangles[next_triangle_start - 2][1] = current_triangle[2];
-		triangles[next_triangle_start - 2][2] = p3_id;
-		triangles[next_triangle_start - 1][0] = current_triangle[2];
-		triangles[next_triangle_start - 1][1] = current_triangle[0];
-		triangles[next_triangle_start - 1][2] = p3_id;
+		triangles[next_triangle_end][0] = current_triangle[0];
+		triangles[next_triangle_end][1] = current_triangle[1];
+		triangles[next_triangle_end][2] = p3_id;
+		triangles[next_triangle_end + 1][0] = current_triangle[1];
+		triangles[next_triangle_end + 1][1] = current_triangle[2];
+		triangles[next_triangle_end + 1][2] = p3_id;
+		triangles[next_triangle_end + 2][0] = current_triangle[2];
+		triangles[next_triangle_end + 2][1] = current_triangle[0];
+		triangles[next_triangle_end + 2][2] = p3_id;
 		
-		triangles_is_alpha[next_triangle_start - 3] = is_alpha;
-		triangles_is_alpha[next_triangle_start - 2] = is_alpha;
-		triangles_is_alpha[next_triangle_start - 1] = is_alpha;
+		triangles_is_alpha[next_triangle_end] = is_alpha;
+		triangles_is_alpha[next_triangle_end + 1] = is_alpha;
+		triangles_is_alpha[next_triangle_end + 2] = is_alpha;
 	}else if(face_contacts == 2){
 		std::array<int, 3> triangle_counts_per_vertex;
-		for(int contact_triangle_index = 1; contact_triangle_index < face_contacts; contact_triangle_index++) {
+		for(int contact_triangle_index = 0; contact_triangle_index < face_contacts; contact_triangle_index++) {
 			//Check which vertices are contacting
 			for(int vertex_index = 0; vertex_index < 3; vertex_index++) {
 				const int particle_index = triangles[contact_indices[contact_triangle_index]][vertex_index];
@@ -479,34 +490,34 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(std::array<
 			}
 		}
 		
-		if(triangle_counts_per_vertex[0] == 0){
-			triangles[next_triangle_start - 2][0] = current_triangle[0];
-			triangles[next_triangle_start - 2][1] = current_triangle[1];
-			triangles[next_triangle_start - 2][2] = p3_id;
-			triangles[next_triangle_start - 1][0] = current_triangle[2];
-			triangles[next_triangle_start - 1][1] = current_triangle[0];
-			triangles[next_triangle_start - 1][2] = p3_id;
-		}else if(triangle_counts_per_vertex[1] == 0){
-			triangles[next_triangle_start - 2][0] = current_triangle[0];
-			triangles[next_triangle_start - 2][1] = current_triangle[1];
-			triangles[next_triangle_start - 2][2] = p3_id;
-			triangles[next_triangle_start - 1][0] = current_triangle[1];
-			triangles[next_triangle_start - 1][1] = current_triangle[2];
-			triangles[next_triangle_start - 1][2] = p3_id;
-		}else {//triangle_counts_per_vertex[2] == 0
-			triangles[next_triangle_start - 2][0] = current_triangle[1];
-			triangles[next_triangle_start - 2][1] = current_triangle[2];
-			triangles[next_triangle_start - 2][2] = p3_id;
-			triangles[next_triangle_start - 1][0] = current_triangle[2];
-			triangles[next_triangle_start - 1][1] = current_triangle[0];
-			triangles[next_triangle_start - 1][2] = p3_id;
+		if(triangle_counts_per_vertex[0] == 1){
+			triangles[next_triangle_end][0] = current_triangle[0];
+			triangles[next_triangle_end][1] = current_triangle[1];
+			triangles[next_triangle_end][2] = p3_id;
+			triangles[next_triangle_end + 1][0] = current_triangle[2];
+			triangles[next_triangle_end + 1][1] = current_triangle[0];
+			triangles[next_triangle_end + 1][2] = p3_id;
+		}else if(triangle_counts_per_vertex[1] == 1){
+			triangles[next_triangle_end][0] = current_triangle[0];
+			triangles[next_triangle_end][1] = current_triangle[1];
+			triangles[next_triangle_end][2] = p3_id;
+			triangles[next_triangle_end + 1][0] = current_triangle[1];
+			triangles[next_triangle_end + 1][1] = current_triangle[2];
+			triangles[next_triangle_end + 1][2] = p3_id;
+		}else {//triangle_counts_per_vertex[2] == 1
+			triangles[next_triangle_end][0] = current_triangle[1];
+			triangles[next_triangle_end][1] = current_triangle[2];
+			triangles[next_triangle_end][2] = p3_id;
+			triangles[next_triangle_end + 1][0] = current_triangle[2];
+			triangles[next_triangle_end + 1][1] = current_triangle[0];
+			triangles[next_triangle_end + 1][2] = p3_id;
 		}
 		
-		triangles_is_alpha[next_triangle_start - 2] = is_alpha;
-		triangles_is_alpha[next_triangle_start - 1] = is_alpha;
+		triangles_is_alpha[next_triangle_end] = is_alpha;
+		triangles_is_alpha[next_triangle_end + 1] = is_alpha;
 	}else if(face_contacts == 3){
 		std::array<int, 3> triangle_counts_per_vertex;
-		for(int contact_triangle_index = 1; contact_triangle_index < face_contacts; contact_triangle_index++) {
+		for(int contact_triangle_index = 0; contact_triangle_index < face_contacts; contact_triangle_index++) {
 			//Check which vertices are contacting
 			for(int vertex_index = 0; vertex_index < 3; vertex_index++) {
 				const int particle_index = triangles[contact_indices[contact_triangle_index]][vertex_index];
@@ -520,38 +531,22 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(std::array<
 			}
 		}
 		
-		if(triangle_counts_per_vertex[0] == 2){
-			triangles[next_triangle_start - 1][0] = current_triangle[1];
-			triangles[next_triangle_start - 1][1] = current_triangle[2];
-			triangles[next_triangle_start - 1][2] = p3_id;
-		}else if(triangle_counts_per_vertex[1] == 2){
-			triangles[next_triangle_start - 1][0] = current_triangle[2];
-			triangles[next_triangle_start - 1][1] = current_triangle[0];
-			triangles[next_triangle_start - 1][2] = p3_id;
-		}else {//triangle_counts_per_vertex[2] == 2
-			triangles[next_triangle_start - 1][0] = current_triangle[0];
-			triangles[next_triangle_start - 1][1] = current_triangle[1];
-			triangles[next_triangle_start - 1][2] = p3_id;
+		if(triangle_counts_per_vertex[0] == 3){
+			triangles[next_triangle_end][0] = current_triangle[1];
+			triangles[next_triangle_end][1] = current_triangle[2];
+			triangles[next_triangle_end][2] = p3_id;
+		}else if(triangle_counts_per_vertex[1] == 3){
+			triangles[next_triangle_end][0] = current_triangle[2];
+			triangles[next_triangle_end][1] = current_triangle[0];
+			triangles[next_triangle_end][2] = p3_id;
+		}else {//triangle_counts_per_vertex[2] == 3
+			triangles[next_triangle_end][0] = current_triangle[0];
+			triangles[next_triangle_end][1] = current_triangle[1];
+			triangles[next_triangle_end][2] = p3_id;
 		}
 		
-		triangles_is_alpha[next_triangle_start - 1] = is_alpha;
+		triangles_is_alpha[next_triangle_end] = is_alpha;
 	}//Otherwise nothing to do, just faces removed
-	
-	next_triangle_start -= (4 - face_contacts);
-	next_triangle_count += (4 - face_contacts);
-	
-	//Fill space between lists
-	for(int swap_index = current_triangle_count; swap_index < next_triangle_start; ++swap_index){
-		//Swap triangle
-		thrust::swap(triangles[swap_index], triangles[next_triangle_start + next_triangle_count - 1]);
-		thrust::swap(triangles_is_alpha[swap_index], triangles_is_alpha[next_triangle_start + next_triangle_count - 1]);
-		
-		//Decrease start
-		next_triangle_start--;
-	}
-	
-	//Decrease index to revisit current triangle that is now the new swapped triangle from the end
-	current_triangle_index--;
 }
 
 template<typename Partition, MaterialE MaterialType>
@@ -696,8 +691,10 @@ __forceinline__ __device__ void alpha_shapes_finalize_particles(const ParticleBu
 				summed_area += face_area * (1.0f / 3.0f);
 				
 				//Store neighbour
-				assert(contact_triangles_count < MAX_TRIANGLE_COUNT_PER_VERTEX && "Too much triangles for this vertex");
-				neighbour_points[contact_triangles_count] = alpha_triangles[current_triangle_index][neighbour_index];
+				if(contact_triangles_count >= MAX_TRIANGLE_COUNT_PER_VERTEX){
+					printf("Too much triangles for this vertex: Is %d but may not be greater then %d\n", contact_triangles_count, static_cast<int>(MAX_TRIANGLE_COUNT_PER_VERTEX));
+				}
+				neighbour_points[contact_triangles_count - 1] = alpha_triangles[current_triangle_index][neighbour_index];
 				
 				printf("A %d %.28f %.28f # %d - ", current_particle_index, face_area, summed_area, contact_triangles_count);
 		
@@ -834,7 +831,6 @@ __forceinline__ __device__ void alpha_shapes_finalize_particles(const ParticleBu
 }
 
 
-
 //FIXME: if n+2 (=5) or more points lie on a sphere there are several possible triangulations; Can we ignore this or do we have to handle this and if so how can we do this; Maybe seep line ensures consistency?
 template<typename Partition, typename Grid, MaterialE MaterialType>
 __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer, const ParticleBuffer<MaterialType> next_particle_buffer, const Partition prev_partition, const Partition partition, const Grid grid, AlphaShapesParticleBuffer alpha_shapes_particle_buffer, AlphaShapesGridBuffer alpha_shapes_grid_buffer, const unsigned int start_index) {
@@ -858,19 +854,18 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 	//std::array<int, 3>* alpha_triangles = reinterpret_cast<std::array<int, 3>*>(current_triangle_data.val_1d(_2, 0));
 	
 	//TODO: If still not enogh memory we can iterate through all particles. Also maybe we can reduce triangle count and maybe merge the arrays or only save alpha triangles; Maybe also we can somehow utilize shared memory?; Also we can split up into several iterations maybe, reusing the same memory; Or first sort globally
-	std::array<int, ALPHA_SHAPES_NUMBER_OF_CELLS * config::G_MAX_PARTICLES_IN_CELL> particle_indices;
+	std::array<int, ALPHA_SHAPES_MAX_PARTICLE_COUNT> particle_indices;
 	std::array<int, config::G_MAX_PARTICLES_IN_CELL> own_particle_indices;
 	
-	std::array<std::array<int, 3>, ALPHA_SHAPES_NUMBER_OF_CELLS * config::ALPHA_SHAPES_TRIANGLES_PER_CELL> triangles;
-	std::array<bool, ALPHA_SHAPES_NUMBER_OF_CELLS * config::ALPHA_SHAPES_TRIANGLES_PER_CELL> triangles_is_alpha;
-	std::array<std::array<int, 3>, ALPHA_SHAPES_NUMBER_OF_CELLS * config::ALPHA_SHAPES_TRIANGLES_PER_CELL> alpha_triangles;
+	//TODO: Actually we only need one buffer for all triangles. We always have a convex hull or a set of convex hulls (for alpha)/A maximum amount of triangles for topologies bugfger than 2 with F = 2V - 2x;
+	std::array<std::array<int, 3>, ALPHA_SHAPES_MAX_TRIANGLE_COUNT> triangles;
+	std::array<bool, ALPHA_SHAPES_MAX_TRIANGLE_COUNT> triangles_is_alpha;
 	
 	/*
 	constexpr size_t TOTAL_ARRAY_SIZE = sizeof(particle_indices)
 			   + sizeof(own_particle_indices)
 			   + sizeof(triangles)
-			   + sizeof(triangles_is_alpha)
-			   + sizeof(alpha_triangles);
+			   + sizeof(triangles_is_alpha);
 	
 	constexpr unsigned long LOCAL_MEMORY_SIZE = (static_cast<size_t>(1) << 17);
 			   
@@ -889,7 +884,7 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 	//TODO: Smaller alpha based on density or cohesion maybe
 	const float alpha = config::MAX_ALPHA;
 	
-	//FIXME: Actually we only need to handle blocks in radius of dx + sqrt(alpha)
+	//FIXME: Actually we only need to handle blocks in radius of sqrt(alpha) around box
 	//Fetch particles
 	int particle_bucket_size = 0;
 	for(int i = -static_cast<int>(ALPHA_SHAPES_KERNEL_SIZE); i <= static_cast<int>(ALPHA_SHAPES_KERNEL_SIZE); ++i){
@@ -920,6 +915,9 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 		}
 	}
 	
+	printf("X %d %d - ", particle_bucket_size, own_particle_bucket_size);
+	
+	//FIXME: Actually we only need to handle blocks in radius of sqrt(alpha) around box
 	//Filter by max distance; This cannot affect particles of current cell
 	const vec3 cell_center = (cellid + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
 	for(int particle_id = 0; particle_id < particle_bucket_size; particle_id++) {
@@ -930,7 +928,8 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 		const vec3 diff = cell_center - particle_position;
 		const float squared_distance = diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2];
 		
-		if(squared_distance > (config::G_DX * config::G_DX + alpha)){
+		//Cell boundary + 2.0f * alpha as max radius
+		if(squared_distance > (1.5f * config::G_DX * config::G_DX + 2.0f * alpha)){
 			//Remove by exchanging with last element
 			thrust::swap(particle_indices[particle_id], particle_indices[particle_bucket_size - 1]);
 			
@@ -962,6 +961,8 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 	//Create first triangle
 	const bool found_initial_triangle = alpha_shapes_get_first_triangle(particle_buffer, next_particle_buffer, prev_partition, partition, particle_indices.data(), blockid, particle_bucket_size, triangles[0]);
 	
+	printf("Z %d %d - ", particle_bucket_size, (found_initial_triangle ? 1 : 0));
+	
 	bool found_initial_tetrahedron = false;
 	float minimum_x;
 	float maximum_x;
@@ -988,6 +989,7 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 			int p3_id;
 			found_initial_tetrahedron = alpha_shapes_get_fourth_point(particle_buffer, next_particle_buffer, prev_partition, partition, particle_indices.begin(), particle_indices.begin() + particle_bucket_size, blockid, current_triangle_positions, p3_id);
 			
+			//If found, current normal is pointing inwards (towards the forth point), so it has to be flipped. Otherwise we only flip the normal temporarly to find the forth point
 			if(!found_initial_tetrahedron){
 				//Flip face normal
 				current_triangle_positions = {
@@ -995,14 +997,16 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 					, p2_position.data_arr()
 					, p1_position.data_arr()
 				};
-				
+
+				found_initial_tetrahedron = alpha_shapes_get_fourth_point(particle_buffer, next_particle_buffer, prev_partition, partition, particle_indices.begin(), particle_indices.begin() + particle_bucket_size, blockid, current_triangle_positions, p3_id);
+			}else{
 				//Flip triangle order to get correct normal direction pointing outwards
 				thrust::swap(triangles[0][1], triangles[0][2]);
 				thrust::swap(p1_position_arr, p2_position_arr);
 				thrust::swap(p1_position, p2_position);
-				
-				alpha_shapes_get_fourth_point(particle_buffer, next_particle_buffer, prev_partition, partition, particle_indices.begin(), particle_indices.begin() + particle_bucket_size, blockid, current_triangle_positions, p3_id);
 			}
+			
+			//NOTE: current_triangle_positions still has inwards pointing normal here
 			
 			if(found_initial_tetrahedron){
 				const std::array<float, 3> p3_position_arr = alpha_shapes_get_particle_position(particle_buffer, next_particle_buffer, prev_partition, partition, p3_id, blockid);
@@ -1037,6 +1041,8 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 			}
 		}
 	}
+	
+	printf("Y %d - ", (found_initial_tetrahedron ? 1 : 0));
 	
 	int active_particles_start = 0;
 	int active_particles_count = 0;
@@ -1075,8 +1081,8 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 			minimum_x = std::numeric_limits<float>::max();
 			maximum_x = std::numeric_limits<float>::min();
 			
-			for(int current_triangle_index = 0; current_triangle_index < current_triangle_count; current_triangle_index++) {
-				const std::array<int, 3> current_triangle = triangles[current_triangle_index];
+			while(current_triangle_count > 0){
+				const std::array<int, 3> current_triangle = triangles[0];
 				
 				const std::array<float, 3> p0_position_arr = alpha_shapes_get_particle_position(particle_buffer, next_particle_buffer, prev_partition, partition, current_triangle[0], blockid);
 				const std::array<float, 3> p1_position_arr = alpha_shapes_get_particle_position(particle_buffer, next_particle_buffer, prev_partition, partition, current_triangle[1], blockid);
@@ -1100,24 +1106,6 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 				
 				//If no tetrahedron could be created we have a boundary face of the convex hull
 				if(found){
-					//Remove the face and move it to alpha if it is alpha
-					
-					if(triangles_is_alpha[current_triangle_index]){
-						assert(alpha_triangle_count < ALPHA_SHAPES_MAX_TRIANGLE_COUNT && "Too much triangles");
-						alpha_triangles[alpha_triangle_count++] = current_triangle;
-					}
-					
-					//Swap contacting triangle to the end
-					thrust::swap(triangles[current_triangle_index], triangles[current_triangle_count - 1]);
-					thrust::swap(triangles_is_alpha[current_triangle_index], triangles_is_alpha[current_triangle_count - 1]);
-					
-					//Decrease triangle count
-					current_triangle_count--;
-					
-					//Revisit swaped triangle
-					current_triangle_index--;
-				}else{
-				
 					//Check alpha shape condition and mark faces accordingly
 					std::array<float, 3> sphere_center;
 					float radius;
@@ -1125,12 +1113,28 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 					const bool is_alpha = (radius * radius <= alpha);
 					
 					//Check contact conditions and update triangle list
-					//NOTE: This decreases current_triangle_index and changes the triangle counts
-					alpha_shapes_check_contact_condition(triangles.data(), triangles_is_alpha.data(), alpha_triangles.data(), alpha_triangle_count, current_triangle_count, next_triangle_count, current_triangle_index, p3_id, is_alpha);
+					//NOTE: This changes the triangle counts
+					alpha_shapes_check_contact_condition(triangles.data(), triangles_is_alpha.data(), alpha_triangle_count, current_triangle_count, next_triangle_count, p3_id, is_alpha);
 					
 					//Update bounds
 					minimum_x = std::min(minimum_x, sphere_center[0] - radius);
 					maximum_x = std::min(minimum_x, sphere_center[0] + radius);
+				}else{
+					//Remove the face and move it to alpha if it is alpha
+					
+					if(triangles_is_alpha[0]){
+						if((static_cast<int>(ALPHA_SHAPES_MAX_TRIANGLE_COUNT) - alpha_triangle_count) < current_triangle_count + next_triangle_count){
+							printf("Lists intersect: alpha_triangle is %d, triangles is %d\n", (static_cast<int>(ALPHA_SHAPES_MAX_TRIANGLE_COUNT) - alpha_triangle_count), current_triangle_count + next_triangle_count);
+						}
+						triangles[ALPHA_SHAPES_MAX_TRIANGLE_COUNT - 1 - alpha_triangle_count++] = current_triangle;
+					}
+					
+					//Swap contacting triangle to the end
+					thrust::swap(triangles[0], triangles[current_triangle_count - 1]);
+					thrust::swap(triangles_is_alpha[0], triangles_is_alpha[current_triangle_count - 1]);
+					
+					//Decrease triangle count
+					current_triangle_count--;
 				}
 			}
 			
@@ -1180,15 +1184,15 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 			}
 			
 			//Finalize particles and faces if possible (based on sweep line)
-			alpha_shapes_finalize_particles(particle_buffer, next_particle_buffer, prev_partition, partition, alpha_shapes_particle_buffer, own_particle_indices.data(), alpha_triangles.data(), alpha_triangle_count, blockid, own_last_active_particles_start, own_active_particles_start);
+			alpha_shapes_finalize_particles(particle_buffer, next_particle_buffer, prev_partition, partition, alpha_shapes_particle_buffer, own_particle_indices.data(), &(triangles[(ALPHA_SHAPES_MAX_TRIANGLE_COUNT - 1 - alpha_triangle_count)]), alpha_triangle_count, blockid, own_last_active_particles_start, own_active_particles_start);
 			
 			//Remove faces from all lists if all of their particles were handled
 			const std::array<float, 3> active_particles_start_position_arr = alpha_shapes_get_particle_position(particle_buffer, next_particle_buffer, prev_partition, partition, particle_indices[active_particles_start], blockid);
 			const float active_particles_start_x = active_particles_start_position_arr[0]; 
-			for(int current_triangle_index = 0; current_triangle_index < alpha_triangle_count; current_triangle_index++) {
-				const std::array<float, 3> p0_position_arr = alpha_shapes_get_particle_position(particle_buffer, next_particle_buffer, prev_partition, partition, alpha_triangles[current_triangle_index][0], blockid);
-				const std::array<float, 3> p1_position_arr = alpha_shapes_get_particle_position(particle_buffer, next_particle_buffer, prev_partition, partition, alpha_triangles[current_triangle_index][1], blockid);
-				const std::array<float, 3> p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, next_particle_buffer, prev_partition, partition, alpha_triangles[current_triangle_index][2], blockid);
+			for(int current_triangle_index = ALPHA_SHAPES_MAX_TRIANGLE_COUNT - 1 - alpha_triangle_count; current_triangle_index < ALPHA_SHAPES_MAX_TRIANGLE_COUNT; current_triangle_index++) {
+				const std::array<float, 3> p0_position_arr = alpha_shapes_get_particle_position(particle_buffer, next_particle_buffer, prev_partition, partition, triangles[current_triangle_index][0], blockid);
+				const std::array<float, 3> p1_position_arr = alpha_shapes_get_particle_position(particle_buffer, next_particle_buffer, prev_partition, partition, triangles[current_triangle_index][1], blockid);
+				const std::array<float, 3> p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, next_particle_buffer, prev_partition, partition, triangles[current_triangle_index][2], blockid);
 				
 				if(
 					   (p0_position_arr[0] < active_particles_start_x)
@@ -1196,7 +1200,7 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 					&& (p2_position_arr[0] < active_particles_start_x)
 				){
 					//Swap contacting triangle to the end
-					thrust::swap(alpha_triangles[current_triangle_index], alpha_triangles[alpha_triangle_count - 1]);
+					thrust::swap(triangles[current_triangle_index], triangles[alpha_triangle_count - 1]);
 					
 					//Decrease triangle count
 					alpha_triangle_count--;
@@ -1214,15 +1218,18 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 	}
 	
 	//Add all faces left over at the end to alpha_triangles when no more points are found if they are marked as alpha.
-	for(int current_triangle_index = 0; current_triangle_index < current_triangle_count; current_triangle_index++) {
+	//NOTE: We are counting backwards to avoid overriding triangles
+	for(int current_triangle_index = current_triangle_count - 1; current_triangle_index >=0; current_triangle_index--) {
 		if(triangles_is_alpha[current_triangle_index]){
-			assert(alpha_triangle_count < ALPHA_SHAPES_MAX_TRIANGLE_COUNT && "Too much triangles");
-			alpha_triangles[alpha_triangle_count++] = triangles[current_triangle_index];
+			if((static_cast<int>(ALPHA_SHAPES_MAX_TRIANGLE_COUNT) - alpha_triangle_count) < 0){
+				printf("Lists intersect: alpha_triangle is %d, triangles is %d\n", (static_cast<int>(ALPHA_SHAPES_MAX_TRIANGLE_COUNT) - alpha_triangle_count), 0);
+			}
+			triangles[ALPHA_SHAPES_MAX_TRIANGLE_COUNT - 1 - alpha_triangle_count++] = triangles[current_triangle_index];
 		}
 	}
 	
 	//Finalize all particles left
-	alpha_shapes_finalize_particles(particle_buffer, next_particle_buffer, prev_partition, partition, alpha_shapes_particle_buffer, own_particle_indices.data(), alpha_triangles.data(), alpha_triangle_count, blockid, own_last_active_particles_start, own_active_particles_start);
+	alpha_shapes_finalize_particles(particle_buffer, next_particle_buffer, prev_partition, partition, alpha_shapes_particle_buffer, own_particle_indices.data(), &(triangles[(ALPHA_SHAPES_MAX_TRIANGLE_COUNT - 1 - alpha_triangle_count)]), alpha_triangle_count, blockid, own_last_active_particles_start, own_active_particles_start);
 }
 
 //NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic, readability-magic-numbers, readability-identifier-naming, misc-definitions-in-headers)
