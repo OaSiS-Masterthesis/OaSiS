@@ -112,6 +112,18 @@ constexpr void matrix_inverse(const std::array<T, 9>& x, std::array<T, 9>& inv)
 }
 #endif
 
+template<typename T, size_t Dim>
+constexpr void matrix_matrix_multiplication(const std::array<T, Dim * Dim>& a, const std::array<T, Dim * Dim>& b, std::array<T, Dim * Dim>& c) {
+	for(size_t i = 0; i < Dim; ++i){
+		for(size_t j = 0; j < Dim; ++j){
+			c[i * Dim + j] = 0;
+			for(size_t k = 0; k < Dim; ++k){
+				c[i * Dim + j] += a[k * Dim + i] * b[j * Dim + k];
+			}
+		}
+	}
+}
+
 //Solves ax = b for x
 template <typename T>
 __forceinline__ __host__ __device__ void solve_linear_system(const std::array<T, 9>& a, std::array<T, 3>& x, const std::array<T, 3>& b, bool print_values = false){
@@ -158,10 +170,10 @@ __forceinline__ __host__ __device__ void solve_linear_system(const std::array<T,
 	size_t index = 0;
 	for(size_t i = 0; i < Dim - 1; ++i){
 		for(size_t j = 0; j < (Dim - i - 1); ++j){
-			const T row0 = Dim - j - 1;
-			const T row1 = Dim - j;
+			const T row0 = Dim - j - 2;
+			const T row1 = Dim - j - 1;
 			
-			const mn::math::GivensRotation rot(r[Dim * i + row0], r[row1], row0, row1);
+			const mn::math::GivensRotation rot(r[Dim * i + row0], r[Dim * i + row1], row0, row1);
 			rot.template mat_rotation<Dim, T>(r);
 			rot.template fill<Dim, T>(rot_mat[index++]);
 		}
@@ -170,7 +182,7 @@ __forceinline__ __host__ __device__ void solve_linear_system(const std::array<T,
 	std::array<T, Dim * Dim> q_transpose_tmp = rot_mat[0];
 	std::array<T, Dim * Dim> q_transpose;
 	for(size_t i = 1; i < num_rotations; ++i){
-		matrix_matrix_multiplication(rot_mat[i], q_transpose_tmp, q_transpose);
+		matrix_matrix_multiplication<T, Dim>(rot_mat[i], q_transpose_tmp, q_transpose);
 		q_transpose_tmp = q_transpose;
 	}
 	
@@ -179,9 +191,9 @@ __forceinline__ __host__ __device__ void solve_linear_system(const std::array<T,
 	matrix_vector_multiplication(q_transpose, b, y);
 	
 	//Back substitution
-	for(size_t i = Dim - 1; (i + 1) >= 1; ++i){
+	for(size_t i = Dim - 1; (i + 1) >= 1; --i){
 		T summed_y = y[i];
-		for(size_t j = Dim - 1; j > i; ++j){
+		for(size_t j = Dim - 1; j > i; --j){
 			summed_y -= x[j] * r[j * Dim + i];
 		}
 		x[i] = summed_y / (r[i * Dim + i] == 0.0 ? static_cast<T>(1.0) : r[i * Dim + i]);
@@ -389,18 +401,6 @@ constexpr void matrix_matrix_multiplication_3d(const std::array<T, 9>& a, const 
 	c[6] = a[0] * b[6] + a[3] * b[7] + a[6] * b[8];
 	c[7] = a[1] * b[6] + a[4] * b[7] + a[7] * b[8];
 	c[8] = a[2] * b[6] + a[5] * b[7] + a[8] * b[8];
-}
-
-template<typename T, size_t Dim>
-constexpr void matrix_matrix_multiplication(const std::array<T, Dim * Dim>& a, const std::array<T, Dim * Dim>& b, std::array<T, Dim * Dim>& c) {
-	for(size_t i = 0; i < Dim; ++i){
-		for(size_t j = 0; j < Dim; ++j){
-			c[i * Dim + j] = 0;
-			for(size_t k = 0; k < Dim; ++k){
-				c[i * Dim + j] += a[k * Dim + i] * b[j * Dim + k];
-			}
-		}
-	}
 }
 
 template<typename T>

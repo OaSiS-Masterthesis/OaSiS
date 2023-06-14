@@ -93,10 +93,6 @@ namespace config {
 	constexpr float G_GRAVITY = -9.8f;
 	
 	constexpr float MAX_ALPHA = config::G_DX * config::G_DX * 0.9f;//FIXME:Set to correct value
-	//TODO: Adjust this? (maybe smaller)
-	constexpr size_t ALPHA_SHAPES_TRIANGLES_PER_CELL_ADDITIONAL_SPACE = 0;
-	constexpr size_t ALPHA_SHAPES_TRIANGLES_PER_CELL = 2 * MAX_PARTICLES_IN_CELL - 4 + ALPHA_SHAPES_TRIANGLES_PER_CELL_ADDITIONAL_SPACE;//Max value by euler characteristic: 2 * MAX_PARTICLES_IN_CELL - 4 (though not taking into account that summed amount is higher!); plus additional space for alpha faces (max is + 4G with g being genus; Not sure what could be the maximum genus)
-	constexpr size_t ALPHA_SHAPES_TRIANGLES_PER_BLOCK = (ALPHA_SHAPES_TRIANGLES_PER_CELL * (1 << (BLOCK_BITS * 3)));
 
 	/// only used on host
 	constexpr int G_MAX_PARTICLE_NUM = 1000000;

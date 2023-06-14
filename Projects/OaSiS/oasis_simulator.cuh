@@ -502,7 +502,10 @@ struct OasisSimulator {
 							alpha_shapes_particle_buffers[i].resize(DeviceAllocator {}, cur_num_active_bins[i]);
 						}
 						
+						
 						match(particle_bins[rollid][i])([this, &cu_dev, &i](const auto& particle_buffer) {
+							//Clear buffer before use
+							cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, clear_alpha_shapes_particle_buffer, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), partitions[(rollid + 1) % BIN_COUNT], alpha_shapes_particle_buffers[i]);
 							
 							//FIXME: Does not yet work, maybe also need to reduce block dimension?
 							for(unsigned int start_index = 0; start_index < partition_block_count; start_index += ALPHA_SHAPES_MAX_KERNEL_SIZE){
@@ -511,7 +514,7 @@ struct OasisSimulator {
 								alpha_shapes_launch_config.db = dim3(config::G_BLOCKSIZE, config::G_BLOCKSIZE, config::G_BLOCKSIZE);
 								
 								//partition_block_count; {config::G_BLOCKSIZE, config::G_BLOCKSIZE, config::G_BLOCKSIZE}
-								cu_dev.compute_launch(std::move(alpha_shapes_launch_config), alpha_shapes, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], alpha_shapes_particle_buffers[i], alpha_shapes_grid_buffer, start_index);
+								cu_dev.compute_launch(std::move(alpha_shapes_launch_config), alpha_shapes, particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], alpha_shapes_particle_buffers[i], alpha_shapes_grid_buffer, start_index);
 							}
 						});
 					}
@@ -1111,7 +1114,7 @@ struct OasisSimulator {
 					check_cuda_errors(cudaMemsetAsync(particle_buffer.particle_bucket_sizes, 0, sizeof(int) * (partition_block_count + 1), cu_dev.stream_compute()));
 
 					//partition_block_count; G_BLOCKVOLUME
-					cu_dev.compute_launch({partition_block_count, config::G_BLOCKVOLUME}, cell_bucket_to_block, particle_buffer.cell_particle_counts, particle_buffer.cellbuckets, particle_buffer.particle_bucket_sizes, particle_buffer.blockbuckets);
+					cu_dev.compute_launch({partition_block_count, config::G_BLOCKVOLUME}, initial_cell_bucket_to_block, particle_buffer.cell_particle_counts, particle_buffer.cellbuckets, particle_buffer.particle_bucket_sizes, particle_buffer.blockbuckets);
 					// partitions[(rollid + 1)%BIN_COUNT].buildParticleBuckets(cu_dev, partition_block_count);
 				});
 			}

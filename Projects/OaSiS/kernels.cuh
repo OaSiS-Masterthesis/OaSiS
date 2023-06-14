@@ -109,6 +109,26 @@ __global__ void cell_bucket_to_block(const int* cell_particle_counts, const int*
 	}
 }
 
+//Same as cell_bucket_to_block but also sets cellbuckets value to correct one (like init_adv_bucket)
+__global__ void initial_cell_bucket_to_block(const int* cell_particle_counts, int* cellbuckets, int* particle_bucket_sizes, int* buckets) {
+	const int cellno		  = static_cast<int>(threadIdx.x) & (config::G_BLOCKVOLUME - 1);
+	const int particle_counts = cell_particle_counts[blockIdx.x * config::G_BLOCKVOLUME + cellno];
+
+	for(int particle_id_in_cell = 0; particle_id_in_cell < config::G_MAX_PARTICLES_IN_CELL; particle_id_in_cell++) {
+		if(particle_id_in_cell < particle_counts) {
+			//Each thread gets its index in the blocks bucket
+			const int particle_id_in_block = atomic_agg_inc<int>(particle_bucket_sizes + blockIdx.x);
+
+			//Each particle of the source advection buffer (offset + particle id) is assigned to a particle of the current buffer. This should be a 1:1 mapping, though one particle may be mapped to itself or to another particle
+			buckets[blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK + particle_id_in_block] = cellbuckets[blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK + cellno * config::G_MAX_PARTICLES_IN_CELL + particle_id_in_cell];
+			
+			//Update cellbucket value
+			cellbuckets[blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK + cellno * config::G_MAX_PARTICLES_IN_CELL + particle_id_in_cell] = (dir_offset({0, 0, 0}) * config::G_PARTICLE_NUM_PER_BLOCK) | particle_id_in_block;
+		}
+		__syncthreads();
+	}
+}
+
 template<typename Partition, typename Grid>
 __global__ void store_triangle_shell_vertices_in_bucket(uint32_t particle_count, const TriangleShell triangle_shell, TriangleShellParticleBuffer triangle_shell_particle_buffer, Partition partition, const Grid grid) {
 	const uint32_t particle_id = blockIdx.x * blockDim.x + threadIdx.x;
