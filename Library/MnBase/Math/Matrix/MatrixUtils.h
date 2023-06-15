@@ -200,35 +200,30 @@ __forceinline__ __host__ __device__ void solve_linear_system(const std::array<T,
 	}
 }
 
-//Not tested
-/*
 //Matrix a should be definite for stability
+//By https://en.wikipedia.org/wiki/Cholesky_decomposition (LDL decomposition)
 template <typename T, std::size_t Dim>
 __forceinline__ __host__ __device__ void cholesky_decomposition_definite(const std::array<T, Dim * Dim>& a, std::array<T, Dim * Dim>& r, std::array<T, Dim * Dim>& r_t){
 	//Calculate decomposition
 	std::array<T, Dim> d;
 	std::array<T, Dim * Dim> l;
-	for(size_t i = 0; i < Dim - 1; ++i){
+	for(size_t i = 0; i < Dim; ++i){
 		d[i] = a[Dim * i + i];
-		if(i > 0){
-			for(size_t k = 0; k < i - 1; ++k){
-				d[i] += l[Dim * i + k] * l[Dim * i + k] * d[k];
-			}
+		for(size_t k = 0; k < i; ++k){
+			d[i] += l[Dim * k + i] * l[Dim * k + i] * d[k];
 		}
 		
-		for(size_t j = i + 1; j < Dim - 1; ++j){
+		for(size_t j = i + 1; j < Dim; ++j){
 			l[Dim * i + j] = a[Dim * i + j] / d[i];
-			if(i > 0){
-				for(size_t k = 0; k < i - 1; ++k){
-					l[Dim * i + j] += l[Dim * j + k] * l[Dim * i + k] * d[k] / d[i];
-				}
+			for(size_t k = 0; k < i; ++k){
+				l[Dim * i + j] -= l[Dim * k + j] * l[Dim * k + i] * d[k] / d[i];
 			}
 		}
 	}
 	
 	//Fill matrices
-	for(size_t i = 0; i < Dim - 1; ++i){
-		for(size_t j = 0; j < Dim - 1; ++j){
+	for(size_t i = 0; i < Dim; ++i){
+		for(size_t j = 0; j < Dim; ++j){
 			if(i < j){
 				r[Dim * i + j] = l[Dim * i + j];
 				r_t[Dim * i + j] = 0.0f;
@@ -242,7 +237,6 @@ __forceinline__ __host__ __device__ void cholesky_decomposition_definite(const s
 		}
 	}
 }
-*/
 
 //Not needed, not finished, not tested
 /*

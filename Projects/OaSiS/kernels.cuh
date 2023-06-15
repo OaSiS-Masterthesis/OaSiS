@@ -1557,7 +1557,7 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 		
 		//Not tested
 		//TODO: We can probably easily gurantee the former by another condition to the optimization problem
-		/* We get a quadratic optimiization problem with positive-definite Q, being convertable to a lest-squares Problem with one equality-constraint (x1 + x2 + x3 = 1) and box-constraints (0 <= x <= 1)		
+		/* We get a quadratic optimization problem with positive-definite Q, being convertable to a lest-squares Problem with one equality-constraint (x1 + x2 + x3 = 1) and box-constraints (0 <= x <= 1)		
 		 *      d11 -d12 -d13 -d14     2d01
 		 *     -d12  d22  d23  d34        0
 		 *     -d13  d23  d33  d34        0

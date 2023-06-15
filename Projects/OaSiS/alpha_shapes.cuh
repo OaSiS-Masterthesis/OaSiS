@@ -188,131 +188,99 @@ __forceinline__ __host__ __device__ std::array<float, 3> alpha_shapes_calculate_
 	
 	return face_normal.data_arr();
 }
-/*
-//Basically copied from https://rodolphe-vaillant.fr/entry/127/find-a-tetrahedron-circumcenter and https://www.mcs.anl.gov/~fathom/meshkit-docs/html/circumcenter_8cpp_source.html
-__forceinline__ __device__ void alpha_shapes_get_circumsphere(const std::array<float, 3>& a, const std::array<float, 3>& b, const std::array<float, 3>& c, const std::array<float, 3>& d, std::array<float, 3>& center, float& radius){
-    // Use coordinates relative to point 'a' of the tetrahedron.
- 
-    // ba = b - a
-    const float ba_x = b[0] - a[0];
-    const float ba_y = b[1] - a[1];
-    const float ba_z = b[2] - a[2];
- 
-    // ca = c - a
-    const float ca_x = c[0] - a[0];
-    const float ca_y = c[1] - a[1];
-    const float ca_z = c[2] - a[2];
- 
-    // da = d - a
-    const float da_x = d[0] - a[0];
-    const float da_y = d[1] - a[1];
-    const float da_z = d[2] - a[2];
- 
-    // Squares of lengths of the edges incident to 'a'.
-    const float len_ba = ba_x * ba_x + ba_y * ba_y + ba_z * ba_z;
-    const float len_ca = ca_x * ca_x + ca_y * ca_y + ca_z * ca_z;
-    const float len_da = da_x * da_x + da_y * da_y + da_z * da_z;
- 
-    // Cross products of these edges.
- 
-    // c cross d
-    const float cross_cd_x = ca_y * da_z - da_y * ca_z;
-    const float cross_cd_y = ca_z * da_x - da_z * ca_x;
-    const float cross_cd_z = ca_x * da_y - da_x * ca_y;
- 
-    // d cross b
-    const float cross_db_x = da_y * ba_z - ba_y * da_z;
-    const float cross_db_y = da_z * ba_x - ba_z * da_x;
-    const float cross_db_z = da_x * ba_y - ba_x * da_y;
- 
-    // b cross c
-    const float cross_bc_x = ba_y * ca_z - ca_y * ba_z;
-    const float cross_bc_y = ba_z * ca_x - ca_z * ba_x;
-    const float cross_bc_z = ba_x * ca_y - ca_x * ba_y;
- 
-    // Calculate the denominator of the formula.
-    const float denominator = 0.5f / (ba_x * cross_cd_x + ba_y * cross_cd_y + ba_z * cross_cd_z);
-	
-	//FIXME: Maybe clamp denominator if near to zero to ensure nearly degenerated tetrahedra are not unstable
- 
-    // Calculate offset (from 'a') of circumcenter.
-    const float circ_x = (len_ba * cross_cd_x + len_ca * cross_db_x + len_da * cross_bc_x);
-    const float circ_y = (len_ba * cross_cd_y + len_ca * cross_db_y + len_da * cross_bc_y);
-    const float circ_z = (len_ba * cross_cd_z + len_ca * cross_db_z + len_da * cross_bc_z);
- 
-    center[0] = a[0] + circ_x * denominator;
-    center[1] = a[1] + circ_y * denominator;
-    center[2] = a[2] + circ_z * denominator;
-	radius = std::sqrt(circ_x * circ_x + circ_y * circ_y + circ_z * circ_z) * std::abs(denominator);
-	
-	if(radius > 3.0f * sqrt(3.0f) * config::G_DX){
-		printf("X %f %f # %f %f %f # %f %f %f # %f %f %f # %f %f %f # %f %f %f # %f - ", radius, 3.0f * sqrt(3.0f) * config::G_DX, center[0], center[1], center[2], a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2], d[0], d[1], d[2], denominator);
-	}
-}*/
 
-//Based on https://math.stackexchange.com/questions/2414640/circumsphere-of-a-tetrahedron https://www.cambridge.org/core/books/matrices-and-graphs-in-geometry/B225AA8C5EA96EAD4D0280173930FE03
 __forceinline__ __device__ void alpha_shapes_get_circumsphere(const std::array<float, 3>& a, const std::array<float, 3>& b, const std::array<float, 3>& c, const std::array<float, 3>& d, std::array<float, 3>& center, float& radius){
-	// ba = b - a
-    const float ba_x = b[0] - a[0];
-    const float ba_y = b[1] - a[1];
-    const float ba_z = b[2] - a[2];
- 
-    // ca = c - a
-    const float ca_x = c[0] - a[0];
-    const float ca_y = c[1] - a[1];
-    const float ca_z = c[2] - a[2];
- 
-    // da = d - a
-    const float da_x = d[0] - a[0];
-    const float da_y = d[1] - a[1];
-    const float da_z = d[2] - a[2];
+	/* We get a quadratic optimization problem with positive-definite Q, being convertable to a lest-squares Problem with one equality-constraint (x1 + x2 + x3 + x4 = 1) and box-constraints (0 <= x <= 1)		
+	 *     d11  d12  d13  d14  d15        d11
+	 *     d12  d22  d23  d24  d25        d12
+	 *     d13  d23  d33  d34  d35        d13
+	 * Q = d14  d24  d34  d44  d45 m  =   d14  with dij being the dotproduct of ai and aj with ai/aj being the corners of the tetrahedron
+	 * We can solve this by gradient descent with a projection step. x0-3=barycentric_nearest_point_on_tetrahedron(x);
+	 */
+	constexpr float CG_STEP_LENGTH = 0.5f;
+	constexpr size_t CG_STEPS = 8;
+	 
+	const mn::vec<float, 3> a_vec{a[0], a[1], a[2]};
+	const mn::vec<float, 3> b_vec{b[0], b[1], b[2]};
+	const mn::vec<float, 3> c_vec{c[0], c[1], c[2]};
+	const mn::vec<float, 3> d_vec{d[0], d[1], d[2]};
+	 
+	 //Dot products
+	const float d11 = a_vec.dot(a_vec);
+	const float d12 = a_vec.dot(b_vec);
+	const float d13 = a_vec.dot(c_vec);
+	const float d14 = a_vec.dot(d_vec);
+	const float d22 = b_vec.dot(b_vec);
+	const float d23 = b_vec.dot(c_vec);
+	const float d24 = b_vec.dot(d_vec);
+	const float d33 = c_vec.dot(c_vec);
+	const float d34 = c_vec.dot(d_vec);
+	const float d44 = d_vec.dot(d_vec);
 	
-	// cb = c - b
-    const float cb_x = c[0] - b[0];
-    const float cb_y = c[1] - b[1];
-    const float cb_z = c[2] - b[2];
- 
-    // db = d - b
-    const float db_x = d[0] - b[0];
-    const float db_y = d[1] - b[1];
-    const float db_z = d[2] - b[2];
-	
-	// dc = d - c
-    const float dc_x = d[0] - c[0];
-    const float dc_y = d[1] - c[1];
-    const float dc_z = d[2] - c[2];
-	
-	// Squares of lengths of the edges incident to 'a'.
-    const float len_ba = ba_x * ba_x + ba_y * ba_y + ba_z * ba_z;
-    const float len_ca = ca_x * ca_x + ca_y * ca_y + ca_z * ca_z;
-    const float len_da = da_x * da_x + da_y * da_y + da_z * da_z;
-	const float len_cb = cb_x * cb_x + cb_y * cb_y + cb_z * cb_z;
-	const float len_db = db_x * db_x + db_y * db_y + db_z * db_z;
-	const float len_dc = dc_x * dc_x + dc_y * dc_y + dc_z * dc_z;
-
-   const std::array<float, 25> left_side {
-		  0.0f, 1.0f, 1.0f, 1.0f, 1.0f
-		, 1.0f, 0.0f, len_ba, len_ca, len_da
-		, 1.0f, len_ba, 0.0f, len_cb, len_db
-		, 1.0f, len_ca, len_cb, 0.0f, len_dc
-		, 1.0f, len_da, len_db, len_dc, 0.0f
+	//Q
+	const std::array<float, 16> q {
+		  d11, d12, d13, d14
+		, d12, d22, d23, d24
+		, d13, d23, d33, d34
+		, d14, d24, d34, d44
 	};
-	const std::array<float, 5> right_side {-2.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+	//m
+	const mn::vec<float, 4> m {
+		d11, d12, d13, d14
+	};
 	
-	//Solve  C^T * m0 = {-2, 0, 0, 0, 0}; from M = -2C^-1 => MC = -2 * I;
-	std::array<float, 5> m0;
-	solve_linear_system(left_side, m0, right_side);
+	//Calculate cholesky decomposition
+	std::array<float, 16> r;
+	std::array<float, 16> r_t;
+	mn::cholesky_decomposition_definite<float, 4>(q, r, r_t);
 	
-	const float sum = 1.0f;//m0[1] + m0[2] + m0[3] + m0[4];
+	//n = -R^T * m;
+	mn::vec<float, 4> n;
+	mn::matrix_vector_multiplication(r_t, m.data_arr(), n.data_arr());
+	n *= -1.0f;
 	
-	center[0] = (m0[1] * a[0] + m0[2] * b[0] + m0[3] * c[0] + m0[4] * d[0]) / sum;
-    center[1] = (m0[1] * a[1] + m0[2] * b[1] + m0[3] * c[1] + m0[4] * d[1]) / sum;
-    center[2] = (m0[1] * a[2] + m0[2] * b[2] + m0[3] * c[2] + m0[4] * d[2]) / sum;
-	radius = 0.5f * sqrt(m0[0]);
+	//Minimize 1/2 * ||Rx - n||^2 (see https://en.wikipedia.org/wiki/Quadratic_programming)
+	//Gradient is R^T * (Rx - n)
+	//Gradient descent
+	mn::vec<float, 4> x;
+	for(size_t i = 0; i < CG_STEPS; ++i){
+		//Step
+		//x - alpha * (R^T * (R * x - n))
+		mn::vec<float, 4> rx;
+		mn::vec<float, 4> delta_x;
+		mn::matrix_vector_multiplication(r, x.data_arr(), rx.data_arr());
+		mn::matrix_vector_multiplication(r_t, (rx - n).data_arr(), delta_x.data_arr());
+		
+		mn::vec<float, 4> x_tmp = x - CG_STEP_LENGTH * delta_x;
+		
+		//Project points to barycentric space
+		x_tmp[3] = 1.0f - x_tmp[0] - x_tmp[1] - x_tmp[2];
+		
+		//Clamp to 0.0 and normalize
+		x_tmp[0] = std::max(x_tmp[0], 0.0f);
+		x_tmp[1] = std::max(x_tmp[1], 0.0f);
+		x_tmp[2] = std::max(x_tmp[2], 0.0f);
+		x_tmp[3] = std::max(x_tmp[3], 0.0f);
+		
+		const float length = std::sqrt(x_tmp[0] * x_tmp[0] + x_tmp[1] * x_tmp[1] + x_tmp[2] * x_tmp[2] + x_tmp[3] * x_tmp[3]);
+		
+		x[0] = x_tmp[0] / length;
+		x[1] = x_tmp[1] / length;
+		x[2] = x_tmp[2] / length;
+		x[3] = x_tmp[3] / length;
+	}
 	
-	//if(radius > 3.0f * sqrt(3.0f) * config::G_DX){
-		printf("X %f %f # %f %f %f # %f %f %f # %f %f %f # %f %f %f # %f %f %f # %f %f %f %f %f - ", radius, 3.0f * sqrt(3.0f) * config::G_DX, center[0], center[1], center[2], a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2], d[0], d[1], d[2], m0[0], m0[1], m0[2], m0[3], m0[4]);
-	//}
+	center[0] = (x[0] * a[0] + x[1] * b[0] + x[2] * c[0] + x[3] * d[0]);
+    center[1] = (x[0] * a[1] + x[1] * b[1] + x[2] * c[1] + x[3] * d[1]);
+    center[2] = (x[0] * a[2] + x[1] * b[2] + x[2] * c[2] + x[3] * d[2]);
+	
+	const std::array<float, 3> diff {
+		  a[0] - center[0]
+		, a[1] - center[1]
+		, a[2] - center[2]
+	};
+	
+	radius = std::sqrt(diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]);
 }
 
 template<typename Partition, MaterialE MaterialType>
