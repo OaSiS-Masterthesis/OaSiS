@@ -190,97 +190,54 @@ __forceinline__ __host__ __device__ std::array<float, 3> alpha_shapes_calculate_
 }
 
 __forceinline__ __device__ void alpha_shapes_get_circumsphere(const std::array<float, 3>& a, const std::array<float, 3>& b, const std::array<float, 3>& c, const std::array<float, 3>& d, std::array<float, 3>& center, float& radius){
-	/* We get a quadratic optimization problem with positive-definite Q, being convertable to a lest-squares Problem with one equality-constraint (x1 + x2 + x3 + x4 = 1) and box-constraints (0 <= x <= 1)		
-	 *     d11  d12  d13  d14  d15        d11
-	 *     d12  d22  d23  d24  d25        d12
-	 *     d13  d23  d33  d34  d35        d13
-	 * Q = d14  d24  d34  d44  d45 m  =   d14  with dij being the dotproduct of ai and aj with ai/aj being the corners of the tetrahedron
-	 * We can solve this by gradient descent with a projection step. x0-3=barycentric_nearest_point_on_tetrahedron(x);
-	 */
-	constexpr float CG_STEP_LENGTH = 0.5f;
-	constexpr size_t CG_STEPS = 8;
+	constexpr size_t CG_STEPS = 32;
 	 
 	const mn::vec<float, 3> a_vec{a[0], a[1], a[2]};
 	const mn::vec<float, 3> b_vec{b[0], b[1], b[2]};
 	const mn::vec<float, 3> c_vec{c[0], c[1], c[2]};
 	const mn::vec<float, 3> d_vec{d[0], d[1], d[2]};
-	 
-	 //Dot products
-	const float d11 = a_vec.dot(a_vec);
-	const float d12 = a_vec.dot(b_vec);
-	const float d13 = a_vec.dot(c_vec);
-	const float d14 = a_vec.dot(d_vec);
-	const float d22 = b_vec.dot(b_vec);
-	const float d23 = b_vec.dot(c_vec);
-	const float d24 = b_vec.dot(d_vec);
-	const float d33 = c_vec.dot(c_vec);
-	const float d34 = c_vec.dot(d_vec);
-	const float d44 = d_vec.dot(d_vec);
 	
-	//Q
-	const std::array<float, 16> q {
-		  d11, d12, d13, d14
-		, d12, d22, d23, d24
-		, d13, d23, d33, d34
-		, d14, d24, d34, d44
-	};
-	//m
-	const mn::vec<float, 4> m {
-		d11, d12, d13, d14
-	};
+	mn::vec<float, 3> center_vec = (a_vec + b_vec + c_vec + d_vec) * 0.25f;
+	const mn::vec<float, 3> ca = center_vec - a_vec;
+	const mn::vec<float, 3> cb = center_vec - b_vec;
+	const mn::vec<float, 3> cc = center_vec - c_vec;
+	const mn::vec<float, 3> cd = center_vec - d_vec;
 	
-	//Calculate cholesky decomposition
-	std::array<float, 16> r;
-	std::array<float, 16> r_t;
-	mn::cholesky_decomposition_definite<float, 4>(q, r, r_t);
+	const float r_a0 = std::sqrt((ca).dot(ca));
+	const float r_b0 = std::sqrt((cb).dot(cb));
+	const float r_c0 = std::sqrt((cc).dot(cc));
+	const float r_d0 = std::sqrt((cd).dot(cd));
 	
-	//n = -R^T * m;
-	mn::vec<float, 4> n;
-	mn::matrix_vector_multiplication(r_t, m.data_arr(), n.data_arr());
-	n *= -1.0f;
-	
-	//Minimize 1/2 * ||Rx - n||^2 (see https://en.wikipedia.org/wiki/Quadratic_programming)
-	//Gradient is R^T * (Rx - n)
-	//Gradient descent
-	mn::vec<float, 4> x;
+	float r;
 	for(size_t i = 0; i < CG_STEPS; ++i){
-		//Step
-		//x - alpha * (R^T * (R * x - n))
-		mn::vec<float, 4> rx;
-		mn::vec<float, 4> delta_x;
-		mn::matrix_vector_multiplication(r, x.data_arr(), rx.data_arr());
-		mn::matrix_vector_multiplication(r_t, (rx - n).data_arr(), delta_x.data_arr());
+		//Recalculate radius
+		const float r_a = std::sqrt((center_vec - a_vec).dot(center_vec - a_vec));
+		const float r_b = std::sqrt((center_vec - b_vec).dot(center_vec - b_vec));
+		const float r_c = std::sqrt((center_vec - c_vec).dot(center_vec - c_vec));
+		const float r_d = std::sqrt((center_vec - d_vec).dot(center_vec - d_vec));
 		
-		mn::vec<float, 4> x_tmp = x - CG_STEP_LENGTH * delta_x;
+		//r = (r_a + r_b + r_c + r_d) * 0.25f;
+		r = std::min(std::min(r_a, r_b), std::min(r_c, r_d));
 		
-		//Project points to barycentric space
-		x_tmp[3] = 1.0f - x_tmp[0] - x_tmp[1] - x_tmp[2];
+		//Recalculate center
+		const mn::vec<float, 3> center_a = a_vec + (center_vec - a_vec) * (r / r_a);
+		const mn::vec<float, 3> center_b = b_vec + (center_vec - b_vec) * (r / r_b);
+		const mn::vec<float, 3> center_c = c_vec + (center_vec - c_vec) * (r / r_c);
+		const mn::vec<float, 3> center_d = d_vec + (center_vec - d_vec) * (r / r_d);
 		
-		//Clamp to 0.0 and normalize
-		x_tmp[0] = std::max(x_tmp[0], 0.0f);
-		x_tmp[1] = std::max(x_tmp[1], 0.0f);
-		x_tmp[2] = std::max(x_tmp[2], 0.0f);
-		x_tmp[3] = std::max(x_tmp[3], 0.0f);
+		center_vec += ((center_a - center_vec) + (center_b - center_vec) + (center_c - center_vec) + (center_d - center_vec));
 		
-		const float length = std::sqrt(x_tmp[0] * x_tmp[0] + x_tmp[1] * x_tmp[1] + x_tmp[2] * x_tmp[2] + x_tmp[3] * x_tmp[3]);
-		
-		x[0] = x_tmp[0] / length;
-		x[1] = x_tmp[1] / length;
-		x[2] = x_tmp[2] / length;
-		x[3] = x_tmp[3] / length;
+		//TODO: Use inverse squareroot
+		//center_vec = (r * ((1.0f / r_a) + (1.0f / r_b) + (1.0f / r_c) + (1.0f / r_d)) - 3.0f) * center_vec + summed - r * ((1.0f / r_a) * a_vec + (1.0f / r_b) * b_vec  + (1.0f / r_c) * c_vec  + (1.0f / r_d) * d_vec);
+		//center_vec += (1.0f - (r / r_a0)) * ca + (1.0f - (r / r_b0)) * cb + (1.0f - (r / r_c0)) * cc + (1.0f - (r / r_d0)) * cd;
 	}
 	
-	center[0] = (x[0] * a[0] + x[1] * b[0] + x[2] * c[0] + x[3] * d[0]);
-    center[1] = (x[0] * a[1] + x[1] * b[1] + x[2] * c[1] + x[3] * d[1]);
-    center[2] = (x[0] * a[2] + x[1] * b[2] + x[2] * c[2] + x[3] * d[2]);
+	center = center_vec.data_arr();
+	radius = r;
 	
-	const std::array<float, 3> diff {
-		  a[0] - center[0]
-		, a[1] - center[1]
-		, a[2] - center[2]
-	};
-	
-	radius = std::sqrt(diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]);
+	if(radius >  3.0f * sqrt(3.0f) * config::G_DX){
+		printf("TEST %.28f %.28f - ", radius, ( 3.0f * sqrt(3.0f) * config::G_DX));
+	}
 }
 
 template<typename Partition, MaterialE MaterialType>
