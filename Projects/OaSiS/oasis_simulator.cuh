@@ -488,6 +488,8 @@ struct OasisSimulator {
 				next_dt = compute_dt(max_vel, current_step_time, seconds_per_frame, dt_default);
 				fmt::print(fmt::emphasis::bold, "{} --{}--> {}, defaultDt: {}, max_vel: {}\n", cur_time.count(), next_dt.count(), next_time.count(), dt_default.count(), max_vel);
 				
+				next_dt = seconds_per_frame;//FIXME:
+				
 				//TODO: IQ-Solve!
 				{
 					auto& cu_dev = Cuda::ref_cuda_context(gpuid);
@@ -514,7 +516,7 @@ struct OasisSimulator {
 								alpha_shapes_launch_config.db = dim3(config::G_BLOCKSIZE, config::G_BLOCKSIZE, config::G_BLOCKSIZE);
 								
 								//partition_block_count; {config::G_BLOCKSIZE, config::G_BLOCKSIZE, config::G_BLOCKSIZE}
-								cu_dev.compute_launch(std::move(alpha_shapes_launch_config), alpha_shapes, particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], alpha_shapes_particle_buffers[i], alpha_shapes_grid_buffer, start_index);
+								cu_dev.compute_launch(std::move(alpha_shapes_launch_config), alpha_shapes, particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], alpha_shapes_particle_buffers[i], alpha_shapes_grid_buffer, start_index, static_cast<int>(cur_frame));
 							}
 						});
 					}
@@ -949,9 +951,15 @@ struct OasisSimulator {
 			fmt::print(fg(fmt::color::red), "total number of particles {}\n", particle_count);
 
 			//Copy particle data to output buffer
-			match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count](const auto& particle_buffer) {
+			/*match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count](const auto& particle_buffer) {
 				//partition_block_count; G_PARTICLE_BATCH_CAPACITY
 				cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), alpha_shapes_particle_buffers[i], particles[i], static_cast<int*>(alpha_shapes_point_type_transfer_device_buffers[i]), static_cast<float*>(alpha_shapes_normal_transfer_device_buffers[i]), static_cast<float*>(alpha_shapes_mean_curvature_transfer_device_buffers[i]), static_cast<float*>(alpha_shapes_gauss_curvature_transfer_device_buffers[i]), d_particle_count);
+			});*/
+			
+			//FIXME: Using last positions, so that alpha shapes information matches; Not sure if this is correct if particles move
+			match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &i, &d_particle_count](const auto& particle_buffer) {
+				//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+				cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[rollid][i]), alpha_shapes_particle_buffers[i], particles[i], static_cast<int*>(alpha_shapes_point_type_transfer_device_buffers[i]), static_cast<float*>(alpha_shapes_normal_transfer_device_buffers[i]), static_cast<float*>(alpha_shapes_mean_curvature_transfer_device_buffers[i]), static_cast<float*>(alpha_shapes_gauss_curvature_transfer_device_buffers[i]), d_particle_count);
 			});
 
 			cu_dev.syncStream<streamIdx::COMPUTE>();
@@ -973,7 +981,7 @@ struct OasisSimulator {
 				
 				write_partio_add(m, std::string("position"), parts);
 				write_partio_add(alpha_shapes_point_type, std::string("point_type"), parts);
-				write_partio_add(alpha_shapes_normal, std::string("normal"), parts);
+				write_partio_add(alpha_shapes_normal, std::string("N"), parts);
 				write_partio_add(alpha_shapes_mean_curvature, std::string("mean_curvature"), parts);
 				write_partio_add(alpha_shapes_gauss_curvature, std::string("gauss_curvature"), parts);
 

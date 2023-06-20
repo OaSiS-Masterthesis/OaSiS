@@ -672,6 +672,11 @@ __global__ void update_grid_velocity_query_max(uint32_t block_count, Grid grid, 
 				vel[2] = is_in_bound & 1 ? 0.0f : vel[2] * mass_inv;
 				// if (is_in_bound) ///< sticky
 				//  vel.set(0.f);
+				
+				//FIXME:
+				vel[0] = 0.0f;
+				vel[1] = 0.0f;
+				vel[2] = 0.0f;
 
 				//Write back velocity
 				grid_block.val_1d(_1, cell_id_in_block) = vel[0];
