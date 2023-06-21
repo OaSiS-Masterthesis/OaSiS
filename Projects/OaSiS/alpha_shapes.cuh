@@ -34,9 +34,11 @@ constexpr size_t ALPHA_SHAPES_MAX_TRIANGLE_COUNT = 2 * ALPHA_SHAPES_MAX_PARTICLE
 
 constexpr unsigned int ALPHA_SHAPES_MAX_KERNEL_SIZE = config::G_MAX_ACTIVE_BLOCK;
 
-constexpr float ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD = 1e-9;//TODO: Maybe adjust threshold
+constexpr float ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD = 0.0f;//1e-9;//TODO: Maybe adjust threshold
 constexpr float ALPHA_SHAPES_LINE_DISTANCE_TEST_THRESHOLD = 1e-9;//TODO: Maybe adjust threshold
-constexpr float ALPHA_SHAPES_IN_SPHERE_THRESHOLD = 0.0f;//FIXME:1e-9;//TODO: Maybe adjust threshold; Should be negative
+constexpr float ALPHA_SHAPES_IN_SPHERE_THRESHOLD = 0.0f;//FIXME:1e-9;//TODO: Maybe adjust threshold;
+constexpr float ALPHA_SHAPES_MIN_SPHERE_THRESHOLD = 0.0f;//FIXME:1e-9;//TODO: Maybe adjust threshold;
+constexpr float ALPHA_SHAPES_IN_SPHERE_LAMBDA_THRESHOLD = 0.0f;//FIXME:1e-9;//TODO: Maybe adjust threshold;
 
 constexpr __device__ size_t ALPHA_SHAPES_MAX_CIRCUMSPHERE_POINTS = 20;//TODO:Set to correct value
 
@@ -555,6 +557,8 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 	
 	std::array<std::pair<int, int>, 8> swap_mapping;
 	
+	printf("TEST0 - ");
+	
 	std::array<int, 3> triangle_counts_per_vertex;
 	for(int contact_triangle_index = face_contacts - 1; contact_triangle_index >= 0; contact_triangle_index--) {//NOTE: Loop goes backwards to handle big indices first which allows easier swapping
 		//If the new tetrahedron is in alpha and the current face is not, then the current face is a boundary face that has to be kept; Same the other way round
@@ -592,35 +596,39 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 		thrust::swap(triangles[contact_indices[contact_triangle_index]], triangles[swap_index]);
 		thrust::swap(triangles_is_alpha[contact_indices[contact_triangle_index]], triangles_is_alpha[swap_index]);
 		
-		swap_mapping[face_contacts - contact_triangle_index].first = contact_indices[contact_triangle_index];
-		swap_mapping[face_contacts - contact_triangle_index].second = swap_index;
-		for(int i = 4; i < 8; ++i){
+		swap_mapping[face_contacts - contact_triangle_index - 1].first = contact_indices[contact_triangle_index];
+		swap_mapping[face_contacts - contact_triangle_index - 1].second = swap_index;
+		for(int i = 4; i < 4 + face_contacts; ++i){
 			if(swap_mapping[i].first == swap_index){
-				swap_mapping[face_contacts - contact_triangle_index].second = swap_mapping[i].second;
+				swap_mapping[face_contacts - contact_triangle_index - 1].second = swap_mapping[i].second;
 				swap_mapping[i].second = contact_indices[contact_triangle_index];
 			}
 		}
-		swap_mapping[4 + face_contacts - contact_triangle_index].first = swap_index;
-		swap_mapping[4 + face_contacts - contact_triangle_index].second = contact_indices[contact_triangle_index];
+		swap_mapping[4 + face_contacts - contact_triangle_index - 1].first = swap_index;
+		swap_mapping[4 + face_contacts - contact_triangle_index - 1].second = contact_indices[contact_triangle_index];
 	}
+	
+	printf("TEST1 - ");
 	
 	//Fill gap between current list and next list
 	for(int i = 0; i < next_triangle_start - current_triangle_count; ++i) {
 		thrust::swap(triangles[next_triangle_start - 1 - i], triangles[next_triangle_start + next_triangle_count - 1 - i]);
 		thrust::swap(triangles_is_alpha[next_triangle_start - 1 - i], triangles_is_alpha[next_triangle_start + next_triangle_count - 1 - i]);
 		
-		for(int i = 4; i < 8; ++i){
-			if(swap_mapping[i].first == next_triangle_start - 1 - i){
-				swap_mapping[i].second = next_triangle_start + next_triangle_count - 1 - i;
+		for(int j = 4; j < 4 + face_contacts; ++j){
+			if(swap_mapping[j].first == next_triangle_start - 1 - i){
+				swap_mapping[j].second = next_triangle_start + next_triangle_count - 1 - i;
 			}
 		}
 	}
+	
+	printf("TEST2 - ");
 	
 	//Remove all contacting triangles from temporary hull
 	//Only new added triangles can contact
 	for(int i = temporary_hull_triangles_count; i < next_temporary_hull_triangles_count; ++i) {
 		//Override swapps
-		for(int j = 0; j < 8; ++j){
+		for(int j = 0; j < 4 + face_contacts; ++j){
 			if(temporary_hull_triangles[i] == swap_mapping[j].first){
 				temporary_hull_triangles[i] = swap_mapping[j].second;
 			}
@@ -628,13 +636,15 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 		
 		//If index is out of bounds it was swapped out and can be removed
 		if(temporary_hull_triangles[i] >= current_triangle_count + next_triangle_count){
-			//Decrease next triangle count
-			next_temporary_hull_triangles_count--;
-			
 			//Swap contacting triangle to the end
 			thrust::swap(temporary_hull_triangles[i], temporary_hull_triangles[temporary_hull_triangles_count + next_temporary_hull_triangles_count - 1]);
+			
+			//Decrease next triangle count
+			next_temporary_hull_triangles_count--;
 		}
 	}
+	
+	printf("TEST3 - ");
 	
 	int next_triangle_end = current_triangle_count + next_triangle_count;
 	next_triangle_count += (4 - face_contacts);
@@ -648,6 +658,8 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 	for(int i = 0; i < (4 - face_contacts); ++i) {
 		temporary_hull_triangles[temporary_hull_triangles_count + next_temporary_hull_triangles_count - 1 - i] = next_triangle_end + i;
 	}
+	
+	printf("TEST4 - ");
 	
 	//Add new triangles
 	//Ensure correct order (current_triangle cw normal points outwards)
@@ -1246,12 +1258,14 @@ __forceinline__ __device__ void alpha_shapes_finalize_particles(const ParticleBu
 //Based on Mesh Generation for Technology CAD in Three Dimensions / https://www.iue.tuwien.ac.at/phd/fleischmann/node64.html#sec:cosphericaldesign
 //FIXME: Maybe ensure global ordering so that different cells return the same triangulation for a subset of particles; Maybe not possible only in this functiosn (depends on initial triangles)
 template<typename Partition, MaterialE MaterialType, typename ForwardIterator>
-__forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuffer<MaterialType> particle_buffer, const Partition prev_partition, AlphaShapesParticleBuffer alpha_shapes_particle_buffer, const ForwardIterator& particle_indices_begin, const ForwardIterator& particle_indices_end, const int* own_particle_indices, std::array<int, 3>* triangles, bool* triangles_is_alpha, int& current_triangle_count, int& next_triangle_count, const ivec3 blockid, const float alpha, const int finalize_particles_start, const int finalize_particles_end, const int* contact_triangles, const int* additional_contact_particles, const int contact_triangles_count, const int additional_contact_particles_count, float& minimum_x, float& maximum_x){
+__forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuffer<MaterialType> particle_buffer, const Partition prev_partition, AlphaShapesParticleBuffer alpha_shapes_particle_buffer, const ForwardIterator& particle_indices_begin, const ForwardIterator& particle_indices_end, const int* own_particle_indices, std::array<int, 3>* triangles, bool* triangles_is_alpha, int& current_triangle_count, int& next_triangle_count, const ivec3 blockid, const float alpha, const int finalize_particles_start, const int finalize_particles_end, const int* contact_triangles, const int* additional_contact_particles, const int contact_triangles_count, const int additional_contact_particles_count, float& minimum_x, float& maximum_x, int& tmpabc, const int test_index){
 	constexpr size_t ALPHA_SHAPES_MAX_TEMPORARY_CONVEX_HULL_TRIANGLES = 2 * (ALPHA_SHAPES_MAX_CIRCUMSPHERE_POINTS) - 4;
 	
 	int temporary_convex_hull_triangles_count = 0;
 	int next_temporary_convex_hull_triangles_count = 0;
 	std::array<int, ALPHA_SHAPES_MAX_TEMPORARY_CONVEX_HULL_TRIANGLES> temporary_convex_hull;
+	
+	printf("Y %d %d - ", contact_triangles_count, additional_contact_particles_count);
 	
 	//Add contact triangles to convex hull
 	for(int i = 0; i < contact_triangles_count; ++i){
@@ -1263,6 +1277,10 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 	for(int i = 0; i < additional_contact_particles_count; ++i){
 		const std::array<float, 3> particle_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, additional_contact_particles[i], blockid);
 		const vec3 particle_position {particle_position_arr[0], particle_position_arr[1], particle_position_arr[2]};
+		
+		if(tmpabc == 1){//test_index){
+			tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, additional_contact_particles[i], blockid, 2, {0.0f, 0.0f, 0.0f}, 0.0f, 0.0f);
+		}
 		
 		//For each triangle of the convex hull facing towards the point (point is in triangle halfspace) try to add a tetrahedron formed by this triangle and this point
 		for(int j = 0; j < temporary_convex_hull_triangles_count; ++j){
@@ -1283,8 +1301,15 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 			const std::array<float, 3>& triangle_normal = alpha_shapes_calculate_triangle_normal(triangle_positions);
 			const vec3 triangle_normal_vec {triangle_normal[0], triangle_normal[1], triangle_normal[2]};
 			
+			if(tmpabc == 1){//test_index){
+				tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[temporary_convex_hull[j]][0], blockid, 1, triangle_normal, 0.0f, 0.0f);
+				tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[temporary_convex_hull[j]][1], blockid, 1, triangle_normal, 0.0f, 0.0f);
+				tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[temporary_convex_hull[j]][2], blockid, 1, triangle_normal, 0.0f, 0.0f);
+			}
+			
 			//Halfspace test
-			const bool in_halfspace = (triangle_normal_vec.dot(particle_position - p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD);
+			const bool in_halfspace = triangle_normal_vec.dot(particle_position - p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
+			printf("Z0 %d - ", (in_halfspace ? 1 : 0));
 			if(in_halfspace){
 				vec3 sphere_center;
 				float radius;
@@ -1306,27 +1331,41 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 						&& (particle_position_arr_a[0] != particle_position[0] || particle_position_arr_a[1] != particle_position[1] || particle_position_arr_a[2] != particle_position[2])
 					){
 					
-						const bool in_halfspace_a = (triangle_normal_vec.dot(particle_position_a - p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD);
+						const bool in_halfspace_a = triangle_normal_vec.dot(particle_position_a - p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
 						
 						//Only test points in halfspace
 						if(in_halfspace_a){
-							const vec3 diff_a = sphere_center - particle_position_a;
-							const float squared_distance_a = diff_a[0] * diff_a[0] + diff_a[1] * diff_a[1] + diff_a[2] * diff_a[2];
-							
 							vec3 sphere_center_a;
 							float radius_a;
 							alpha_shapes_get_circumsphere(triangle_positions[0], triangle_positions[1], triangle_positions[2], particle_position_arr_a, sphere_center_a.data_arr(), radius_a);
 							
 							const float lambda_a = triangle_normal_vec.dot(sphere_center_a - p0_position);
 							
+							//Smaller delaunay sphere is the on that does not contain the other point
+							const vec3 diff = sphere_center_a - particle_position;
+							const float squared_distance = diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2];
+							const vec3 diff_a = sphere_center - particle_position_a;
+							const float squared_distance_a = diff_a[0] * diff_a[0] + diff_a[1] * diff_a[1] + diff_a[2] * diff_a[2];
+							
+							//a lies in sphere_b, but b does not lie in sphere_a
+							//TODO: Maybe use threshold here?
+							bool in_sphere = (squared_distance > (radius_a * radius_a) && squared_distance_a <= (radius * radius));
+							
+							//If both points lie in each others sphere or none lies in each others sphere use lambda to determine smaller
+							//FIXME:if(!in_sphere){
+								in_sphere = (lambda_a - lambda) <= ALPHA_SHAPES_MIN_SPHERE_THRESHOLD;
+							//FIXME:}
+							
 							//If a is in circumsphere the tetrahedron is invalid
-							if(lambda_a < lambda){
+							if(in_sphere){
 								convex = false;
 								break;
 							}
 						}
 					}
 				}
+				
+				printf("Z1 %d %d %d %d %d %d - ", (convex ? 1 : 0), temporary_convex_hull[j], current_triangle_count, next_triangle_count, temporary_convex_hull_triangles_count, next_temporary_convex_hull_triangles_count);
 				
 				//If the tetrahedron is valid, evaluate contact conditions; Otherwise mark the conecting triangle as non-convex and don't generate the tetrahedron
 				//A non-convex triangle is finalized if it is alpha
@@ -1352,7 +1391,7 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 					//Swap contacting triangle to the end
 					thrust::swap(triangles[temporary_convex_hull[j]], triangles[current_triangle_count - 1]);
 					thrust::swap(triangles_is_alpha[temporary_convex_hull[j]], triangles_is_alpha[current_triangle_count - 1]);
-					thrust::swap(temporary_convex_hull[0], temporary_convex_hull[temporary_convex_hull_triangles_count - 1]);
+					thrust::swap(temporary_convex_hull[j], temporary_convex_hull[temporary_convex_hull_triangles_count - 1]);
 					
 					//Fill gap between current list and next list
 					thrust::swap(triangles[current_triangle_count - 1], triangles[current_triangle_count + next_triangle_count - 1]);
@@ -1372,7 +1411,6 @@ template<typename Partition, MaterialE MaterialType>
 __forceinline__ __device__ bool alpha_shapes_handle_triangle_compare_func(const ParticleBuffer<MaterialType> particle_buffer, const Partition prev_partition, const ivec3 blockid, const std::array<std::array<float, 3>, 3> triangle_positions, const std::array<float, 3> triangle_normal_arr, const std::array<float, 3> p0_position_arr, const int& a, const int& b){
 	const vec3 p0_position {p0_position_arr[0], p0_position_arr[1], p0_position_arr[2]};
 	const vec3 triangle_normal_vec {triangle_normal_arr[0], triangle_normal_arr[1], triangle_normal_arr[2]};
-	
 		
 	const std::array<float, 3> particle_position_arr_a = alpha_shapes_get_particle_position(particle_buffer, prev_partition, a, blockid);
 	const std::array<float, 3> particle_position_arr_b = alpha_shapes_get_particle_position(particle_buffer, prev_partition, b, blockid);
@@ -1381,8 +1419,8 @@ __forceinline__ __device__ bool alpha_shapes_handle_triangle_compare_func(const 
 	const vec3 particle_position_b {particle_position_arr_b[0], particle_position_arr_b[1], particle_position_arr_b[2]};
 	
 	//Test if in half_space; Also sorts out particles that lie in a plane with the triangle
-	bool in_halfspace_a = triangle_normal_vec.dot(particle_position_a - p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
-	bool in_halfspace_b = triangle_normal_vec.dot(particle_position_b - p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
+	const bool in_halfspace_a = triangle_normal_vec.dot(particle_position_a - p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
+	const bool in_halfspace_b = triangle_normal_vec.dot(particle_position_b - p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
 	
 	bool ret = false;
 	//Triangle positions are always bigger
@@ -1397,7 +1435,7 @@ __forceinline__ __device__ bool alpha_shapes_handle_triangle_compare_func(const 
 		|| (particle_position_arr_b[0] == triangle_positions[1][0] && particle_position_arr_b[1] == triangle_positions[1][1] && particle_position_arr_b[2] == triangle_positions[1][2])
 		|| (particle_position_arr_b[0] == triangle_positions[2][0] && particle_position_arr_b[1] == triangle_positions[2][1] && particle_position_arr_b[2] == triangle_positions[2][2])
 	){
-		ret = true;
+		ret = in_halfspace_a;
 	} else if(in_halfspace_a && in_halfspace_b){
 		//Calculate delaunay spheres
 		vec3 sphere_center_a;
@@ -1411,8 +1449,19 @@ __forceinline__ __device__ bool alpha_shapes_handle_triangle_compare_func(const 
 		const float lambda_b = triangle_normal_vec.dot(sphere_center_b - p0_position);
 		
 		//Smaller delaunay sphere is the on that does not contain the other point
+		const vec3 diff_a = sphere_center_b - particle_position_a;
+		const float squared_distance_a = diff_a[0] * diff_a[0] + diff_a[1] * diff_a[1] + diff_a[2] * diff_a[2];
+		const vec3 diff_b = sphere_center_a - particle_position_b;
+		const float squared_distance_b = diff_b[0] * diff_b[0] + diff_b[1] * diff_b[1] + diff_b[2] * diff_b[2];
+		
 		//a lies in sphere_b, but b does not lie in sphere_a
-		ret = ((lambda_b - lambda_a) > ALPHA_SHAPES_IN_SPHERE_THRESHOLD && (lambda_a - lambda_b) <= ALPHA_SHAPES_IN_SPHERE_THRESHOLD);
+		//FIXME:ret = (squared_distance_b > (radius_a * radius_a) && squared_distance_a <= (radius_b * radius_b));
+		
+		//If both points lie in each others sphere or none lies in each others sphere use lambda to determine smaller
+		//FIXME:if(!ret){
+			ret = (lambda_a < lambda_b);
+		//FIXME:}
+		//ret = (radius_a < radius_b);
 	}else if(in_halfspace_a){
 		ret = true;
 	}
@@ -1421,7 +1470,7 @@ __forceinline__ __device__ bool alpha_shapes_handle_triangle_compare_func(const 
 
 //Based on Mesh Generation for Technology CAD in Three Dimensions / https://www.iue.tuwien.ac.at/phd/fleischmann/node64.html#sec:cosphericaldesign
 template<typename Partition, MaterialE MaterialType, typename ForwardIterator>
-__forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffer<MaterialType> particle_buffer, const Partition prev_partition, AlphaShapesParticleBuffer alpha_shapes_particle_buffer, const ForwardIterator& particle_indices_begin, const ForwardIterator& particle_indices_end, const int* own_particle_indices, std::array<int, 3>* triangles, bool* triangles_is_alpha, int& current_triangle_count, int& next_triangle_count, const ivec3 blockid, const float alpha, const int finalize_particles_start, const int finalize_particles_end, bool is_first_triangle, const int triangle_index, float& minimum_x, float& maximum_x){
+__forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffer<MaterialType> particle_buffer, const Partition prev_partition, AlphaShapesParticleBuffer alpha_shapes_particle_buffer, const ForwardIterator& particle_indices_begin, const ForwardIterator& particle_indices_end, const int* own_particle_indices, std::array<int, 3>* triangles, bool* triangles_is_alpha, int& current_triangle_count, int& next_triangle_count, const ivec3 blockid, const float alpha, const int finalize_particles_start, const int finalize_particles_end, bool is_first_triangle, const int triangle_index, float& minimum_x, float& maximum_x, int& tmpabc, const int test_index){
 	const std::array<int, 3> current_triangle = triangles[triangle_index];
 	
 	const std::array<float, 3> p0_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, current_triangle[0], blockid);
@@ -1474,6 +1523,9 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 				alpha_shapes_get_circumsphere(triangle_positions[0], triangle_positions[1], triangle_positions[2], particle_position_arr_a, sphere_center_a.data_arr(), radius_a);
 				alpha_shapes_get_circumsphere(triangle_positions[0], triangle_positions[1], triangle_positions[2], particle_position_arr_b, sphere_center_b.data_arr(), radius_b);
 				
+				const float lambda_a = triangle_normal_vec.dot(sphere_center_a - p0_position);
+				const float lambda_b = triangle_normal_vec.dot(sphere_center_b - p0_position);
+				
 				//Smaller delaunay sphere is the on that does not contain the other point
 				const vec3 diff_a = sphere_center_b - particle_position_a;
 				const float squared_distance_a = diff_a[0] * diff_a[0] + diff_a[1] * diff_a[1] + diff_a[2] * diff_a[2];
@@ -1481,7 +1533,13 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 				const float squared_distance_b = diff_b[0] * diff_b[0] + diff_b[1] * diff_b[1] + diff_b[2] * diff_b[2];
 				
 				//a lies in sphere_b, but b does not lie in sphere_a
-				ret = ((squared_distance_b - (radius_a * radius_a)) > ALPHA_SHAPES_IN_SPHERE_THRESHOLD && (squared_distance_a - (radius_b * radius_b)) <= ALPHA_SHAPES_IN_SPHERE_THRESHOLD);
+				//FIXME:ret = (squared_distance_b > (radius_a * radius_a) && squared_distance_a <= (radius_b * radius_b));
+				
+				//If both points lie in each others sphere or none lies in each others sphere use lambda to determine smaller
+				//FIXME:if(!ret){
+					ret = (std::abs(lambda_a) < std::abs(lambda_b));
+				//FIXME:}
+				//ret = (radius_a < radius_b);
 			}
 			return ret;
 		});
@@ -1497,10 +1555,13 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 			triangle_normal[1] = -triangle_normal[1];
 			triangle_normal[2] = -triangle_normal[2];
 			triangle_normal_vec = -triangle_normal_vec;
+			
+			thrust::swap(triangles[triangle_index][1], triangles[triangle_index][2]);
 		}
 	}
 	
-	int circumsphere_points_count;
+	int circumsphere_points_count = 0;
+	//Doubled space for in-place sorting and merging
 	std::array<int, 2 * ALPHA_SHAPES_MAX_CIRCUMSPHERE_POINTS> circumsphere_points;
 	
 	size_t already_sorted_count = 0;
@@ -1516,73 +1577,295 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 		});
 		
 		if(already_sorted_count > 0){
+			for(size_t j = 0; j < already_sorted_count - 1; ++j){
+				const std::array<float, 3> particle_position_arr_a = alpha_shapes_get_particle_position(particle_buffer, prev_partition, circumsphere_points[j], blockid);
+				const std::array<float, 3> particle_position_arr_b = alpha_shapes_get_particle_position(particle_buffer, prev_partition, circumsphere_points[j + 1], blockid);
+				
+				const vec3 particle_position_a {particle_position_arr_a[0], particle_position_arr_a[1], particle_position_arr_a[2]};
+				const vec3 particle_position_b {particle_position_arr_b[0], particle_position_arr_b[1], particle_position_arr_b[2]};
+				
+				//Test if in half_space; Also sorts out particles that lie in a plane with the triangle
+				const bool in_halfspace_a = triangle_normal_vec.dot(particle_position_a - p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
+				const bool in_halfspace_b = triangle_normal_vec.dot(particle_position_b - p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
+				
+				//Triangle positions are always bigger
+				if(
+					   (particle_position_arr_a[0] == triangle_positions[0][0] && particle_position_arr_a[1] == triangle_positions[0][1] && particle_position_arr_a[2] == triangle_positions[0][2])
+					|| (particle_position_arr_a[0] == triangle_positions[1][0] && particle_position_arr_a[1] == triangle_positions[1][1] && particle_position_arr_a[2] == triangle_positions[1][2])
+					|| (particle_position_arr_a[0] == triangle_positions[2][0] && particle_position_arr_a[1] == triangle_positions[2][1] && particle_position_arr_a[2] == triangle_positions[2][2])
+				){
+				}else if(
+					   (particle_position_arr_b[0] == triangle_positions[0][0] && particle_position_arr_b[1] == triangle_positions[0][1] && particle_position_arr_b[2] == triangle_positions[0][2])
+					|| (particle_position_arr_b[0] == triangle_positions[1][0] && particle_position_arr_b[1] == triangle_positions[1][1] && particle_position_arr_b[2] == triangle_positions[1][2])
+					|| (particle_position_arr_b[0] == triangle_positions[2][0] && particle_position_arr_b[1] == triangle_positions[2][1] && particle_position_arr_b[2] == triangle_positions[2][2])
+				){
+				} else if(in_halfspace_a && in_halfspace_b){
+					//Calculate delaunay spheres
+					vec3 sphere_center_a;
+					vec3 sphere_center_b;
+					float radius_a;
+					float radius_b;
+					alpha_shapes_get_circumsphere(triangle_positions[0], triangle_positions[1], triangle_positions[2], particle_position_arr_a, sphere_center_a.data_arr(), radius_a);
+					alpha_shapes_get_circumsphere(triangle_positions[0], triangle_positions[1], triangle_positions[2], particle_position_arr_b, sphere_center_b.data_arr(), radius_b);
+					
+					const float lambda_a = triangle_normal_vec.dot(sphere_center_a - p0_position);
+					const float lambda_b = triangle_normal_vec.dot(sphere_center_b - p0_position);
+					
+					//Smaller delaunay sphere is the on that does not contain the other point
+					const vec3 diff_a = sphere_center_b - particle_position_a;
+					const float squared_distance_a = diff_a[0] * diff_a[0] + diff_a[1] * diff_a[1] + diff_a[2] * diff_a[2];
+					const vec3 diff_b = sphere_center_a - particle_position_b;
+					const float squared_distance_b = diff_b[0] * diff_b[0] + diff_b[1] * diff_b[1] + diff_b[2] * diff_b[2];
+					
+					//a lies in sphere_b, but b does not lie in sphere_a
+					const bool a_in_b = squared_distance_a <= (radius_b * radius_b);
+					const bool b_in_a = squared_distance_b <= (radius_a * radius_a);
+					const bool ret0 = (!b_in_a && a_in_b);
+					
+					//If both points lie in each others sphere or none lies in each others sphere use lambda to determine smaller
+					bool lambda_a_smaller_lambda_b = (lambda_a < lambda_b);
+					bool ret1 = true;
+					//FIXME:if(!ret0){
+						ret1 = lambda_a_smaller_lambda_b;
+					//FIXME:}
+					//ret = (radius_a < radius_b);
+					
+					if(!ret1){
+						if(!ret0 && !(ret1 == lambda_a_smaller_lambda_b)){
+							printf("VERY BIG FAILURE");
+						}
+						printf("FAILURE SORT %d %d # %d %d %d # %d # %.28f %.28f - ", static_cast<int>(i), static_cast<int>(j), (a_in_b ? 1 : 0), (b_in_a ? 1 : 0), (lambda_a_smaller_lambda_b ? 1 : 0), (ret0 ? 1 : 0), lambda_a, lambda_b);
+					}
+				}else if(in_halfspace_a){
+				}
+			}
+			
+			for(int j = 0; j < already_sorted_count + current_sort_count; ++j){
+				//printf("%d # %d - ", j, circumsphere_points[j]);
+			}
 			//Merge with existing array keeping te smallest elements
 			//Copied from https://www.geeksforgeeks.org/in-place-merge-sort/
 			for(int gap = (already_sorted_count + current_sort_count + 1) / 2; gap > 0; gap = (gap == 1 ? 0 : (gap + 1) / 2)){
 				for(int i = 0; (i + gap) < already_sorted_count + current_sort_count; i++){
 					const int j = i + gap;
-					if (alpha_shapes_handle_triangle_compare_func(particle_buffer, prev_partition, blockid, triangle_positions, triangle_normal, p0_position_arr, circumsphere_points[j], circumsphere_points[i])){
+					if(alpha_shapes_handle_triangle_compare_func(particle_buffer, prev_partition, blockid, triangle_positions, triangle_normal, p0_position_arr, circumsphere_points[j], circumsphere_points[i])){
+						//printf("SWAP %d %d # %d %d - ", i, j, circumsphere_points[i], circumsphere_points[j]);
 						thrust::swap(circumsphere_points[i], circumsphere_points[j]);
 					}
 				}
 			}
+			
+			for(int j = 0; j < already_sorted_count + current_sort_count; ++j){
+				//printf("%d # %d - ", j, circumsphere_points[j]);
+			}
+		}else{
+			//Just copy first sorted partition to begin.
+			thrust::copy(thrust::seq, circumsphere_points.begin() + ALPHA_SHAPES_MAX_CIRCUMSPHERE_POINTS, circumsphere_points.begin() + ALPHA_SHAPES_MAX_CIRCUMSPHERE_POINTS + current_sort_count, circumsphere_points.begin());
 		}
 		already_sorted_count = std::max(already_sorted_count, current_sort_count);
 	}
 	
-	//Add all smallest points not lying behind previous points
-	//TODO: Discard points that lie behind other points
 	for(size_t i = 0; i < already_sorted_count - 1; ++i){
-		if(!alpha_shapes_handle_triangle_compare_func(particle_buffer, prev_partition, blockid, triangle_positions, triangle_normal, p0_position_arr, circumsphere_points[i], circumsphere_points[i + 1])){
-			break;
+		const std::array<float, 3> particle_position_arr_a = alpha_shapes_get_particle_position(particle_buffer, prev_partition, circumsphere_points[i], blockid);
+		const std::array<float, 3> particle_position_arr_b = alpha_shapes_get_particle_position(particle_buffer, prev_partition, circumsphere_points[i + 1], blockid);
+		
+		const vec3 particle_position_a {particle_position_arr_a[0], particle_position_arr_a[1], particle_position_arr_a[2]};
+		const vec3 particle_position_b {particle_position_arr_b[0], particle_position_arr_b[1], particle_position_arr_b[2]};
+		
+		//Test if in half_space; Also sorts out particles that lie in a plane with the triangle
+		const bool in_halfspace_a = triangle_normal_vec.dot(particle_position_a - p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
+		const bool in_halfspace_b = triangle_normal_vec.dot(particle_position_b - p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
+		
+		//Triangle positions are always bigger
+		if(
+			   (particle_position_arr_a[0] == triangle_positions[0][0] && particle_position_arr_a[1] == triangle_positions[0][1] && particle_position_arr_a[2] == triangle_positions[0][2])
+			|| (particle_position_arr_a[0] == triangle_positions[1][0] && particle_position_arr_a[1] == triangle_positions[1][1] && particle_position_arr_a[2] == triangle_positions[1][2])
+			|| (particle_position_arr_a[0] == triangle_positions[2][0] && particle_position_arr_a[1] == triangle_positions[2][1] && particle_position_arr_a[2] == triangle_positions[2][2])
+		){
+		}else if(
+			   (particle_position_arr_b[0] == triangle_positions[0][0] && particle_position_arr_b[1] == triangle_positions[0][1] && particle_position_arr_b[2] == triangle_positions[0][2])
+			|| (particle_position_arr_b[0] == triangle_positions[1][0] && particle_position_arr_b[1] == triangle_positions[1][1] && particle_position_arr_b[2] == triangle_positions[1][2])
+			|| (particle_position_arr_b[0] == triangle_positions[2][0] && particle_position_arr_b[1] == triangle_positions[2][1] && particle_position_arr_b[2] == triangle_positions[2][2])
+		){
+		} else if(in_halfspace_a && in_halfspace_b){
+			//Calculate delaunay spheres
+			vec3 sphere_center_a;
+			vec3 sphere_center_b;
+			float radius_a;
+			float radius_b;
+			alpha_shapes_get_circumsphere(triangle_positions[0], triangle_positions[1], triangle_positions[2], particle_position_arr_a, sphere_center_a.data_arr(), radius_a);
+			alpha_shapes_get_circumsphere(triangle_positions[0], triangle_positions[1], triangle_positions[2], particle_position_arr_b, sphere_center_b.data_arr(), radius_b);
+			
+			const float lambda_a = triangle_normal_vec.dot(sphere_center_a - p0_position);
+			const float lambda_b = triangle_normal_vec.dot(sphere_center_b - p0_position);
+			
+			//Smaller delaunay sphere is the on that does not contain the other point
+			const vec3 diff_a = sphere_center_b - particle_position_a;
+			const float squared_distance_a = diff_a[0] * diff_a[0] + diff_a[1] * diff_a[1] + diff_a[2] * diff_a[2];
+			const vec3 diff_b = sphere_center_a - particle_position_b;
+			const float squared_distance_b = diff_b[0] * diff_b[0] + diff_b[1] * diff_b[1] + diff_b[2] * diff_b[2];
+			
+			//a lies in sphere_b, but b does not lie in sphere_a
+			const bool a_in_b = squared_distance_a <= (radius_b * radius_b);
+			const bool b_in_a = squared_distance_b <= (radius_a * radius_a);
+			const bool ret0 = (!b_in_a && a_in_b);
+			
+			//If both points lie in each others sphere or none lies in each others sphere use lambda to determine smaller
+			bool lambda_a_smaller_lambda_b = (lambda_a < lambda_b);
+			bool ret1 = true;
+			//FIXME:if(!ret0){
+				ret1 = lambda_a_smaller_lambda_b;
+			//FIXME:}
+			//ret = (radius_a < radius_b);
+			
+			if(!ret1){
+				if(!ret0 && !(ret1 == lambda_a_smaller_lambda_b)){
+					printf("VERY BIG FAILURE");
+				}
+				printf("FAILURE SORT %d # %d %d %d # %d # %.28f %.28f - ", static_cast<int>(i), (a_in_b ? 1 : 0), (b_in_a ? 1 : 0), (lambda_a_smaller_lambda_b ? 1 : 0), (ret0 ? 1 : 0), lambda_a, lambda_b);
+			}
+		}else if(in_halfspace_a){
 		}
-		circumsphere_points_count++;
 	}
 	
-	//Gather triangles
-	int circumsphere_circumsphere_triangles_count = 1;
-	std::array<int, ALPHA_SHAPES_MAX_CIRCUMSPHERE_POINTS / 3> circumsphere_triangles;
-	circumsphere_triangles[0] = triangle_index;//Add current triangle
-	for(int current_triangle_index = 0; current_triangle_index < current_triangle_count + next_triangle_count; ++current_triangle_index){
-		//If all points of the triangle are in circumsphere, add the triangle and remove the points
-		int contact_count = 0;
-		std::array<int, 3> contact_points;
-		for(int i = 0; i < circumsphere_points_count; ++i){
-			if(triangles[current_triangle_index][0] == circumsphere_points[i] || triangles[current_triangle_index][1] == circumsphere_points[i] || triangles[current_triangle_index][2] == circumsphere_points[i]){
-				contact_points[contact_count++] = i;
+	const std::array<float, 3> particle_position_arr_first = alpha_shapes_get_particle_position(particle_buffer, prev_partition, circumsphere_points[0], blockid);
+	const vec3 particle_position_first {particle_position_arr_first[0], particle_position_arr_first[1], particle_position_arr_first[2]};
+	
+	//Test if in half_space; Also sorts out particles that lie in a plane with the triangle
+	const bool in_halfspace_first = triangle_normal_vec.dot(particle_position_first - p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
+	
+	const bool part_of_triangle_first = (
+		   (particle_position_arr_first[0] == triangle_positions[0][0] && particle_position_arr_first[1] == triangle_positions[0][1] && particle_position_arr_first[2] == triangle_positions[0][2])
+		|| (particle_position_arr_first[0] == triangle_positions[1][0] && particle_position_arr_first[1] == triangle_positions[1][1] && particle_position_arr_first[2] == triangle_positions[1][2])
+		|| (particle_position_arr_first[0] == triangle_positions[2][0] && particle_position_arr_first[1] == triangle_positions[2][1] && particle_position_arr_first[2] == triangle_positions[2][2])
+	);
+	
+	vec3 sphere_center_first;
+	float radius_first;
+	alpha_shapes_get_circumsphere(triangle_positions[0], triangle_positions[1], triangle_positions[2], particle_position_arr_first, sphere_center_first.data_arr(), radius_first);
+	
+	const float lambda_first = triangle_normal_vec.dot(sphere_center_first - p0_position);
+	
+	//Only add points if they are not in halfspace and not part of the triangle
+	if(!part_of_triangle_first && in_halfspace_first){
+		//Add all smallest points in epsilon hull not lying behind previous points
+		//TODO: Discard points that lie behind other points
+		circumsphere_points_count = 1;//Add first point
+		vec3 particle_position_a = particle_position_first;
+		vec3 sphere_center_a = sphere_center_first;
+		//float radius_a = radius_first;
+		float lambda_a = lambda_first;
+		for(size_t i = 0; i < already_sorted_count - 1; ++i){
+			const std::array<float, 3> particle_position_arr_b = alpha_shapes_get_particle_position(particle_buffer, prev_partition, circumsphere_points[i + 1], blockid);
+			
+			const vec3 particle_position_b {particle_position_arr_b[0], particle_position_arr_b[1], particle_position_arr_b[2]};
+			
+			//Test if in half_space; Also sorts out particles that lie in a plane with the triangle
+			const bool in_halfspace_b = triangle_normal_vec.dot(particle_position_b - p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
+			
+			const bool part_of_triangle_b = (
+				   (particle_position_arr_b[0] == triangle_positions[0][0] && particle_position_arr_b[1] == triangle_positions[0][1] && particle_position_arr_b[2] == triangle_positions[0][2])
+				|| (particle_position_arr_b[0] == triangle_positions[1][0] && particle_position_arr_b[1] == triangle_positions[1][1] && particle_position_arr_b[2] == triangle_positions[1][2])
+				|| (particle_position_arr_b[0] == triangle_positions[2][0] && particle_position_arr_b[1] == triangle_positions[2][1] && particle_position_arr_b[2] == triangle_positions[2][2])
+			);
+			
+			//Calculate delaunay spheres
+			vec3 sphere_center_b;
+			float radius_b;
+			alpha_shapes_get_circumsphere(triangle_positions[0], triangle_positions[1], triangle_positions[2], particle_position_arr_b, sphere_center_b.data_arr(), radius_b);
+			
+			//Smaller delaunay sphere is the on that does not contain the other point
+			const vec3 diff_a = sphere_center_b - particle_position_a;
+			const float squared_distance_a = diff_a[0] * diff_a[0] + diff_a[1] * diff_a[1] + diff_a[2] * diff_a[2];
+			const vec3 diff_b = sphere_center_a - particle_position_b;
+			const float squared_distance_b = diff_b[0] * diff_b[0] + diff_b[1] * diff_b[1] + diff_b[2] * diff_b[2];
+			
+			const float lambda_b = triangle_normal_vec.dot(sphere_center_b - p0_position);
+			
+			//FIXME:const bool in_sphere = ((squared_distance_b - (radius_a * radius_a)) <= ALPHA_SHAPES_IN_SPHERE_THRESHOLD);
+			const bool in_sphere = ((lambda_b - lambda_a) <= ALPHA_SHAPES_IN_SPHERE_LAMBDA_THRESHOLD);
+			
+			//In epsilon hull and halfspace but nor part of the current triangle
+			const bool in_epsilon_hull = !part_of_triangle_b && in_halfspace_b && in_sphere;
+			
+			if(!in_epsilon_hull){
+				break;
+			}
+			circumsphere_points_count++;
+			
+			particle_position_a = particle_position_b;
+			sphere_center_a = sphere_center_b;
+			//radius_a = radius_b;
+			lambda_a = lambda_b;
+		}
+	}
+	
+	//Only handle tetrahedra if we found at least one point. If not we finalize the current triangle
+	if(circumsphere_points_count > 0){
+		//Gather triangles
+		int circumsphere_circumsphere_triangles_count = 1;
+		std::array<int, ALPHA_SHAPES_MAX_CIRCUMSPHERE_POINTS / 3> circumsphere_triangles;
+		circumsphere_triangles[0] = triangle_index;//Add current triangle
+		for(int current_triangle_index = 0; current_triangle_index < current_triangle_count + next_triangle_count; ++current_triangle_index){
+			//If all points of the triangle are in circumsphere, add the triangle and remove the points
+			int contact_count = 0;
+			std::array<int, 3> contact_points;
+			for(int i = 0; i < circumsphere_points_count; ++i){
+				if(triangles[current_triangle_index][0] == circumsphere_points[i] || triangles[current_triangle_index][1] == circumsphere_points[i] || triangles[current_triangle_index][2] == circumsphere_points[i]){
+					contact_points[contact_count++] = i;
+				}
+			}
+			
+			if(contact_count == 3){
+				//Remove points
+				for(int i = 2; i >=0; --i){//Backward loop to ensure correct swapping
+					//Swap to end
+					thrust::swap(circumsphere_points[contact_points[i]], circumsphere_points[circumsphere_points_count - 1]);
+					
+					//Decrease size
+					circumsphere_points_count--;
+				}
+				
+				//Add triangle
+				circumsphere_triangles[circumsphere_circumsphere_triangles_count++] = current_triangle_index;
 			}
 		}
 		
-		if(contact_count == 3){
-			//Remove points
-			for(int i = 3; i >=0; --i){//Backward loop to ensure correct swapping
-				//Swap to end
-				thrust::swap(circumsphere_points[contact_points[i]], circumsphere_points[circumsphere_points_count - 1]);
-				
-				//Decrease size
-				circumsphere_points_count--;
-			}
-			
-			//Add triangle
-			circumsphere_triangles[circumsphere_circumsphere_triangles_count++] = current_triangle_index;
-		}
-	}
-	
-	//Build tetrahedra
-	alpha_shapes_build_tetrahedra(particle_buffer, prev_partition, alpha_shapes_particle_buffer, particle_indices_begin, particle_indices_end, own_particle_indices, triangles, triangles_is_alpha, current_triangle_count, next_triangle_count, blockid, alpha, finalize_particles_start, finalize_particles_end, circumsphere_triangles.data(), circumsphere_points.data(), circumsphere_circumsphere_triangles_count, circumsphere_points_count, minimum_x, maximum_x);
+		//Build tetrahedra
+		alpha_shapes_build_tetrahedra(particle_buffer, prev_partition, alpha_shapes_particle_buffer, particle_indices_begin, particle_indices_end, own_particle_indices, triangles, triangles_is_alpha, current_triangle_count, next_triangle_count, blockid, alpha, finalize_particles_start, finalize_particles_end, circumsphere_triangles.data(), circumsphere_points.data(), circumsphere_circumsphere_triangles_count, circumsphere_points_count, minimum_x, maximum_x, tmpabc, test_index);
 
-	//If we are handling the first triangle, readd it with flipped normal as outer triangle
-	if(is_first_triangle){
-		if(flipped_normal){
-			triangles[current_triangle_count + next_triangle_count][0] = current_triangle[0];
-			triangles[current_triangle_count + next_triangle_count][1] = current_triangle[1];
-			triangles[current_triangle_count + next_triangle_count][2] = current_triangle[2];
-		}else{
-			triangles[current_triangle_count + next_triangle_count][0] = current_triangle[0];
-			triangles[current_triangle_count + next_triangle_count][1] = current_triangle[2];
-			triangles[current_triangle_count + next_triangle_count][2] = current_triangle[1];
+		//If we are handling the first triangle, re-add it with flipped normal as outer triangle
+		if(is_first_triangle){
+			if(flipped_normal){
+				triangles[current_triangle_count + next_triangle_count][0] = current_triangle[0];
+				triangles[current_triangle_count + next_triangle_count][1] = current_triangle[1];
+				triangles[current_triangle_count + next_triangle_count][2] = current_triangle[2];
+			}else{
+				triangles[current_triangle_count + next_triangle_count][0] = current_triangle[0];
+				triangles[current_triangle_count + next_triangle_count][1] = current_triangle[2];
+				triangles[current_triangle_count + next_triangle_count][2] = current_triangle[1];
+			}
+			next_triangle_count++;
 		}
-		next_triangle_count++;
+
+	}else{
+		//Remove the face and move it to alpha if it is alpha
+		
+		//NOTE: Always false for first triangle
+		if(triangles_is_alpha[triangle_index]){
+			//FIXME:alpha_shapes_finalize_triangle(particle_buffer, prev_partition, alpha_shapes_particle_buffer, own_particle_indices.data(), temporary_convex_hull[0], blockid, own_last_active_particles_start, own_active_particles_start + own_active_particles_count);
+		}
+		
+		//Swap contacting triangle to the end
+		thrust::swap(triangles[triangle_index], triangles[current_triangle_count - 1]);
+		thrust::swap(triangles_is_alpha[triangle_index], triangles_is_alpha[current_triangle_count - 1]);
+		
+		//Fill gap between current list and next list
+		thrust::swap(triangles[current_triangle_count - 1], triangles[current_triangle_count + next_triangle_count - 1]);
+		thrust::swap(triangles_is_alpha[current_triangle_count - 1], triangles_is_alpha[current_triangle_count + next_triangle_count - 1]);
+		
+		//Decrease triangle count
+		current_triangle_count--;
 	}
 }
 
@@ -1726,6 +2009,7 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 	float minimum_x;
 	float maximum_x;
 	if(found_initial_triangle){
+		current_triangle_count = 1;
 		//Create first tetrahedron
 		/*{
 			std::array<int, 3> current_triangle = triangles[0];
@@ -1803,9 +2087,13 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 			}
 		}*/
 		
-		alpha_shapes_handle_triangle(particle_buffer, prev_partition, alpha_shapes_particle_buffer, particle_indices.begin(), particle_indices.end(), own_particle_indices.data(), triangles.data(), triangles_is_alpha.data(), current_triangle_count, next_triangle_count, blockid, alpha, 0, own_particle_bucket_size, true, 0, minimum_x, maximum_x);
+		alpha_shapes_handle_triangle(particle_buffer, prev_partition, alpha_shapes_particle_buffer, particle_indices.begin(), particle_indices.end(), own_particle_indices.data(), triangles.data(), triangles_is_alpha.data(), current_triangle_count, next_triangle_count, blockid, alpha, 0, own_particle_bucket_size, true, 0, minimum_x, maximum_x, tmpabc, test_index);
 		tmpabc++;
 		
+		current_triangle_count = next_triangle_count;
+		next_triangle_count = 0;
+		
+		printf("X %d - ", current_triangle_count);
 		found_initial_tetrahedron = (current_triangle_count > 1);
 	}
 	
@@ -1930,7 +2218,7 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 				
 				
 				*/
-				alpha_shapes_handle_triangle(particle_buffer, prev_partition, alpha_shapes_particle_buffer, particle_indices.begin() + active_particles_start, particle_indices.begin() + active_particles_start + active_particles_count, own_particle_indices.data(), triangles.data(), triangles_is_alpha.data(), current_triangle_count, next_triangle_count, blockid, alpha, own_last_active_particles_start, own_active_particles_start + own_active_particles_count, false, 0, minimum_x, maximum_x);
+				alpha_shapes_handle_triangle(particle_buffer, prev_partition, alpha_shapes_particle_buffer, particle_indices.begin() + active_particles_start, particle_indices.begin() + active_particles_start + active_particles_count, own_particle_indices.data(), triangles.data(), triangles_is_alpha.data(), current_triangle_count, next_triangle_count, blockid, alpha, own_last_active_particles_start, own_active_particles_start + own_active_particles_count, false, 0, minimum_x, maximum_x, tmpabc, test_index);
 				tmpabc++;
 			}
 			
