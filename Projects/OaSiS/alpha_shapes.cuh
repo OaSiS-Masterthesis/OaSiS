@@ -34,7 +34,7 @@ constexpr size_t ALPHA_SHAPES_MAX_TRIANGLE_COUNT = 2 * ALPHA_SHAPES_MAX_PARTICLE
 
 constexpr unsigned int ALPHA_SHAPES_MAX_KERNEL_SIZE = config::G_MAX_ACTIVE_BLOCK;
 
-constexpr float ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD = 1e-11;//FIXME:1e-9;//TODO: Maybe adjust threshold
+constexpr float ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD = 1e-9;//FIXME:1e-9;//TODO: Maybe adjust threshold
 constexpr float ALPHA_SHAPES_LINE_DISTANCE_TEST_THRESHOLD = 1e-9;//TODO: Maybe adjust threshold
 constexpr float ALPHA_SHAPES_IN_SPHERE_THRESHOLD = 0.0f;//FIXME:1e-9;//TODO: Maybe adjust threshold;
 constexpr float ALPHA_SHAPES_MIN_SPHERE_THRESHOLD = 0.0f;//FIXME:1e-9;//TODO: Maybe adjust threshold;
@@ -1355,15 +1355,15 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 			//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, additional_contact_particles[i], blockid, 2, {0.0f, 0.0f, 0.0f}, 0.0f, 0.0f);
 		//}
 		
-		printf("M %d # %d\n", tmpabc, additional_contact_particles[i]);
+		//printf("M %d # %d\n", tmpabc, additional_contact_particles[i]);
 		
 		//For each triangle of the convex hull facing towards the point (point is in triangle halfspace) try to add a tetrahedron formed by this triangle and this point
 		for(int j = 0; j < temporary_convex_hull_triangles_count; ++j){
 			for(int k = 0; k < current_triangle_count; ++k){
-				printf("X %d # %d %d %d\n", tmpabc, triangles[k][0], triangles[k][1], triangles[k][2]);
+				//printf("X %d # %d %d %d\n", tmpabc, triangles[k][0], triangles[k][1], triangles[k][2]);
 			}
 			for(int k = current_triangle_count; k < current_triangle_count + next_triangle_count; ++k){
-				printf("Y %d # %d %d %d\n", tmpabc, triangles[k][0], triangles[k][1], triangles[k][2]);
+				//printf("Y %d # %d %d %d\n", tmpabc, triangles[k][0], triangles[k][1], triangles[k][2]);
 			}
 			for(int k = 0; k < temporary_convex_hull_triangles_count; ++k){
 				//printf("X1 %d # %d \n", tmpabc, temporary_convex_hull[k]);
@@ -1400,7 +1400,7 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 			const bool in_halfspace = triangle_normal_vec0.dot(particle_position - p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
 			//printf("Z0 %d - ", (in_halfspace ? 1 : 0));
 			if(in_halfspace){
-				printf("N %d # %d # %d %d %d\n", tmpabc, j, triangles[temporary_convex_hull[j]][0], triangles[temporary_convex_hull[j]][1], triangles[temporary_convex_hull[j]][2]);
+				//printf("N %d # %d # %d %d %d\n", tmpabc, j, triangles[temporary_convex_hull[j]][0], triangles[temporary_convex_hull[j]][1], triangles[temporary_convex_hull[j]][2]);
 				
 				vec3 sphere_center;
 				float radius;
@@ -1503,7 +1503,7 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 					}
 				}*/
 				
-				printf("Convex %d # %d %d %d # %d\n", tmpabc, triangles[temporary_convex_hull[j]][0], triangles[temporary_convex_hull[j]][1], triangles[temporary_convex_hull[j]][2], (convex ? 1 : 0));
+				//printf("Convex %d # %d %d %d # %d\n", tmpabc, triangles[temporary_convex_hull[j]][0], triangles[temporary_convex_hull[j]][1], triangles[temporary_convex_hull[j]][2], (convex ? 1 : 0));
 				
 				//If the tetrahedron is valid, evaluate contact conditions; Otherwise mark the conecting triangle as non-convex and don't generate the tetrahedron
 				//A non-convex triangle is finalized if it is alpha
@@ -1516,10 +1516,10 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 					alpha_shapes_check_contact_condition(particle_buffer, prev_partition, alpha_shapes_particle_buffer, own_particle_indices, triangles, triangles_is_alpha, temporary_convex_hull.data(), current_triangle_count, next_triangle_count, temporary_convex_hull_triangles_count, next_temporary_convex_hull_triangles_count, blockid, temporary_convex_hull[j], additional_contact_particles[i], is_alpha,finalize_particles_start, finalize_particles_end);
 				
 					for(int k = 0; k < current_triangle_count; ++k){
-						printf("X %d # %d %d %d\n", tmpabc, triangles[k][0], triangles[k][1], triangles[k][2]);
+						//printf("X %d # %d %d %d\n", tmpabc, triangles[k][0], triangles[k][1], triangles[k][2]);
 					}
 					for(int k = current_triangle_count; k < current_triangle_count + next_triangle_count; ++k){
-						printf("Y %d # %d %d %d\n", tmpabc, triangles[k][0], triangles[k][1], triangles[k][2]);
+						//printf("Y %d # %d %d %d\n", tmpabc, triangles[k][0], triangles[k][1], triangles[k][2]);
 					}
 				
 					//Update bounds
@@ -1762,9 +1762,9 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 		const vec3 current_particle_position {current_particle_position_arr[0], current_particle_position_arr[1], current_particle_position_arr[2]};
 		
 		for(int j = 0; j < current_triangle_count + next_triangle_count; ++j){
-			const std::array<float, 3> current_p0_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[circumsphere_triangles[j]][0], blockid);
-			const std::array<float, 3> current_p1_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[circumsphere_triangles[j]][1], blockid);
-			const std::array<float, 3> current_p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[circumsphere_triangles[j]][2], blockid);
+			const std::array<float, 3> current_p0_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[j][0], blockid);
+			const std::array<float, 3> current_p1_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[j][1], blockid);
+			const std::array<float, 3> current_p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[j][2], blockid);
 			
 			const vec3 current_p0_position {current_p0_position_arr[0], current_p0_position_arr[1], current_p0_position_arr[2]};
 			
@@ -1792,10 +1792,10 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 	//If the point is not in the halfspace of the currnt triangle we have no smallest point so we set the count to 0 what will cause the triangle to be finalized
 	if(!in_halfspace_of_current_triangle){
 		if(tmpabc == test_index){
-			tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[triangle_index][0], blockid, 1, triangle_normal, 0.0f, 0.0f);
-			tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[triangle_index][1], blockid, 1, triangle_normal, 0.0f, 0.0f);
-			tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[triangle_index][2], blockid, 1, triangle_normal, 0.0f, 0.0f);
-			tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, circumsphere_points[0], blockid, 3, {0.0f, 0.0f, 0.0f}, 0.0f, 0.0f);
+			//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[triangle_index][0], blockid, 1, triangle_normal, 0.0f, 0.0f);
+			//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[triangle_index][1], blockid, 1, triangle_normal, 0.0f, 0.0f);
+			//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[triangle_index][2], blockid, 1, triangle_normal, 0.0f, 0.0f);
+			//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, circumsphere_points[0], blockid, 3, {0.0f, 0.0f, 0.0f}, 0.0f, 0.0f);
 		}
 		circumsphere_points_count = 0;
 	}
@@ -1808,6 +1808,7 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 			const std::array<float, 3> current_outest_point_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, circumsphere_points[m], blockid);
 			const vec3 current_outest_point_position {current_outest_point_position_arr[0], current_outest_point_position_arr[1], current_outest_point_position_arr[2]};
 
+			float smallest_outsider = std::numeric_limits<float>::max();
 			for(int i = 0; i < particle_indices_count; ++i){
 				const std::array<float, 3> current_particle_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, particle_indices[i], blockid);
 				const vec3 current_particle_position {current_particle_position_arr[0], current_particle_position_arr[1], current_particle_position_arr[2]};
@@ -1826,12 +1827,22 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 					continue;
 				}
 				
-				//Test if point is in current convex hull
+				//Test if point is on correct side; This also means that it is not in current convex hull
 				bool in_convex_hull = true;
+				bool in_new_convex_hull = true;
 				for(int j = 0; j < current_triangle_count + next_triangle_count; ++j){
-					const std::array<float, 3> current_p0_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[circumsphere_triangles[j]][0], blockid);
-					const std::array<float, 3> current_p1_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[circumsphere_triangles[j]][1], blockid);
-					const std::array<float, 3> current_p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[circumsphere_triangles[j]][2], blockid);
+					//Test if triangle is active
+					bool already_in_set = false;
+					for(int k = 0; k < circumsphere_points_count; ++k){
+						if(j == circumsphere_triangles[k]){
+							already_in_set = true;
+							break;
+						}
+					}
+					
+					const std::array<float, 3> current_p0_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[j][0], blockid);
+					const std::array<float, 3> current_p1_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[j][1], blockid);
+					const std::array<float, 3> current_p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[j][2], blockid);
 					
 					const vec3 current_p0_position {current_p0_position_arr[0], current_p0_position_arr[1], current_p0_position_arr[2]};
 					
@@ -1849,16 +1860,25 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 					//If point is in an outer halfspace it is not in convex hull
 					if(current_in_halfspace){
 						in_convex_hull = false;
-						break;
+						
+						//If point is in an outer halfspace of an triangle not active it is not in new convex hull
+						if(!already_in_set){
+							in_new_convex_hull = false;
+							break;
+						}
 					}
 				}
 				
-				//We are only searching for points outside of current convex hull
-				if(in_convex_hull){
+				//We are only searching for points on the correct side of our active triangle set
+				if(!in_convex_hull){
 					
-					bool in_new_convex_hull = true;
+					if(tmpabc == test_index){
+						//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, circumsphere_points[m], blockid, 3, {0.0f, 0.0f, 0.0f}, 0.0f, 0.0f);
+						//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, particle_indices[i], blockid, 4, {0.0f, 0.0f, 0.0f}, 0.0f, 0.0f);
+					}
+					
+					//bool in_new_convex_hull = true;
 					for(int j = 0; j < circumsphere_triangles_count; ++j){
-						
 						const std::array<float, 3> current_p0_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[circumsphere_triangles[j]][0], blockid);
 						const std::array<float, 3> current_p1_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[circumsphere_triangles[j]][1], blockid);
 						const std::array<float, 3> current_p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[circumsphere_triangles[j]][2], blockid);
@@ -1883,86 +1903,187 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 								vertex_count[2]++;
 							}
 							
-							if(vertex_count[0] == 0){
+							//All edges that have a neighbour face have count 2 (one for current face, one for the other face)
+							if(vertex_count[1] == 2 && vertex_count[2] == 2){
 								edge_count[0]++;
-							}else if(vertex_count[1] == 0){
+							}else if(vertex_count[2] == 2 && vertex_count[0] == 2){
 								edge_count[1]++;
-							}else{//vertex_count[2] == 0
+							}else if(vertex_count[0] == 2 && vertex_count[1] == 2){
 								edge_count[2]++;
-							}
+							}//Otherwise no edge connection
 						}
 						
-						//Calculate outwards pointing normal
-						std::array<float, 3> current_triangle_normal = {0.0f, 0.0f, 0.0f};
-				
+						//Test all outer faces
 						if(edge_count[0] == 0){
-							current_triangle_normal = alpha_shapes_calculate_triangle_normal({
+							const std::array<float, 3> current_triangle_normal = alpha_shapes_calculate_triangle_normal({
 								current_p1_position_arr,
 								current_p2_position_arr,
 								current_outest_point_position_arr
 							});
-						}else if(edge_count[1] == 0){
-							current_triangle_normal = alpha_shapes_calculate_triangle_normal({
-								current_p2_position_arr,
-								current_p0_position_arr,
-								current_outest_point_position_arr
-							});
-						}else if(edge_count[2] == 0){
-							current_triangle_normal = alpha_shapes_calculate_triangle_normal({
-								current_p0_position_arr,
-								current_p1_position_arr,
-								current_outest_point_position_arr
-							});
-						}//Otherwise triangle is no border triangle
-						
-						if(current_triangle_normal[0] != 0.0f || current_triangle_normal[1] != 0.0f || current_triangle_normal[2] != 0.0f){
+							
 							const vec3 current_triangle_normal_vec {current_triangle_normal[0], current_triangle_normal[1], current_triangle_normal[2]};
 							
 							//Perform halfspace test
 							const bool current_in_halfspace = current_triangle_normal_vec.dot(current_particle_position - current_outest_point_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
 							
+							/*printf("ABC0 %d # %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n"
+								, (current_in_halfspace ? 1 : 0)
+								, current_triangle_normal_vec.dot(current_particle_position - current_outest_point_position)
+								, ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD
+								, current_triangle_normal_vec[0]
+								, current_triangle_normal_vec[1]
+								, current_triangle_normal_vec[2]
+								, current_particle_position[0]
+								, current_particle_position[1]
+								, current_particle_position[2]
+								, current_outest_point_position[0]
+								, current_outest_point_position[1]
+								, current_outest_point_position[2]
+								, (current_particle_position - current_outest_point_position)[0]
+								, (current_particle_position - current_outest_point_position)[1]
+								, (current_particle_position - current_outest_point_position)[2]
+							);*/
+							
+							if(tmpabc == test_index){
+								//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[circumsphere_triangles[j]][2], blockid, 1, current_triangle_normal, 0.0f, 0.0f);
+							}
+							
 							//If point is in an outer halfspace it is not in convex hull
 							if(current_in_halfspace){
+								smallest_outsider = std::min(smallest_outsider, current_triangle_normal_vec.dot(current_particle_position - current_outest_point_position));
 								in_new_convex_hull = false;
-								break;
+								//FIXME:break;
 							}
 						}
-						
-						//Also test for all active triangles that the point does lie between current convex hull and new convex hull
-						{
-							const vec3 current_p0_position {current_p0_position_arr[0], current_p0_position_arr[1], current_p0_position_arr[2]};
-							
-							//Switched normal, so that it is pointiong outwards of our extension set
-							current_triangle_normal = alpha_shapes_calculate_triangle_normal({
-								current_p0_position_arr,
+						if(edge_count[1] == 0){
+							const std::array<float, 3> current_triangle_normal = alpha_shapes_calculate_triangle_normal({
 								current_p2_position_arr,
-								current_p1_position_arr,
+								current_p0_position_arr,
+								current_outest_point_position_arr
 							});
 							
 							const vec3 current_triangle_normal_vec {current_triangle_normal[0], current_triangle_normal[1], current_triangle_normal[2]};
-								
+							
 							//Perform halfspace test
-							const bool current_in_halfspace = current_triangle_normal_vec.dot(current_particle_position - current_p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
+							const bool current_in_halfspace = current_triangle_normal_vec.dot(current_particle_position - current_outest_point_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
+							
+							/*printf("ABC1 %d # %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n"
+								, (current_in_halfspace ? 1 : 0)
+								, current_triangle_normal_vec.dot(current_particle_position - current_outest_point_position)
+								, ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD
+								, current_triangle_normal_vec[0]
+								, current_triangle_normal_vec[1]
+								, current_triangle_normal_vec[2]
+								, current_particle_position[0]
+								, current_particle_position[1]
+								, current_particle_position[2]
+								, current_outest_point_position[0]
+								, current_outest_point_position[1]
+								, current_outest_point_position[2]
+								, (current_particle_position - current_outest_point_position)[0]
+								, (current_particle_position - current_outest_point_position)[1]
+								, (current_particle_position - current_outest_point_position)[2]
+							);*/
+							
+							if(tmpabc == test_index){
+								//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[circumsphere_triangles[j]][0], blockid, 1, current_triangle_normal, 0.0f, 0.0f);
+							}
 							
 							//If point is in an outer halfspace it is not in convex hull
 							if(current_in_halfspace){
+								smallest_outsider = std::min(smallest_outsider, current_triangle_normal_vec.dot(current_particle_position - current_outest_point_position));
 								in_new_convex_hull = false;
-								break;
+								//FIXME:break;
 							}
 						}
+						if(edge_count[2] == 0){
+							const std::array<float, 3> current_triangle_normal = alpha_shapes_calculate_triangle_normal({
+								current_p0_position_arr,
+								current_p1_position_arr,
+								current_outest_point_position_arr
+							});
+							
+							const vec3 current_triangle_normal_vec {current_triangle_normal[0], current_triangle_normal[1], current_triangle_normal[2]};
+							
+							//Perform halfspace test
+							const bool current_in_halfspace = current_triangle_normal_vec.dot(current_particle_position - current_outest_point_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
+							
+							/*printf("ABC2 %d # %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n"
+								, (current_in_halfspace ? 1 : 0)
+								, current_triangle_normal_vec.dot(current_particle_position - current_outest_point_position)
+								, ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD
+								, current_triangle_normal_vec[0]
+								, current_triangle_normal_vec[1]
+								, current_triangle_normal_vec[2]
+								, current_particle_position[0]
+								, current_particle_position[1]
+								, current_particle_position[2]
+								, current_outest_point_position[0]
+								, current_outest_point_position[1]
+								, current_outest_point_position[2]
+								, (current_particle_position - current_outest_point_position)[0]
+								, (current_particle_position - current_outest_point_position)[1]
+								, (current_particle_position - current_outest_point_position)[2]
+							);*/
+							
+							if(tmpabc == test_index){
+								//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[circumsphere_triangles[j]][1], blockid, 1, current_triangle_normal, 0.0f, 0.0f);
+							}
+							
+							//If point is in an outer halfspace it is not in convex hull
+							if(current_in_halfspace){
+								smallest_outsider = std::min(smallest_outsider, current_triangle_normal_vec.dot(current_particle_position - current_outest_point_position));
+								in_new_convex_hull = false;
+								//FIXME:break;
+							}
+						}//Otherwise triangle is no border triangle
 					}
 					
 					//If point is in new convex hull, add it to our set
 					if(in_new_convex_hull){
+						printf("IN HULL\n");
+						
+						if(tmpabc <= test_index){
+							//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, particle_indices[i], blockid, 2, {0.0f, 0.0f, 0.0f}, 0.0f, 0.0f);
+						}
+						
+						if(tmpabc == test_index){
+							for(int abc = 0; abc < circumsphere_triangles_count; ++abc){
+								const std::array<float, 3> current_p0_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[circumsphere_triangles[abc]][0], blockid);
+								const std::array<float, 3> current_p1_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[circumsphere_triangles[abc]][1], blockid);
+								const std::array<float, 3> current_p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[circumsphere_triangles[abc]][2], blockid);
+								
+								const vec3 current_p0_position {current_p0_position_arr[0], current_p0_position_arr[1], current_p0_position_arr[2]};
+								
+								const std::array<float, 3> current_triangle_normal = alpha_shapes_calculate_triangle_normal({
+									current_p0_position_arr,
+									current_p1_position_arr,
+									current_p2_position_arr
+								});
+								//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[circumsphere_triangles[abc]][0], blockid, 1, current_triangle_normal, 0.0f, 0.0f);
+								//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[circumsphere_triangles[abc]][1], blockid, 1, current_triangle_normal, 0.0f, 0.0f);
+								//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[circumsphere_triangles[abc]][2], blockid, 1, current_triangle_normal, 0.0f, 0.0f);
+							}
+							
+							//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, circumsphere_points[m], blockid, 3, {0.0f, 0.0f, 0.0f}, 0.0f, 0.0f);
+							//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, particle_indices[i], blockid, 4, {0.0f, 0.0f, 0.0f}, 0.0f, 0.0f);
+						}
+						//tmpabc++;
+						
+						if(tmpabc == test_index){
+							tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, particle_indices[i], blockid, 2, {0.0f, 0.0f, 0.0f}, 0.0f, 0.0f);
+						}
+						
+						
 						//If we are out of space print a warning
 						if(circumsphere_points_count >= ALPHA_SHAPES_MAX_CIRCUMSPHERE_POINTS){
 							printf("More points in circumsphere than we have memory for.\r\n");
 						}else{
 							circumsphere_points[circumsphere_points_count++] = particle_indices[i];
 							
-							//Add all triangles in halfspace of point
+							//Add all triangles in halfspace of point if not already active
 							for(int j = 0; j < current_triangle_count + next_triangle_count; ++j){
-								//Test if point is already in set
+								//Test if triangle is already in set
 								bool already_in_set = false;
 								for(int l = 0; l < circumsphere_triangles_count; ++l){
 									if(j == circumsphere_triangles[l]){
@@ -1971,14 +2092,14 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 									}
 								}
 
-								//If point is already in set skip it
+								//If triangle is already in set skip it
 								if(already_in_set){
 									continue;
 								}
 								
-								const std::array<float, 3> current_p0_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[circumsphere_triangles[j]][0], blockid);
-								const std::array<float, 3> current_p1_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[circumsphere_triangles[j]][1], blockid);
-								const std::array<float, 3> current_p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[circumsphere_triangles[j]][2], blockid);
+								const std::array<float, 3> current_p0_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[j][0], blockid);
+								const std::array<float, 3> current_p1_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[j][1], blockid);
+								const std::array<float, 3> current_p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[j][2], blockid);
 								
 								const vec3 current_p0_position {current_p0_position_arr[0], current_p0_position_arr[1], current_p0_position_arr[2]};
 								
@@ -2009,6 +2130,9 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 					}
 				}
 			}
+			//tmpabc++;
+			
+			printf("DEF %.28f %.28f\n", smallest_outsider, ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD);
 		}
 		
 		//Find outest point. That is the point with the most other points in its convex hull. If several, than the one with better delaunay criterion for the current triangle.
@@ -2035,28 +2159,29 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 						for(int k = 0; k < circumsphere_triangles_count; ++k){
 							std::array<int, 3> vertex_count = {};
 							if(
-								(triangles[circumsphere_triangles[j]][0] == triangles[circumsphere_triangles[k]][0] || triangles[circumsphere_triangles[j]][0] == triangles[circumsphere_triangles[k]][1] || triangles[circumsphere_triangles[j]][0] == triangles[circumsphere_triangles[k]][2])
+								(triangles[circumsphere_triangles[i]][0] == triangles[circumsphere_triangles[k]][0] || triangles[circumsphere_triangles[i]][0] == triangles[circumsphere_triangles[k]][1] || triangles[circumsphere_triangles[i]][0] == triangles[circumsphere_triangles[k]][2])
 							){
 								vertex_count[0]++;
 							}
 							if(
-								(triangles[circumsphere_triangles[j]][1] == triangles[circumsphere_triangles[k]][0] || triangles[circumsphere_triangles[j]][1] == triangles[circumsphere_triangles[k]][1] || triangles[circumsphere_triangles[j]][1] == triangles[circumsphere_triangles[k]][2])
+								(triangles[circumsphere_triangles[i]][1] == triangles[circumsphere_triangles[k]][0] || triangles[circumsphere_triangles[i]][1] == triangles[circumsphere_triangles[k]][1] || triangles[circumsphere_triangles[i]][1] == triangles[circumsphere_triangles[k]][2])
 							){
 								vertex_count[1]++;
 							}
 							if(
-								(triangles[circumsphere_triangles[j]][2] == triangles[circumsphere_triangles[k]][0] || triangles[circumsphere_triangles[j]][2] == triangles[circumsphere_triangles[k]][1] || triangles[circumsphere_triangles[j]][2] == triangles[circumsphere_triangles[k]][2])
+								(triangles[circumsphere_triangles[i]][2] == triangles[circumsphere_triangles[k]][0] || triangles[circumsphere_triangles[i]][2] == triangles[circumsphere_triangles[k]][1] || triangles[circumsphere_triangles[i]][2] == triangles[circumsphere_triangles[k]][2])
 							){
 								vertex_count[2]++;
 							}
 							
-							if(vertex_count[0] == 0){
+							//All edges that have a neighbour face have count 2 (one for current face, one for the other face)
+							if(vertex_count[1] == 2 && vertex_count[2] == 2){
 								edge_count[0]++;
-							}else if(vertex_count[1] == 0){
+							}else if(vertex_count[2] == 2 && vertex_count[0] == 2){
 								edge_count[1]++;
-							}else{//vertex_count[2] == 0
+							}else if(vertex_count[0] == 2 && vertex_count[1] == 2){
 								edge_count[2]++;
-							}
+							}//Otherwise no edge connection
 						}
 						
 						//Calculate outwards pointing normal
@@ -2104,17 +2229,17 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 			
 			if(current_in_hull_count >= max_in_hull_count){
 				//If several are equal, choose the one with better delaunay criterion
-				if(current_in_hull_count < max_in_hull_count || outest_point == -1 || alpha_shapes_handle_triangle_compare_func(particle_buffer, prev_partition, blockid, triangle_positions, triangle_normal, circumsphere_points[m], circumsphere_points[outest_point])){
+				if(current_in_hull_count > max_in_hull_count || outest_point == -1 || alpha_shapes_handle_triangle_compare_func(particle_buffer, prev_partition, blockid, triangle_positions, triangle_normal, circumsphere_points[m], circumsphere_points[outest_point])){
 					max_in_hull_count = current_in_hull_count;
 					outest_point = m;
 				}
 			}
 		}
 	
-		//If the new convex hull does not contain all points we have a problem. Our resulting hull must be convex, what is not the case. but we need the point cause it is in the convex hull of one of the ohter of our points
-		//Solution might be to adjust the threshold
+		//If the new convex hull does not contain all points we have a problem. Our resulting hull must be convex, what is not the case. But we need the point cause it is in the convex hull of one of the ohter of our points
+		//TODO: Solution might be to adjust the threshold? Not really => think of another solution
 		if(max_in_hull_count != circumsphere_points_count - 1){
-			printf("New convex hull does not contain all newe points\r\n");
+			printf("New convex hull does not contain all new points\r\n");
 		}
 		
 		//Check that paints are not part of any other triangle
@@ -2144,21 +2269,20 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 				current_p1_position_arr,
 				current_p2_position_arr
 			});
-			tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[circumsphere_triangles[m]][0], blockid, 1, current_triangle_normal, 0.0f, 0.0f);
-			tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[circumsphere_triangles[m]][1], blockid, 1, current_triangle_normal, 0.0f, 0.0f);
-			tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[circumsphere_triangles[m]][2], blockid, 1, current_triangle_normal, 0.0f, 0.0f);
+			//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[circumsphere_triangles[m]][0], blockid, 1, current_triangle_normal, 0.0f, 0.0f);
+			//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[circumsphere_triangles[m]][1], blockid, 1, current_triangle_normal, 0.0f, 0.0f);
+			//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[circumsphere_triangles[m]][2], blockid, 1, current_triangle_normal, 0.0f, 0.0f);
 		}
 		
 		
 		for(int m = 0; m < circumsphere_points_count; ++m){
-			tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, circumsphere_points[m], blockid, 2, {0.0f, 0.0f, 0.0f}, 0.0f, 0.0f);
+			//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, circumsphere_points[m], blockid, 2, {0.0f, 0.0f, 0.0f}, 0.0f, 0.0f);
 		}
 		if(circumsphere_points_count > 0){
-			tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, circumsphere_points[0], blockid, 3, {0.0f, 0.0f, 0.0f}, 0.0f, 0.0f);
+			//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, circumsphere_points[0], blockid, 3, {0.0f, 0.0f, 0.0f}, 0.0f, 0.0f);
 		}
 	}
-	tmpabc++;
-	
+
 	/*
 	int circumsphere_points_count = 0;
 	//Doubled space for in-place sorting and merging; Keeping one point more do detect if we have more points in epsilon hull than we have space
@@ -2326,7 +2450,7 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 	if(circumsphere_points_count > 0){
 		//Build tetrahedra
 		alpha_shapes_build_tetrahedra(particle_buffer, prev_partition, alpha_shapes_particle_buffer, particle_indices, particle_indices_count, own_particle_indices, triangles, triangles_is_alpha, current_triangle_count, next_triangle_count, blockid, alpha, finalize_particles_start, finalize_particles_end, circumsphere_triangles.data(), circumsphere_points.data(), circumsphere_triangles_count, circumsphere_points_count, minimum_x, maximum_x, tmpabc, test_index);
-
+		
 		//If we are handling the first triangle, re-add it with flipped normal as outer triangle
 		if(is_first_triangle){
 			if(flipped_normal){
@@ -2359,6 +2483,54 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 		//Decrease triangle count
 		current_triangle_count--;
 	}
+	
+	if(tmpabc == test_index){
+		for(int i = 0; i < particle_indices_count; ++i){
+			const std::array<float, 3> current_particle_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, particle_indices[i], blockid);
+			const vec3 current_particle_position {current_particle_position_arr[0], current_particle_position_arr[1], current_particle_position_arr[2]};
+			
+			//Test if point is on correct side; This also means that it is not in current convex hull
+			bool in_convex_hull = true;
+			for(int j = 0; j < current_triangle_count + next_triangle_count; ++j){
+				const std::array<float, 3> current_p0_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[j][0], blockid);
+				const std::array<float, 3> current_p1_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[j][1], blockid);
+				const std::array<float, 3> current_p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[j][2], blockid);
+				
+				const vec3 current_p0_position {current_p0_position_arr[0], current_p0_position_arr[1], current_p0_position_arr[2]};
+				
+				const std::array<float, 3> current_triangle_normal = alpha_shapes_calculate_triangle_normal({
+					current_p0_position_arr,
+					current_p1_position_arr,
+					current_p2_position_arr
+				});
+				
+				const vec3 current_triangle_normal_vec {current_triangle_normal[0], current_triangle_normal[1], current_triangle_normal[2]};
+					
+				//Perform halfspace test
+				const bool current_in_halfspace = current_triangle_normal_vec.dot(current_particle_position - current_p0_position) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
+				
+				//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[j][0], blockid, 1, current_triangle_normal, 0.0f, 0.0f);
+				//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[j][1], blockid, 1, current_triangle_normal, 0.0f, 0.0f);
+				//tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, triangles[j][2], blockid, 1, current_triangle_normal, 0.0f, 0.0f);
+				
+				//If point is in an outer halfspace it is not in convex hull
+				if(current_in_halfspace){
+					in_convex_hull = false;
+					break;
+				}
+			}
+			
+			if(in_convex_hull){
+				tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, particle_indices[i], blockid, 4, {0.0f, 0.0f, 0.0f}, 0.0f, 0.0f);
+			}
+		}
+	}
+	if(tmpabc == test_index){
+		for(int m = 0; m < circumsphere_points_count; ++m){
+			tmp_write_particle_data(particle_buffer, prev_partition, alpha_shapes_particle_buffer, circumsphere_points[m], blockid, 2, {0.0f, 0.0f, 0.0f}, 0.0f, 0.0f);
+		}
+	}
+	tmpabc++;
 }
 
 template<typename Partition, typename Grid, MaterialE MaterialType>
