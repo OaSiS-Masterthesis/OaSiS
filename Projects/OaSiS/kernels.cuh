@@ -2950,12 +2950,14 @@ __global__ void retrieve_particle_buffer(Partition partition, Partition prev_par
 		particle_array.val(_1, particle_id) = source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
 		particle_array.val(_2, particle_id) = source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
 		
-		alpha_shapes_point_type_transfer_device_buffer[particle_id] = alpha_shapes_source_bin.val(_0, source_pidib % config::G_BIN_CAPACITY);
+		alpha_shapes_point_type_transfer_device_buffer[particle_id] = *reinterpret_cast<const int*>(&alpha_shapes_source_bin.val(_0, source_pidib % config::G_BIN_CAPACITY));
 		alpha_shapes_normal_transfer_device_buffer[3 * particle_id] = alpha_shapes_source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
 		alpha_shapes_normal_transfer_device_buffer[3 * particle_id + 1] = alpha_shapes_source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
 		alpha_shapes_normal_transfer_device_buffer[3 * particle_id + 2] = alpha_shapes_source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
 		alpha_shapes_mean_curvature_transfer_device_buffer[particle_id] = alpha_shapes_source_bin.val(_4, source_pidib % config::G_BIN_CAPACITY);
 		alpha_shapes_gauss_curvature_transfer_device_buffer[particle_id] = alpha_shapes_source_bin.val(_5, source_pidib % config::G_BIN_CAPACITY);
+		
+		printf("C %d # %.28f %.28f\n", alpha_shapes_point_type_transfer_device_buffer[particle_id], alpha_shapes_mean_curvature_transfer_device_buffer[particle_id], alpha_shapes_gauss_curvature_transfer_device_buffer[particle_id]);
 	}
 }
 

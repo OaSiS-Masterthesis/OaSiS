@@ -104,7 +104,6 @@ struct OasisSimulator {
 	std::vector<Partition<1>> partitions								= {};///< with halo info
 	std::vector<ParticleArray> particles								= {};
 	std::vector<AlphaShapesParticleBuffer> alpha_shapes_particle_buffers = {};
-	AlphaShapesGridBuffer alpha_shapes_grid_buffer;
 
 	Intermediates tmps;
 
@@ -157,8 +156,7 @@ struct OasisSimulator {
 		, max_vels()
 		, partition_block_count()
 		, neighbor_block_count()
-		, exterior_block_count()
-		, alpha_shapes_grid_buffer(DeviceAllocator {})		{
+		, exterior_block_count()		{
 		// data
 		initialize();
 	}
@@ -516,7 +514,7 @@ struct OasisSimulator {
 								alpha_shapes_launch_config.db = dim3(config::G_BLOCKSIZE, config::G_BLOCKSIZE, config::G_BLOCKSIZE);
 								
 								//partition_block_count; {config::G_BLOCKSIZE, config::G_BLOCKSIZE, config::G_BLOCKSIZE}
-								cu_dev.compute_launch(std::move(alpha_shapes_launch_config), alpha_shapes, particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], alpha_shapes_particle_buffers[i], alpha_shapes_grid_buffer, start_index, static_cast<int>(cur_frame));
+								cu_dev.compute_launch(std::move(alpha_shapes_launch_config), alpha_shapes, particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], alpha_shapes_particle_buffers[i], start_index, static_cast<int>(cur_frame));
 							}
 						});
 					}
@@ -837,7 +835,6 @@ struct OasisSimulator {
 					if(checked_counts[0] > 0) {
 						for(int i = 0; i < get_model_count(); ++i) {
 							grid_blocks[0][i].resize(DeviceAllocator {}, cur_num_active_blocks);
-							alpha_shapes_grid_buffer.resize(DeviceAllocator {}, cur_num_active_blocks);
 							triangle_shell_grid_buffer[rollid][i].resize(DeviceAllocator {}, cur_num_active_blocks);
 						}
 					}
