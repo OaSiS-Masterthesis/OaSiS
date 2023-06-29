@@ -672,11 +672,6 @@ __global__ void update_grid_velocity_query_max(uint32_t block_count, Grid grid, 
 				vel[2] = is_in_bound & 1 ? 0.0f : vel[2] * mass_inv;
 				// if (is_in_bound) ///< sticky
 				//  vel.set(0.f);
-				
-				//FIXME:
-				vel[0] = 0.0f;
-				vel[1] = 0.0f;
-				vel[2] = 0.0f;
 
 				//Write back velocity
 				grid_block.val_1d(_1, cell_id_in_block) = vel[0];
@@ -2956,8 +2951,6 @@ __global__ void retrieve_particle_buffer(Partition partition, Partition prev_par
 		alpha_shapes_normal_transfer_device_buffer[3 * particle_id + 2] = alpha_shapes_source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
 		alpha_shapes_mean_curvature_transfer_device_buffer[particle_id] = alpha_shapes_source_bin.val(_4, source_pidib % config::G_BIN_CAPACITY);
 		alpha_shapes_gauss_curvature_transfer_device_buffer[particle_id] = alpha_shapes_source_bin.val(_5, source_pidib % config::G_BIN_CAPACITY);
-		
-		printf("C %d # %.28f %.28f\n", alpha_shapes_point_type_transfer_device_buffer[particle_id], alpha_shapes_mean_curvature_transfer_device_buffer[particle_id], alpha_shapes_gauss_curvature_transfer_device_buffer[particle_id]);
 	}
 }
 

@@ -24,6 +24,7 @@
 #include "alpha_shapes.cuh"
 
 #define OUTPUT_TRIANGLE_SHELL_OUTER_POS 1
+#define UPDATE_ALPHA_SHAPES_BEFORE_OUTPUT 1
 
 namespace mn {
 
@@ -486,8 +487,6 @@ struct OasisSimulator {
 				next_dt = compute_dt(max_vel, current_step_time, seconds_per_frame, dt_default);
 				fmt::print(fmt::emphasis::bold, "{} --{}--> {}, defaultDt: {}, max_vel: {}\n", cur_time.count(), next_dt.count(), next_time.count(), dt_default.count(), max_vel);
 				
-				next_dt = seconds_per_frame;//FIXME:
-				
 				//TODO: IQ-Solve!
 				{
 					auto& cu_dev = Cuda::ref_cuda_context(gpuid);
@@ -510,11 +509,11 @@ struct OasisSimulator {
 							//FIXME: Does not yet work, maybe also need to reduce block dimension?
 							for(unsigned int start_index = 0; start_index < partition_block_count; start_index += ALPHA_SHAPES_MAX_KERNEL_SIZE){
 								LaunchConfig alpha_shapes_launch_config(0, 0);
-								alpha_shapes_launch_config.dg = dim3(std::min(ALPHA_SHAPES_MAX_KERNEL_SIZE, partition_block_count - start_index));
-								alpha_shapes_launch_config.db = dim3(config::G_BLOCKSIZE, config::G_BLOCKSIZE, config::G_BLOCKSIZE);
+								alpha_shapes_launch_config.dg = dim3(std::min(ALPHA_SHAPES_MAX_KERNEL_SIZE, partition_block_count - start_index) * config::G_BLOCKVOLUME);
+								alpha_shapes_launch_config.db = dim3(1, 1, 1);
 								
 								//partition_block_count; {config::G_BLOCKSIZE, config::G_BLOCKSIZE, config::G_BLOCKSIZE}
-								cu_dev.compute_launch(std::move(alpha_shapes_launch_config), alpha_shapes, particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], alpha_shapes_particle_buffers[i], start_index, static_cast<int>(cur_frame));
+								cu_dev.compute_launch(std::move(alpha_shapes_launch_config), alpha_shapes, particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], alpha_shapes_particle_buffers[i], start_index);
 							}
 						});
 					}
@@ -946,17 +945,40 @@ struct OasisSimulator {
 			alpha_shapes_gauss_curvature_transfer_host_buffer.resize(particle_count);
 			
 			fmt::print(fg(fmt::color::red), "total number of particles {}\n", particle_count);
+			
+			#ifdef UPDATE_ALPHA_SHAPES_BEFORE_OUTPUT
+			//REcalculate alpha shapes for current bufefr state
+			{
+				//Alpha shapes
+				for(int i = 0; i < get_model_count(); ++i) {
+					//Resize particle buffers if we increased the size of active bins
+					if(checked_bin_counts[i] > 0) {
+						alpha_shapes_particle_buffers[i].resize(DeviceAllocator {}, cur_num_active_bins[i]);
+					}
+					
+					
+					match(particle_bins[rollid][i])([this, &cu_dev, &i](const auto& particle_buffer) {
+						//Clear buffer before use
+						cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, clear_alpha_shapes_particle_buffer, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), partitions[(rollid + 1) % BIN_COUNT], alpha_shapes_particle_buffers[i]);
+						
+						//FIXME: Does not yet work, maybe also need to reduce block dimension?
+						for(unsigned int start_index = 0; start_index < partition_block_count; start_index += ALPHA_SHAPES_MAX_KERNEL_SIZE){
+							LaunchConfig alpha_shapes_launch_config(0, 0);
+							alpha_shapes_launch_config.dg = dim3(std::min(ALPHA_SHAPES_MAX_KERNEL_SIZE, partition_block_count - start_index) * config::G_BLOCKVOLUME);
+							alpha_shapes_launch_config.db = dim3(1, 1, 1);
+							
+							//partition_block_count; {config::G_BLOCKSIZE, config::G_BLOCKSIZE, config::G_BLOCKSIZE}
+							cu_dev.compute_launch(std::move(alpha_shapes_launch_config), alpha_shapes, particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], alpha_shapes_particle_buffers[i], start_index);
+						}
+					});
+				}
+			}
+			#endif
 
 			//Copy particle data to output buffer
-			/*match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count](const auto& particle_buffer) {
+			match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count](const auto& particle_buffer) {
 				//partition_block_count; G_PARTICLE_BATCH_CAPACITY
 				cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), alpha_shapes_particle_buffers[i], particles[i], static_cast<int*>(alpha_shapes_point_type_transfer_device_buffers[i]), static_cast<float*>(alpha_shapes_normal_transfer_device_buffers[i]), static_cast<float*>(alpha_shapes_mean_curvature_transfer_device_buffers[i]), static_cast<float*>(alpha_shapes_gauss_curvature_transfer_device_buffers[i]), d_particle_count);
-			});*/
-			
-			//FIXME: Using last positions, so that alpha shapes information matches; Not sure if this is correct if particles move
-			match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &i, &d_particle_count](const auto& particle_buffer) {
-				//partition_block_count; G_PARTICLE_BATCH_CAPACITY
-				cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[rollid][i]), alpha_shapes_particle_buffers[i], particles[i], static_cast<int*>(alpha_shapes_point_type_transfer_device_buffers[i]), static_cast<float*>(alpha_shapes_normal_transfer_device_buffers[i]), static_cast<float*>(alpha_shapes_mean_curvature_transfer_device_buffers[i]), static_cast<float*>(alpha_shapes_gauss_curvature_transfer_device_buffers[i]), d_particle_count);
 			});
 
 			cu_dev.syncStream<streamIdx::COMPUTE>();
