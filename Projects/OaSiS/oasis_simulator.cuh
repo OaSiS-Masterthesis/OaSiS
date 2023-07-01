@@ -276,6 +276,14 @@ struct OasisSimulator {
 		particle_counts.emplace_back(static_cast<unsigned int>(model.size()));//NOTE: Explicic narrowing cast
 
 		fmt::print("init {}-th model with {} particles\n", particle_bins[0].size() - 1, particle_counts.back());
+		
+		/*//Set cache configuration for specific functions
+		cudaFuncSetCacheConfig(alpha_shapes<Partition<1>, GridBuffer, M>, cudaFuncCachePreferShared);
+		cudaFuncSetAttribute(alpha_shapes<Partition<1>, GridBuffer, M>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+		cudaError_t error = cudaGetLastError();
+		if(error != cudaSuccess) {
+			printf("Could not set cache config for kernel: %s\n", cudaGetErrorString(error));
+		}*/
 
 		//Copy particle positions from host to device
 		cudaMemcpyAsync(static_cast<void*>(&particles.back().val_1d(_0, 0)), model.data(), sizeof(std::array<float, config::NUM_DIMENSIONS>) * model.size(), cudaMemcpyDefault, cu_dev.stream_compute());
@@ -510,7 +518,7 @@ struct OasisSimulator {
 							for(unsigned int start_index = 0; start_index < partition_block_count; start_index += ALPHA_SHAPES_MAX_KERNEL_SIZE){
 								LaunchConfig alpha_shapes_launch_config(0, 0);
 								alpha_shapes_launch_config.dg = dim3(std::min(ALPHA_SHAPES_MAX_KERNEL_SIZE, partition_block_count - start_index) * config::G_BLOCKVOLUME);
-								alpha_shapes_launch_config.db = dim3(1, 1, 1);
+								alpha_shapes_launch_config.db = dim3(ALPHA_SHAPES_BLOCK_SIZE, 1, 1);
 								
 								//partition_block_count; {config::G_BLOCKSIZE, config::G_BLOCKSIZE, config::G_BLOCKSIZE}
 								cu_dev.compute_launch(std::move(alpha_shapes_launch_config), alpha_shapes, particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], alpha_shapes_particle_buffers[i], start_index);
@@ -965,7 +973,7 @@ struct OasisSimulator {
 						for(unsigned int start_index = 0; start_index < partition_block_count; start_index += ALPHA_SHAPES_MAX_KERNEL_SIZE){
 							LaunchConfig alpha_shapes_launch_config(0, 0);
 							alpha_shapes_launch_config.dg = dim3(std::min(ALPHA_SHAPES_MAX_KERNEL_SIZE, partition_block_count - start_index) * config::G_BLOCKVOLUME);
-							alpha_shapes_launch_config.db = dim3(1, 1, 1);
+							alpha_shapes_launch_config.db = dim3(ALPHA_SHAPES_BLOCK_SIZE, 1, 1);
 							
 							//partition_block_count; {config::G_BLOCKSIZE, config::G_BLOCKSIZE, config::G_BLOCKSIZE}
 							cu_dev.compute_launch(std::move(alpha_shapes_launch_config), alpha_shapes, particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], alpha_shapes_particle_buffers[i], start_index);
