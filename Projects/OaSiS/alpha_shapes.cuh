@@ -92,23 +92,89 @@ struct SharedMemoryType
 	std::array<int, ALPHA_SHAPES_MAX_CIRCUMSPHERE_TRIANGLES> circumsphere_triangles;
 };
 
+//Blocked
+/*template<size_t BLOCK_SIZE, size_t ITEMS_PER_THREAD>
+constexpr size_t alpha_shapes_get_thread_index(const size_t index){
+	return index / ITEMS_PER_THREAD;
+}
+
+template<size_t BLOCK_SIZE, size_t ITEMS_PER_THREAD>
+constexpr size_t alpha_shapes_get_thread_offset(const size_t index){
+	return index % ITEMS_PER_THREAD;
+}
+
+template<size_t BLOCK_SIZE, size_t ITEMS_PER_THREAD>
+constexpr size_t alpha_shapes_get_thread_count(const size_t thread_id, const size_t global_count){
+	return std::min(ITEMS_PER_THREAD, global_count - std::min(global_count, thread_id * ITEMS_PER_THREAD));
+}
+
+template<size_t BLOCK_SIZE, size_t ITEMS_PER_THREAD>
+constexpr size_t alpha_shapes_get_global_index(const size_t thread_id, const size_t offset){
+	return thread_id * ITEMS_PER_THREAD + offset;
+}*/
+
+//Sliced
+template<size_t BLOCK_SIZE, size_t ITEMS_PER_THREAD>
+constexpr size_t alpha_shapes_get_thread_index(const size_t index){
+	return index % BLOCK_SIZE;
+}
+
+template<size_t BLOCK_SIZE, size_t ITEMS_PER_THREAD>
+constexpr size_t alpha_shapes_get_thread_offset(const size_t index){
+	if(index / BLOCK_SIZE >= ITEMS_PER_THREAD){
+		printf("FAILURE0 %d %d %d\n", static_cast<int>(index), static_cast<int>(BLOCK_SIZE), static_cast<int>(ITEMS_PER_THREAD));
+	}
+	return index / BLOCK_SIZE;
+}
+
+template<size_t BLOCK_SIZE, size_t ITEMS_PER_THREAD>
+constexpr size_t alpha_shapes_get_thread_count(const size_t thread_id, const size_t global_count){
+	if(((global_count / BLOCK_SIZE) + (global_count % BLOCK_SIZE > thread_id ? 1 : 0)) > ITEMS_PER_THREAD){
+		printf("FAILURE1 %d %d %d %d %d %d %d\n", static_cast<int>(thread_id), static_cast<int>(global_count), static_cast<int>(BLOCK_SIZE), static_cast<int>(ITEMS_PER_THREAD), static_cast<int>(global_count / BLOCK_SIZE), static_cast<int>(global_count % BLOCK_SIZE), static_cast<int>((global_count / BLOCK_SIZE) + (global_count % BLOCK_SIZE > thread_id ? 1 : 0)));
+	}
+	return (global_count / BLOCK_SIZE) + (global_count % BLOCK_SIZE > thread_id ? 1 : 0);
+}
+
+template<size_t BLOCK_SIZE, size_t ITEMS_PER_THREAD>
+constexpr size_t alpha_shapes_get_global_index(const size_t thread_id, const size_t offset){
+	if(offset * BLOCK_SIZE + thread_id > BLOCK_SIZE * ITEMS_PER_THREAD){
+		printf("FAILURE2 %d %d %d %d\n", static_cast<int>(thread_id), static_cast<int>(offset), static_cast<int>(BLOCK_SIZE), static_cast<int>(ITEMS_PER_THREAD));
+	}
+	
+	return offset * BLOCK_SIZE + thread_id;
+}
+
+template<typename T, size_t BLOCK_SIZE, size_t ITEMS_PER_THREAD>
+__forceinline__ __device__ void alpha_shapes_spread_data(T (&data)[ITEMS_PER_THREAD]){
+	constexpr size_t DATA_SIZE = BLOCK_SIZE * ITEMS_PER_THREAD;
+	__shared__ T shmem[DATA_SIZE];
+	
+	for(size_t i = 0; i < ITEMS_PER_THREAD; ++i){
+		shmem[alpha_shapes_get_global_index<ALPHA_SHAPES_BLOCK_SIZE, ITEMS_PER_THREAD>(threadIdx.x, i)] = data[i];
+	}
+	__syncthreads();
+	for(size_t i = 0; i < ITEMS_PER_THREAD; ++i){
+		data[i] = shmem[threadIdx.x * ITEMS_PER_THREAD + i];
+	}
+}
+
 template<typename T, size_t ITEMS_PER_THREAD>
 __forceinline__ __device__ void alpha_shapes_block_swap(T (&data)[ITEMS_PER_THREAD], const size_t a, const size_t b){
 	__shared__ T tmp[2];
-	if(a >= threadIdx.x * ITEMS_PER_THREAD && a < (threadIdx.x + 1) * ITEMS_PER_THREAD){
-		tmp[0] = data[a % ITEMS_PER_THREAD];
+	if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ITEMS_PER_THREAD>(a) == threadIdx.x){
+		tmp[0] = data[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ITEMS_PER_THREAD>(a)];
 	}
-	if(b >= threadIdx.x * ITEMS_PER_THREAD && b < (threadIdx.x + 1) * ITEMS_PER_THREAD){
-		tmp[1] = data[b % ITEMS_PER_THREAD];
+	if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ITEMS_PER_THREAD>(b) == threadIdx.x){
+		tmp[1] = data[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ITEMS_PER_THREAD>(b)];
 	}
 	
 	__syncthreads();
 	
-	if(a >= threadIdx.x * ITEMS_PER_THREAD && a < (threadIdx.x + 1) * ITEMS_PER_THREAD){
-		data[a % ITEMS_PER_THREAD] = tmp[1];
+	if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ITEMS_PER_THREAD>(a) == threadIdx.x){
+		data[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ITEMS_PER_THREAD>(a)] = tmp[1];
 	}
-	if(b >= threadIdx.x * ITEMS_PER_THREAD && b < (threadIdx.x + 1) * ITEMS_PER_THREAD){
-		data[b% ITEMS_PER_THREAD] = tmp[0];
+	if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ITEMS_PER_THREAD>(b) == threadIdx.x){
+		data[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ITEMS_PER_THREAD>(b)] = tmp[0];
 	}
 }
 
@@ -180,7 +246,7 @@ __forceinline__ __device__ void alpha_shapes_merge_sort(T (&data)[ITEMS_PER_THRE
 template<size_t ITEMS_PER_THREAD, MaterialE MaterialType>
 __forceinline__ __device__ void alpha_shapes_fetch_particles(const ParticleBuffer<MaterialType> particle_buffer, int (&particle_indices)[ITEMS_PER_THREAD], const int particles_in_cell, const int src_blockno, const ivec3 blockid_offset, const int cellno, const int start_index){
 	for(int particle_id = 0; particle_id < particles_in_cell; particle_id++) {
-		if(start_index + particle_id >= threadIdx.x * ITEMS_PER_THREAD && start_index + particle_id < (threadIdx.x + 1) * ITEMS_PER_THREAD){
+		if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ITEMS_PER_THREAD>(start_index + particle_id) == threadIdx.x){
 			//Fetch index of the advection source
 			ivec3 offset;
 			int source_pidib;
@@ -198,7 +264,7 @@ __forceinline__ __device__ void alpha_shapes_fetch_particles(const ParticleBuffe
 			//Calculate offset from current blockid
 			const int dirtag = dir_offset((blockid_offset + offset).data_arr());
 			
-			particle_indices[(start_index + particle_id) % ITEMS_PER_THREAD] = (dirtag * config::G_PARTICLE_NUM_PER_BLOCK) | source_pidib;
+			particle_indices[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ITEMS_PER_THREAD>(start_index + particle_id)] = (dirtag * config::G_PARTICLE_NUM_PER_BLOCK) | source_pidib;
 		}
 	}
 }
@@ -236,8 +302,6 @@ __forceinline__ __device__ std::array<float, 3> alpha_shapes_get_particle_positi
 	fetch_particle_buffer_data<MaterialType>(particle_buffer, advection_source_blockno, source_pidib, fetch_particle_buffer_tmp);
 	return fetch_particle_buffer_tmp.pos;
 }
-
-
 
 __forceinline__ __host__ __device__ std::array<float, 3> alpha_shapes_calculate_triangle_normal(const std::array<std::array<float, 3>, 3>& triangle_positions){
 	const std::array<vec3, 3> positions {
@@ -546,7 +610,7 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 	
 	//Find triangles in touch
 	//NOTE: current_triangle always is in contact
-	for(int contact_triangle_index = 0; contact_triangle_index < ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && (threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD + contact_triangle_index) < current_triangle_count + next_triangle_count; contact_triangle_index++) {
+	for(int contact_triangle_index = alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(0); contact_triangle_index < alpha_shapes_get_thread_count<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(threadIdx.x, current_triangle_count + next_triangle_count); contact_triangle_index++) {
 		const std::array<int, 3>& contact_triangle = triangles[contact_triangle_index];
 		
 		//Test for face contact
@@ -556,7 +620,7 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 			&& (contact_triangle[2] == current_triangle[0] || contact_triangle[2] == current_triangle[1] || contact_triangle[2] == current_triangle[2] || contact_triangle[2] == p3_id)
 		){
 			const int index = atomicAdd(&face_contacts, 1);
-			contact_indices[index] = contact_triangle_index;
+			contact_indices[index] = alpha_shapes_get_global_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(threadIdx.x, contact_triangle_index);
 		}
 	}
 	__syncthreads();
@@ -574,9 +638,9 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 		__shared__ std::array<volatile int, 3> current_contact_triangle;
 		__shared__ volatile bool current_contact_triangle_is_alpha;
 		
-		if(contact_indices[contact_triangle_index] >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && contact_indices[contact_triangle_index] < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-			thrust::copy(thrust::seq, triangles[contact_indices[contact_triangle_index] % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD].begin(), triangles[contact_indices[contact_triangle_index] % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD].end(), current_contact_triangle.begin());
-			current_contact_triangle_is_alpha = triangles_is_alpha[contact_indices[contact_triangle_index] % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD];
+		if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(contact_indices[contact_triangle_index]) == threadIdx.x){
+			thrust::copy(thrust::seq, triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(contact_indices[contact_triangle_index])].begin(), triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(contact_indices[contact_triangle_index])].end(), current_contact_triangle.begin());
+			current_contact_triangle_is_alpha = triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(contact_indices[contact_triangle_index])];
 		}
 		__threadfence_block();
 		
@@ -588,7 +652,7 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 		//Check which vertices are contacting
 		if(threadIdx.x == 0){
 			for(int vertex_index = 0; vertex_index < 3; vertex_index++) {
-				const int particle_index = triangles[contact_indices[contact_triangle_index]][vertex_index];
+				const int particle_index = current_contact_triangle[vertex_index];
 				if(particle_index == current_triangle[0]){
 					triangle_counts_per_vertex[0]++;
 				}else if(particle_index == current_triangle[1]){
@@ -745,98 +809,98 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 	//Add new triangles
 	//Ensure correct order (current_triangle cw normal points outwards)
 	if(face_contacts == 1){
-		if(next_triangle_end >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && next_triangle_end < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-			triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][0] = current_triangle[0];
-			triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][1] = current_triangle[1];
-			triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][2] = p3_id;
+		if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end) == threadIdx.x){
+			triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][0] = current_triangle[0];
+			triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][1] = current_triangle[1];
+			triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][2] = p3_id;
 			
-			triangles_is_alpha[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD] = is_alpha;
+			triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)] = is_alpha;
 		}
-		if((next_triangle_end + 1) >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && (next_triangle_end + 1) < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-			triangles[(next_triangle_end + 1) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][0] = current_triangle[1];
-			triangles[(next_triangle_end + 1) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][1] = current_triangle[2];
-			triangles[(next_triangle_end + 1) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][2] = p3_id;
+		if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1) == threadIdx.x){
+			triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1)][0] = current_triangle[1];
+			triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1)][1] = current_triangle[2];
+			triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1)][2] = p3_id;
 			
-			triangles_is_alpha[(next_triangle_end + 1) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD] = is_alpha;
+			triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1)] = is_alpha;
 		}
-		if((next_triangle_end + 2) >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && (next_triangle_end + 2) < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-			triangles[(next_triangle_end + 2) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][0] = current_triangle[2];
-			triangles[(next_triangle_end + 2) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][1] = current_triangle[0];
-			triangles[(next_triangle_end + 2) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][2] = p3_id;
+		if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 2) == threadIdx.x){
+			triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 2)][0] = current_triangle[2];
+			triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 2)][1] = current_triangle[0];
+			triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 2)][2] = p3_id;
 			
-			triangles_is_alpha[(next_triangle_end + 2) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD] = is_alpha;
+			triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 2)] = is_alpha;
 		}
 	}else if(face_contacts == 2){
 		if(triangle_counts_per_vertex[0] == 1){
-			if(next_triangle_end >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && next_triangle_end < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-				triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][0] = current_triangle[0];
-				triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][1] = current_triangle[1];
-				triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][2] = p3_id;
+			if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end) == threadIdx.x){
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][0] = current_triangle[0];
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][1] = current_triangle[1];
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][2] = p3_id;
 				
-				triangles_is_alpha[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD] = is_alpha;
+				triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)] = is_alpha;
 			}
-			if((next_triangle_end + 1) >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && (next_triangle_end + 1) < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-				triangles[(next_triangle_end + 1) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][0] = current_triangle[2];
-				triangles[(next_triangle_end + 1) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][1] = current_triangle[0];
-				triangles[(next_triangle_end + 1) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][2] = p3_id;
+			if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1) == threadIdx.x){
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1)][0] = current_triangle[2];
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1)][1] = current_triangle[0];
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1)][2] = p3_id;
 				
-				triangles_is_alpha[(next_triangle_end + 1) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD] = is_alpha;
+				triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1)] = is_alpha;
 			}
 		}else if(triangle_counts_per_vertex[1] == 1){
-			if(next_triangle_end >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && next_triangle_end < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-				triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][0] = current_triangle[0];
-				triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][1] = current_triangle[1];
-				triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][2] = p3_id;
+			if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end) == threadIdx.x){
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][0] = current_triangle[0];
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][1] = current_triangle[1];
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][2] = p3_id;
 				
-				triangles_is_alpha[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD] = is_alpha;
+				triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)] = is_alpha;
 			}
-			if((next_triangle_end + 1) >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && (next_triangle_end + 1) < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-				triangles[(next_triangle_end + 1) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][0] = current_triangle[1];
-				triangles[(next_triangle_end + 1) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][1] = current_triangle[2];
-				triangles[(next_triangle_end + 1) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][2] = p3_id;
+			if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1) == threadIdx.x){
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1)][0] = current_triangle[1];
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1)][1] = current_triangle[2];
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1)][2] = p3_id;
 				
-				triangles_is_alpha[(next_triangle_end + 1) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD] = is_alpha;
+				triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1)] = is_alpha;
 			}
 		}else {//triangle_counts_per_vertex[2] == 1
-			if(next_triangle_end >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && next_triangle_end < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-				triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][0] = current_triangle[1];
-				triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][1] = current_triangle[2];
-				triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][2] = p3_id;
+			if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end) == threadIdx.x){
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][0] = current_triangle[1];
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][1] = current_triangle[2];
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][2] = p3_id;
 				
-				triangles_is_alpha[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD] = is_alpha;
+				triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)] = is_alpha;
 			}
-			if((next_triangle_end + 1) >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && (next_triangle_end + 1) < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-				triangles[(next_triangle_end + 1) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][0] = current_triangle[2];
-				triangles[(next_triangle_end + 1) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][1] = current_triangle[0];
-				triangles[(next_triangle_end + 1) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][2] = p3_id;
+			if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1) == threadIdx.x){
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1)][0] = current_triangle[2];
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1)][1] = current_triangle[0];
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1)][2] = p3_id;
 				
-				triangles_is_alpha[(next_triangle_end + 1) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD] = is_alpha;
+				triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end + 1)] = is_alpha;
 			}
 		}
 	}else if(face_contacts == 3){
 		if(triangle_counts_per_vertex[0] == 3){
-			if(next_triangle_end >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && next_triangle_end < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-				triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][0] = current_triangle[1];
-				triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][1] = current_triangle[2];
-				triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][2] = p3_id;
+			if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end) == threadIdx.x){
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][0] = current_triangle[1];
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][1] = current_triangle[2];
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][2] = p3_id;
 				
-				triangles_is_alpha[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD] = is_alpha;
+				triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)] = is_alpha;
 			}
 		}else if(triangle_counts_per_vertex[1] == 3){
-			if(next_triangle_end >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && next_triangle_end < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-				triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][0] = current_triangle[2];
-				triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][1] = current_triangle[0];
-				triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][2] = p3_id;
+			if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end) == threadIdx.x){
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][0] = current_triangle[2];
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][1] = current_triangle[0];
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][2] = p3_id;
 				
-				triangles_is_alpha[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD] = is_alpha;
+				triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)] = is_alpha;
 			}
 		}else {//triangle_counts_per_vertex[2] == 3
-			if(next_triangle_end >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && next_triangle_end < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-				triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][0] = current_triangle[0];
-				triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][1] = current_triangle[1];
-				triangles[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][2] = p3_id;
+			if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end) == threadIdx.x){
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][0] = current_triangle[0];
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][1] = current_triangle[1];
+				triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)][2] = p3_id;
 				
-				triangles_is_alpha[next_triangle_end % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD] = is_alpha;
+				triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(next_triangle_end)] = is_alpha;
 			}
 		}
 	}//Otherwise nothing to do, just faces removed
@@ -970,14 +1034,14 @@ __forceinline__ __device__ void alpha_shapes_finalize_triangle(const ParticleBuf
 	for(int particle_id = range_start; particle_id < range_end; particle_id++) {
 		__shared__ volatile int current_particle_index;
 		
-		if(particle_id >= threadIdx.x * ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD && particle_id < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD){
-			current_particle_index = own_particle_indices[particle_id % ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD];
+		if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD>(particle_id) == threadIdx.x){
+			current_particle_index = own_particle_indices[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD>(particle_id)];
 		}
 		__threadfence_block();
 		
 		int advection_source_blockno;
 		int source_pidib;
-		alpha_shapes_fetch_id(prev_partition, own_particle_indices[particle_id], blockid, advection_source_blockno, source_pidib);
+		alpha_shapes_fetch_id(prev_partition, current_particle_index, blockid, advection_source_blockno, source_pidib);
 		
 		auto particle_bin													= alpha_shapes_particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
 		const int particle_id_in_bin = source_pidib  % config::G_BIN_CAPACITY;
@@ -987,7 +1051,7 @@ __forceinline__ __device__ void alpha_shapes_finalize_triangle(const ParticleBuf
 		
 		bool in_convex_hull = true;
 		bool triangle_vertex = false;
-		for(int triangle_id = 0; triangle_id < ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && (threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD + triangle_id) < current_triangle_count + next_triangle_count; ++triangle_id){
+		for(int triangle_id = alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(0); triangle_id < alpha_shapes_get_thread_count<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(threadIdx.x, current_triangle_count + next_triangle_count); ++triangle_id){
 			//Skip particles at vertices of a triangle, cause they are already handled
 			if(current_particle_index == triangles[triangle_id][0] || current_particle_index == triangles[triangle_id][1] || current_particle_index == triangles[triangle_id][2]){
 				triangle_vertex = true;
@@ -1022,7 +1086,7 @@ __forceinline__ __device__ void alpha_shapes_finalize_triangle(const ParticleBuf
 		
 		const bool in_halfspace_without_threshold = face_normal.dot(particle_position - triangle_positions[0]) > 0.0f;
 		
-		if((is_invalid == 0) && in_halfspace_without_threshold){
+		if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD>(particle_id) == threadIdx.x && (is_invalid == 0) && in_halfspace_without_threshold){
 			//If point is not part of a triangle check if it lies on another triangle; This may be the case for degenerated points
 					
 			const vec9 barycentric_projection_matrix {
@@ -1090,7 +1154,8 @@ __forceinline__ __device__ void alpha_shapes_finalize_triangle(const ParticleBuf
 
 template<typename Partition, MaterialE MaterialType>
 __forceinline__ __device__ void alpha_shapes_finalize_particles(const ParticleBuffer<MaterialType> particle_buffer, const Partition prev_partition, AlphaShapesParticleBuffer alpha_shapes_particle_buffer, const int (&own_particle_indices)[ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD], const ivec3 blockid, const int range_start, const int range_end){
-	for(int particle_id = 0; particle_id < ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD && (threadIdx.x * ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD + particle_id) >= range_start && (threadIdx.x * ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD + particle_id) < range_end; particle_id++) {
+	printf("DEF %d %d\n", range_start, range_end);
+	for(int particle_id = alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD>(range_start); (alpha_shapes_get_global_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD>(threadIdx.x, particle_id) >= range_start) && particle_id < alpha_shapes_get_thread_count<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD>(threadIdx.x, range_end); particle_id++) {
 		const int current_particle_index = own_particle_indices[particle_id];
 		
 		int advection_source_blockno;
@@ -1203,8 +1268,8 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 					__threadfence_block();
 					for(int i = 0; i < temporary_convex_hull_triangles_count; ++i){
 						__shared__ std::array<volatile int, 3> current_triangle;
-						if(shared_memory_storage->circumsphere_triangles[i] >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && shared_memory_storage->circumsphere_triangles[i] < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-							thrust::copy(thrust::seq, triangles[shared_memory_storage->circumsphere_triangles[i] % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD].begin(), triangles[shared_memory_storage->circumsphere_triangles[i] % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD].end(), current_triangle.begin());
+						if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[i]) == threadIdx.x){
+							thrust::copy(thrust::seq, triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[i])].begin(), triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[i])].end(), current_triangle.begin());
 						}
 						__threadfence_block();
 						
@@ -1235,8 +1300,8 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 							}
 							__syncthreads();
 							for(int k = 0; k < temporary_convex_hull_triangles_count; ++k){
-								if(shared_memory_storage->circumsphere_triangles[k] >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && shared_memory_storage->circumsphere_triangles[k] < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-									const std::array<int, 3> current_compare_circumsphere_triangle = triangles[shared_memory_storage->circumsphere_triangles[k] % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD];
+								if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[k]) == threadIdx.x){
+									const std::array<int, 3> current_compare_circumsphere_triangle = triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[k])];
 									std::array<bool, 3> vertex_contact = {};
 									if(
 										(current_triangle[0] == current_compare_circumsphere_triangle[0] || current_triangle[0] == current_compare_circumsphere_triangle[1] || current_triangle[0] == current_compare_circumsphere_triangle[2])
@@ -1269,7 +1334,7 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 							__syncthreads();
 							
 							//Test all outer faces (only one face at the edge)
-							if(shared_memory_storage->circumsphere_triangles[i] >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && shared_memory_storage->circumsphere_triangles[i] < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
+							if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[i]) == threadIdx.x){
 								const std::array<float, 3> current_p0_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, current_triangle[0], blockid);
 								const std::array<float, 3> current_p1_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, current_triangle[1], blockid);
 								const std::array<float, 3> current_p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, current_triangle[2], blockid);
@@ -1358,8 +1423,8 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 		//If the point lies in an existing triangle, ignore it.
 		for(int j = 0; j < temporary_convex_hull_triangles_count; ++j){
 			__shared__ std::array<volatile int, 3> current_triangle;
-			if(shared_memory_storage->circumsphere_triangles[j] >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && shared_memory_storage->circumsphere_triangles[j] < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-				thrust::copy(thrust::seq, triangles[shared_memory_storage->circumsphere_triangles[j] % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD].begin(), triangles[shared_memory_storage->circumsphere_triangles[j] % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD].end(), current_triangle.begin());
+			if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[j]) == threadIdx.x){
+				thrust::copy(thrust::seq, triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[j])].begin(), triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[j])].end(), current_triangle.begin());
 			}
 			__threadfence_block();
 			
@@ -1506,8 +1571,8 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 					__shared__ volatile bool current_triangle_is_alpha;
 					
 					//Remove the face and move it to alpha if it is alpha
-					if(shared_memory_storage->circumsphere_triangles[j] >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && shared_memory_storage->circumsphere_triangles[j] < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-						current_triangle_is_alpha = triangles_is_alpha[shared_memory_storage->circumsphere_triangles[j] % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD];
+					if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[j]) == threadIdx.x){
+						current_triangle_is_alpha = triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[j])];
 					}
 					__threadfence_block();
 					
@@ -1545,7 +1610,7 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 						alpha_shapes_block_swap<bool, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangles_is_alpha, current_triangle_count, current_triangle_count + next_triangle_count - 1);
 					}
 					
-					if(threadIdx.x == 0){
+					if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[j]) == threadIdx.x){
 						thrust::swap(shared_memory_storage->circumsphere_triangles[j], shared_memory_storage->circumsphere_triangles[temporary_convex_hull_triangles_count - 1]);
 						//Fill gap between current list and next list
 						thrust::swap(shared_memory_storage->circumsphere_triangles[temporary_convex_hull_triangles_count - 1], shared_memory_storage->circumsphere_triangles[temporary_convex_hull_triangles_count + next_temporary_convex_hull_triangles_count - 1]);
@@ -1647,8 +1712,8 @@ __forceinline__ __device__ bool alpha_shapes_handle_triangle_compare_func(const 
 template<typename Partition, MaterialE MaterialType>
 __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffer<MaterialType> particle_buffer, const Partition prev_partition, AlphaShapesParticleBuffer alpha_shapes_particle_buffer, SharedMemoryType* __restrict__ shared_memory_storage, int (&particle_indices)[ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD], const int particle_indices_start, const int particle_indices_count, int (&own_particle_indices)[ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD], std::array<int, 3> (&triangles)[ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD], bool (&triangles_is_alpha)[ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD], volatile  int& current_triangle_count, volatile int& next_triangle_count, const ivec3 blockid, const float alpha, const int finalize_particles_start, const int finalize_particles_end, bool is_first_triangle, const int triangle_index, volatile float& minimum_x, volatile float& maximum_x){
 	__shared__ std::array<volatile int, 3> current_triangle;
-	if(triangle_index >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && triangle_index < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-		thrust::copy(thrust::seq, triangles[triangle_index % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD].begin(), triangles[triangle_index % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD].end(), current_triangle.begin());			
+	if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangle_index) == threadIdx.x){
+		thrust::copy(thrust::seq, triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangle_index)].begin(), triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangle_index)].end(), current_triangle.begin());			
 	}
 	__threadfence_block();
 	
@@ -1734,7 +1799,7 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 			return ret;
 		});
 		
-		if(threadIdx.x == 0){
+		if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangle_index) == threadIdx.x){
 			const std::array<float, 3> particle_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, p3, blockid);
 			const vec3 particle_position {particle_position_arr[0], particle_position_arr[1], particle_position_arr[2]};
 			
@@ -1752,8 +1817,8 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 			triangle_normal[1] = -triangle_normal[1];
 			triangle_normal[2] = -triangle_normal[2];
 			triangle_normal_vec = -triangle_normal_vec;
-			if(triangle_index >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && triangle_index < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-				thrust::swap(triangles[triangle_index % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][1], triangles[triangle_index % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][2]);
+			if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangle_index) == threadIdx.x){
+				thrust::swap(triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangle_index)][1], triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangle_index)][2]);
 			}
 		}
 	}
@@ -1790,7 +1855,7 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 		const std::array<float, 3> current_particle_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, shared_memory_storage->circumsphere_points[0], blockid);
 		const vec3 current_particle_position {current_particle_position_arr[0], current_particle_position_arr[1], current_particle_position_arr[2]};
 		
-		for(int j = 0; j < ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && (threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD + j) < current_triangle_count + next_triangle_count; ++j){
+		for(int j = alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(0); j < alpha_shapes_get_thread_count<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(threadIdx.x, current_triangle_count + next_triangle_count); ++j){
 			const std::array<float, 3> current_p0_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[j][0], blockid);
 			const std::array<float, 3> current_p1_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[j][1], blockid);
 			const std::array<float, 3> current_p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[j][2], blockid);
@@ -1815,9 +1880,9 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 					printf("More triangles in circumsphere than we have memory for.\r\n");
 				}else{
 					const int index = atomicAdd(&circumsphere_triangles_count, 1);
-					shared_memory_storage->circumsphere_triangles[index] = (threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD + j);
+					shared_memory_storage->circumsphere_triangles[index] = alpha_shapes_get_global_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(threadIdx.x, j);
 				}
-				if((threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD + j) == triangle_index){
+				if(alpha_shapes_get_global_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(threadIdx.x, j) == triangle_index){
 					local_in_halfspace_of_current_triangle = true;
 				}
 			}
@@ -1845,8 +1910,8 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 		
 		for(int i = particle_indices_start; i < particle_indices_start + particle_indices_count; ++i){
 			__shared__ volatile int current_particle_index;
-			if(i >= threadIdx.x * ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD && i < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD){
-				current_particle_index = particle_indices[i % ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD];
+			if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(i) == threadIdx.x){
+				current_particle_index = particle_indices[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(i)];
 			}
 			__threadfence_block();
 			
@@ -1865,10 +1930,10 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 			}
 			__threadfence_block();
 			for(int j = 0; j < circumsphere_triangles_count; ++j){
-				if(shared_memory_storage->circumsphere_triangles[j] >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && shared_memory_storage->circumsphere_triangles[j] < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-					const std::array<float, 3> current_p0_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[shared_memory_storage->circumsphere_triangles[j] % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][0], blockid);
-					const std::array<float, 3> current_p1_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[shared_memory_storage->circumsphere_triangles[j] % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][1], blockid);
-					const std::array<float, 3> current_p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[shared_memory_storage->circumsphere_triangles[j] % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][2], blockid);
+				if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[j]) == threadIdx.x){
+					const std::array<float, 3> current_p0_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[j])][0], blockid);
+					const std::array<float, 3> current_p1_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[j])][1], blockid);
+					const std::array<float, 3> current_p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[j])][2], blockid);
 					
 					const vec3 current_p0_position {current_p0_position_arr[0], current_p0_position_arr[1], current_p0_position_arr[2]};
 					
@@ -1904,8 +1969,8 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 				__threadfence_block();
 				for(int j = 0; j < circumsphere_triangles_count; ++j){
 					__shared__ std::array<volatile int, 3> current_circumsphere_triangle;
-					if(shared_memory_storage->circumsphere_triangles[j] >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && shared_memory_storage->circumsphere_triangles[j] < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-						thrust::copy(thrust::seq, triangles[shared_memory_storage->circumsphere_triangles[j] % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD].begin(), triangles[shared_memory_storage->circumsphere_triangles[j] % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD].end(), current_circumsphere_triangle.begin());
+					if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[j]) == threadIdx.x){
+						thrust::copy(thrust::seq, triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[j])].begin(), triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[j])].end(), current_circumsphere_triangle.begin());
 					}
 					__threadfence_block();
 						
@@ -1916,8 +1981,8 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 					}
 					__syncthreads();
 					for(int k = 0; k < circumsphere_triangles_count; ++k){
-						if(shared_memory_storage->circumsphere_triangles[k] >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && shared_memory_storage->circumsphere_triangles[k] < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-							const std::array<int, 3> current_compare_circumsphere_triangle = triangles[shared_memory_storage->circumsphere_triangles[k] % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD];
+						if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[k]) == threadIdx.x){
+							const std::array<int, 3> current_compare_circumsphere_triangle = triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[k])];
 							std::array<bool, 3> vertex_contact = {};
 							if(
 								(current_circumsphere_triangle[0] == current_compare_circumsphere_triangle[0] || current_circumsphere_triangle[0] == current_compare_circumsphere_triangle[1] || current_circumsphere_triangle[0] == current_compare_circumsphere_triangle[2])
@@ -1950,7 +2015,7 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 					__syncthreads();
 					
 						
-					if(shared_memory_storage->circumsphere_triangles[j] >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && shared_memory_storage->circumsphere_triangles[j] < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
+					if(threadIdx.x == 0){
 						const std::array<float, 3> current_p0_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, current_circumsphere_triangle[0], blockid);
 						const std::array<float, 3> current_p1_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, current_circumsphere_triangle[1], blockid);
 						const std::array<float, 3> current_p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, current_circumsphere_triangle[2], blockid);
@@ -2044,17 +2109,17 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 		
 		//If we are handling the first triangle, re-add it with flipped normal as outer triangle
 		if(is_first_triangle){
-			if((current_triangle_count + next_triangle_count) >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && (current_triangle_count + next_triangle_count) < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
+			if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(current_triangle_count + next_triangle_count) == threadIdx.x){
 				if(flipped_normal){
-					triangles[(current_triangle_count + next_triangle_count) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][0] = current_triangle[0];
-					triangles[(current_triangle_count + next_triangle_count) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][1] = current_triangle[1];
-					triangles[(current_triangle_count + next_triangle_count) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][2] = current_triangle[2];
+					triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(current_triangle_count + next_triangle_count)][0] = current_triangle[0];
+					triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(current_triangle_count + next_triangle_count)][1] = current_triangle[1];
+					triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(current_triangle_count + next_triangle_count)][2] = current_triangle[2];
 				}else{
-					triangles[(current_triangle_count + next_triangle_count) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][0] = current_triangle[0];
-					triangles[(current_triangle_count + next_triangle_count) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][1] = current_triangle[2];
-					triangles[(current_triangle_count + next_triangle_count) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD][2] = current_triangle[1];
+					triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(current_triangle_count + next_triangle_count)][0] = current_triangle[0];
+					triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(current_triangle_count + next_triangle_count)][1] = current_triangle[2];
+					triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(current_triangle_count + next_triangle_count)][2] = current_triangle[1];
 				}
-				triangles_is_alpha[(current_triangle_count + next_triangle_count) % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD] = first_is_alpha;
+				triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(current_triangle_count + next_triangle_count)] = first_is_alpha;
 				next_triangle_count++;
 			}
 			__threadfence_block();
@@ -2064,9 +2129,9 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 		__shared__ volatile bool current_triangle_is_alpha;
 		
 		//Remove the face and move it to alpha if it is alpha
-		if(triangle_index >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && triangle_index < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-			thrust::copy(thrust::seq, triangles[triangle_index % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD].begin(), triangles[triangle_index % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD].end(), current_triangle.begin());
-			current_triangle_is_alpha = triangles_is_alpha[triangle_index % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD];
+		if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangle_index) == threadIdx.x){
+			thrust::copy(thrust::seq, triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangle_index)].begin(), triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangle_index)].end(), current_triangle.begin());
+			current_triangle_is_alpha = triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangle_index)];
 		}
 		__threadfence_block();
 		
@@ -2085,7 +2150,7 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 		alpha_shapes_block_swap<std::array<int, 3>, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangles, current_triangle_count - 1, current_triangle_count + next_triangle_count - 1);
 		alpha_shapes_block_swap<bool, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangles_is_alpha, current_triangle_count - 1, current_triangle_count + next_triangle_count - 1);
 		
-		if(threadIdx.x == 0){
+		if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangle_index) == threadIdx.x){
 			//Decrease triangle count
 			current_triangle_count--;
 		}
@@ -2181,9 +2246,9 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 	//TODO: Actually we only need to handle blocks in radius of sqrt(alpha) around box
 	//Filter by max distance; This cannot affect particles of current cell
 	const vec3 cell_center = (cellid + 2.0f + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;//0->2.0 1->3.0 ...; 1.5 is lower bound of block 0, 5.5 is lower bound of block 1, ...; 1.5 is lower bound of cell 0, 2.5 is lower bound of cell 1, ...
-	int thread_particle_count = std::min(ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD, tmp_particle_bucket_size - threadIdx.x * ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD);
+	int thread_particle_count = alpha_shapes_get_thread_count<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(threadIdx.x, tmp_particle_bucket_size);
 	for(int particle_id = 0; particle_id < thread_particle_count; particle_id++) {
-		const std::array<float, 3> particle_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, particle_indices[particle_id % ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD], blockid);
+		const std::array<float, 3> particle_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, particle_indices[particle_id], blockid);
 		const vec3 particle_position {particle_position_arr[0], particle_position_arr[1], particle_position_arr[2]};
 
 		//Calculate distance to center
@@ -2194,7 +2259,6 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 		if(squared_distance > (0.75f * config::G_DX * config::G_DX + 2.0f * alpha)){
 			//Remove by exchanging with last element
 			thrust::swap(particle_indices[particle_id], particle_indices[thread_particle_count - 1]);
-			particle_indices[thread_particle_count - 1] = -1;
 			
 			//Decrease count
 			thread_particle_count--;
@@ -2204,6 +2268,14 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 		}
 	}
 	
+	//Set all empty elements to -1;
+	for(int i = thread_particle_count; i < ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD; ++i){
+		particle_indices[i] = -1;
+	}
+	for(int i = alpha_shapes_get_thread_count<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD>(threadIdx.x, own_particle_bucket_size); i < ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD; ++i){
+		own_particle_indices[i] = -1;
+	}
+	
 	__shared__ int particle_bucket_size;
 	if(threadIdx.x == 0){
 		particle_bucket_size = 0;
@@ -2211,12 +2283,15 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 	__syncthreads();
 	atomicAdd(&particle_bucket_size, thread_particle_count);
 	
-	//Sort such that all negative indices (== removed indices) are at the end
+	/*//Sort such that all negative indices (== removed indices) are at the end
 	alpha_shapes_merge_sort<int, ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(particle_indices, [](const int& a, const int& b){
 		return (a != -1) && (b == -1);
-	});
+	});*/
+	
+	//NOTE: Data is not sliced anymore
 	
 	//Sort by ascending x
+	//Also sort such that all negative indices (== removed indices) are at the end
 	alpha_shapes_merge_sort<int, ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(particle_indices, [&particle_buffer, &prev_partition, &blockid](const int& a, const int& b){
 		if(a == -1){
 			return false;
@@ -2240,6 +2315,20 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 			return particle_position_arr_a[0] < particle_position_arr_b[0];
 		}
 	});
+	__syncthreads();
+	
+	if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 126){
+		if(threadIdx.x == 0){
+			printf("B %d - ", particle_bucket_size);
+		}
+	}
+	
+	//NOTE: Data is blocked now
+	
+	//Distribute accross threads based on indexing methods
+	//NOTE: It must be ensured that previouse code does not rely on this indexing
+	alpha_shapes_spread_data<int, ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(particle_indices);
+	alpha_shapes_spread_data<int, ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD>(own_particle_indices);
 	
 	//Build delaunay triangulation with this points and keep all these intersecting the node
 	
@@ -2296,7 +2385,7 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 		
 		//Move upper bound; Activate additional particles based on range to new triangles
 		int local_new_active_particles = 0;
-		for(int particle_id = 0; particle_id < ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD && (threadIdx.x * ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD + particle_id) >= (active_particles_start + active_particles_count) && (threadIdx.x * ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD + particle_id) < particle_bucket_size; particle_id++) {
+		for(int particle_id = alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(active_particles_start + active_particles_count); (alpha_shapes_get_global_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(threadIdx.x, particle_id) >= active_particles_start + active_particles_count) && particle_id < alpha_shapes_get_thread_count<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(threadIdx.x, particle_bucket_size); particle_id++) {
 			const std::array<float, 3> particle_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, particle_indices[particle_id], blockid);
 			if(particle_position_arr[0] > maximum_x){
 				break;
@@ -2306,8 +2395,14 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 		atomicAdd(&active_particles_count, local_new_active_particles);
 		__syncthreads();
 		
+		if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 126){
+			if(threadIdx.x == 0){
+				printf("A %d %d %d\n", own_active_particles_start, own_active_particles_count, own_particle_bucket_size);
+			}
+		}
+		
 		int local_new_own_active_particles = 0;
-		for(int particle_id = 0; particle_id < ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD && (threadIdx.x * ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD + particle_id) >= (own_active_particles_start + own_active_particles_count) && (threadIdx.x * ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD + particle_id) < own_particle_bucket_size; particle_id++) {
+		for(int particle_id = alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD>(own_active_particles_start + own_active_particles_count); (alpha_shapes_get_global_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD>(threadIdx.x, particle_id) >= own_active_particles_start + own_active_particles_count) && particle_id < alpha_shapes_get_thread_count<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD>(threadIdx.x, own_particle_bucket_size); particle_id++) {
 			const std::array<float, 3> particle_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, own_particle_indices[particle_id], blockid);
 			if(particle_position_arr[0] > maximum_x){
 				break;
@@ -2316,6 +2411,12 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 		}
 		atomicAdd(&own_active_particles_count, local_new_own_active_particles);
 		__syncthreads();
+		
+		if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 126){
+			if(threadIdx.x == 0){
+				printf("B %d %d %d\n", own_active_particles_start, own_active_particles_count, own_particle_bucket_size);
+			}
+		}
 		
 		while(own_active_particles_count > 0){
 			if(threadIdx.x == 0){
@@ -2346,7 +2447,7 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 			
 			//Move lower bound; Remove particles that are out of range
 			local_new_active_particles = 0;
-			for(int particle_id = 0; particle_id < ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD && (threadIdx.x * ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD + particle_id) >= active_particles_start && (threadIdx.x * ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD + particle_id) < active_particles_start + active_particles_count; particle_id++) {
+			for(int particle_id = alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(active_particles_start); (alpha_shapes_get_global_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(threadIdx.x, particle_id) >= active_particles_start) && particle_id < alpha_shapes_get_thread_count<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(threadIdx.x, active_particles_start + active_particles_count); particle_id++) {
 				const std::array<float, 3> particle_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, particle_indices[particle_id], blockid);
 				if(particle_position_arr[0] >= minimum_x){
 					break;
@@ -2359,7 +2460,7 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 			
 			//Move upper bound; Activate additional particles based on range to new triangles
 			local_new_active_particles = 0;
-			for(int particle_id = 0; particle_id < ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD && (threadIdx.x * ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD + particle_id) >= (active_particles_start + active_particles_count) && (threadIdx.x * ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD + particle_id) < particle_bucket_size; particle_id++) {
+			for(int particle_id = alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(active_particles_start + active_particles_count); (alpha_shapes_get_global_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(threadIdx.x, particle_id) >= active_particles_start + active_particles_count) && particle_id < alpha_shapes_get_thread_count<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(threadIdx.x, particle_bucket_size); particle_id++) {
 				const std::array<float, 3> particle_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, particle_indices[particle_id], blockid);
 				if(particle_position_arr[0] > maximum_x){
 					break;
@@ -2369,9 +2470,15 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 			atomicAdd(&active_particles_count, local_new_active_particles);
 			__syncthreads();
 			
+			if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 126){
+				if(threadIdx.x == 0){
+					printf("C %d %d %d\n", own_active_particles_start, own_active_particles_count, own_particle_bucket_size);
+				}
+			}
+			
 			//Move lower bound; Remove particles that are out of range
 			local_new_own_active_particles = 0;
-			for(int particle_id = 0; particle_id < ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD && (threadIdx.x * ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD + particle_id) >= own_active_particles_start && (threadIdx.x * ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD + particle_id) < (own_active_particles_start + own_active_particles_count); particle_id++) {
+			for(int particle_id = alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD>(own_active_particles_start); (alpha_shapes_get_global_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD>(threadIdx.x, particle_id) >= own_active_particles_start) && particle_id < alpha_shapes_get_thread_count<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD>(threadIdx.x, own_active_particles_start + own_active_particles_count); particle_id++) {
 				const std::array<float, 3> particle_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, own_particle_indices[particle_id], blockid);
 				if(particle_position_arr[0] >= minimum_x){
 					break;
@@ -2382,9 +2489,13 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 			atomicSub(&own_active_particles_count, local_new_own_active_particles);
 			__syncthreads();
 			
+			if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 126){
+				printf("D %d # %d %d %d # %d %d\n", static_cast<int>(threadIdx.x), own_active_particles_start, own_active_particles_count, own_particle_bucket_size, static_cast<int>(alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD>(own_active_particles_start + own_active_particles_count)), static_cast<int>(alpha_shapes_get_thread_count<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD>(threadIdx.x, own_particle_bucket_size)));
+			}
+			
 			//Move upper bound; Activate additional particles based on range to new triangles
 			local_new_own_active_particles = 0;
-			for(int particle_id = 0; particle_id < ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD && (threadIdx.x * ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD + particle_id) >= (own_active_particles_start + own_active_particles_count) && (threadIdx.x * ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD + particle_id) < own_particle_bucket_size; particle_id++) {
+			for(int particle_id = alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD>(own_active_particles_start + own_active_particles_count); (alpha_shapes_get_global_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD>(threadIdx.x, particle_id) >= own_active_particles_start + own_active_particles_count) && particle_id < alpha_shapes_get_thread_count<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD>(threadIdx.x, own_particle_bucket_size); particle_id++) {
 				const std::array<float, 3> particle_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, own_particle_indices[particle_id], blockid);
 				if(particle_position_arr[0] > maximum_x){
 					break;
@@ -2393,6 +2504,12 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 			}
 			atomicAdd(&own_active_particles_count, local_new_own_active_particles);
 			__syncthreads();
+			
+			if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 126){
+				if(threadIdx.x == 0){
+					printf("E %d %d %d\n", own_active_particles_start, own_active_particles_count, own_particle_bucket_size);
+				}
+			}
 			
 			//Finalize particles and faces if possible (based on sweep line)
 			alpha_shapes_finalize_particles(particle_buffer, prev_partition, alpha_shapes_particle_buffer, own_particle_indices, blockid, own_last_active_particles_start, own_active_particles_start);
@@ -2412,9 +2529,9 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 		__shared__ volatile bool current_triangle_is_alpha;
 		
 		//Remove the face and move it to alpha if it is alpha
-		if(current_triangle_index >= threadIdx.x * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD && current_triangle_index < (threadIdx.x + 1) * ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD){
-			thrust::copy(thrust::seq, triangles[current_triangle_index % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD].begin(), triangles[current_triangle_index % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD].end(), current_triangle.begin());
-			current_triangle_is_alpha = triangles_is_alpha[current_triangle_index % ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD];
+		if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(current_triangle_index) == threadIdx.x){
+			thrust::copy(thrust::seq, triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(current_triangle_index)].begin(), triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(current_triangle_index)].end(), current_triangle.begin());
+			current_triangle_is_alpha = triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(current_triangle_index)];
 		}
 		__threadfence_block();
 		
