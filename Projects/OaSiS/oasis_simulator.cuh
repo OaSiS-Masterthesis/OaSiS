@@ -955,7 +955,7 @@ struct OasisSimulator {
 			fmt::print(fg(fmt::color::red), "total number of particles {}\n", particle_count);
 			
 			#ifdef UPDATE_ALPHA_SHAPES_BEFORE_OUTPUT
-			//REcalculate alpha shapes for current bufefr state
+			//Recalculate alpha shapes for current bufefr state
 			{
 				//Alpha shapes
 				for(int i = 0; i < get_model_count(); ++i) {
