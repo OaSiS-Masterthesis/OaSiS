@@ -102,3 +102,6 @@ if(filesystem_ADDED)
 		SYSTEM INTERFACE ${filesystem_SOURCE_DIR}/include
 	)
 endif()
+
+# Ginkgo
+find_package(ginkgo REQUIRED)
