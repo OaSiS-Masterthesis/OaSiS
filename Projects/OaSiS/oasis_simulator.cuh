@@ -455,6 +455,7 @@ struct OasisSimulator {
 		for(cur_frame = 1; cur_frame <= nframes; ++cur_frame) {
 			const Duration next_time = cur_time + seconds_per_frame;
 			for(Duration current_step_time = Duration::zero(); current_step_time < seconds_per_frame; current_step_time += dt, cur_time += dt, cur_step++) {
+			//for(Duration current_step_time = Duration::zero(); current_step_time < Duration::zero(); current_step_time += dt, cur_time += dt, cur_step++) {
 				//Calculate maximum grid velocity and update the grid velocity
 				{
 					auto& cu_dev = Cuda::ref_cuda_context(gpuid);
@@ -521,7 +522,7 @@ struct OasisSimulator {
 								alpha_shapes_launch_config.db = dim3(ALPHA_SHAPES_BLOCK_SIZE, 1, 1);
 								
 								//partition_block_count; {config::G_BLOCKSIZE, config::G_BLOCKSIZE, config::G_BLOCKSIZE}
-								cu_dev.compute_launch(std::move(alpha_shapes_launch_config), alpha_shapes, particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], alpha_shapes_particle_buffers[i], start_index);
+								cu_dev.compute_launch(std::move(alpha_shapes_launch_config), alpha_shapes, particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], alpha_shapes_particle_buffers[i], start_index, static_cast<int>(cur_frame));
 							}
 						});
 					}
@@ -955,7 +956,7 @@ struct OasisSimulator {
 			fmt::print(fg(fmt::color::red), "total number of particles {}\n", particle_count);
 			
 			#ifdef UPDATE_ALPHA_SHAPES_BEFORE_OUTPUT
-			//Recalculate alpha shapes for current bufefr state
+			//Recalculate alpha shapes for current buffer state
 			{
 				//Alpha shapes
 				for(int i = 0; i < get_model_count(); ++i) {
@@ -976,7 +977,7 @@ struct OasisSimulator {
 							alpha_shapes_launch_config.db = dim3(ALPHA_SHAPES_BLOCK_SIZE, 1, 1);
 							
 							//partition_block_count; {config::G_BLOCKSIZE, config::G_BLOCKSIZE, config::G_BLOCKSIZE}
-							cu_dev.compute_launch(std::move(alpha_shapes_launch_config), alpha_shapes, particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], alpha_shapes_particle_buffers[i], start_index);
+							cu_dev.compute_launch(std::move(alpha_shapes_launch_config), alpha_shapes, particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], alpha_shapes_particle_buffers[i], start_index, static_cast<int>(cur_frame));
 						}
 					});
 				}
