@@ -310,6 +310,7 @@ __forceinline__ __host__ __device__ std::array<float, 3> alpha_shapes_calculate_
 	return face_normal.data_arr();
 }
 
+//TODO: Actually we'd also need a threshold for normal (halfspace spanning more than one direction) but this can cause problems (convex hull becoming infinite if ends of two adjacent halfspaces are parallel)
 __forceinline__ __host__ __device__ bool alpha_shapes_test_in_halfspace(const std::array<std::array<float, 3>, 3>& triangle_positions, const std::array<float, 3> particle_position){
 	const std::array<vec3, 3> triangle_positions_vec {
 		  vec3(triangle_positions[0][0], triangle_positions[0][1], triangle_positions[0][2])
@@ -323,7 +324,7 @@ __forceinline__ __host__ __device__ bool alpha_shapes_test_in_halfspace(const st
 	const vec3 particle_position_vec {particle_position[0], particle_position[1], particle_position[2]};
 	
 	//Find nearest point
-	//TODO: Maybe ensure that we have an ordering iof several have same distance
+	//TODO: Maybe ensure that we have an ordering if several have same distance; Or use average;
 	const std::array<vec3, 3>::const_iterator nearest_point = thrust::min_element(thrust::seq, triangle_positions_vec.begin(), triangle_positions_vec.end(), [&particle_position_vec](const vec3& a, const vec3& b){
 		return (particle_position_vec - a).dot(particle_position_vec - a) < (particle_position_vec - b).dot(particle_position_vec - b);
 	});
@@ -611,8 +612,6 @@ __forceinline__ __device__ bool alpha_shapes_get_first_triangle(const ParticleBu
 
 template<typename Partition, MaterialE MaterialType>
 __forceinline__ __device__ void alpha_shapes_check_contact_condition(const ParticleBuffer<MaterialType> particle_buffer, const Partition prev_partition, AlphaShapesParticleBuffer alpha_shapes_particle_buffer, SharedMemoryType* __restrict__ shared_memory_storage, int (&own_particle_indices)[ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD], std::array<int, 3> (&triangles)[ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD], bool (&triangles_is_alpha)[ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD], int& current_triangle_count, int& next_triangle_count, int& temporary_hull_triangles_count, int& next_temporary_hull_triangles_count, const ivec3 blockid, const int triangle_index, const int p3_id, const bool is_alpha, const int finalize_particles_start, const int finalize_particles_end, ivec3 cellid = ivec3(0, 0, 0)){
-	printf("ABC %d # %d %d %d # %d # %d - ", static_cast<int>(blockIdx.x), cellid[0], cellid[1], cellid[2], static_cast<int>(threadIdx.x), triangle_index);
-	
 	__shared__ std::array<int, 3> current_triangle;
 	if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangle_index) == threadIdx.x){
 		thrust::copy(thrust::seq, triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangle_index)].begin(), triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangle_index)].end(), current_triangle.begin());
@@ -626,7 +625,6 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 	}
 	__syncthreads();
 	
-	printf("TEST0 %d # %d %d %d # %d # %d %d # %d # %d %d %d %d - ", static_cast<int>(blockIdx.x), cellid[0], cellid[1], cellid[2], static_cast<int>(threadIdx.x), current_triangle_count, next_triangle_count, triangle_index, current_triangle[0], current_triangle[1], current_triangle[2], p3_id);
 	
 	//Find triangles in touch
 	//NOTE: current_triangle always is in contact
@@ -641,16 +639,9 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 		){
 			const int index = atomicAdd(&face_contacts, 1);
 			contact_indices[index] = alpha_shapes_get_global_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(threadIdx.x, contact_triangle_index);
-			printf("TEST0.1 %d # %d %d %d # %d # %d %d %d # %d %d %d - ", static_cast<int>(blockIdx.x), cellid[0], cellid[1], cellid[2], static_cast<int>(threadIdx.x), index, contact_triangle_index, static_cast<int>(alpha_shapes_get_global_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(threadIdx.x, contact_triangle_index)), contact_triangle[0], contact_triangle[1], contact_triangle[2]);
 		}
 	}
 	__syncthreads();
-	
-	if(face_contacts > 4){
-		//printf("FAILURE - ");
-	}
-	
-	//printf("TEST1 %d %d %d # %d # %d %d # %d - ", cellid[0], cellid[1], cellid[2], static_cast<int>(threadIdx.x), current_triangle_count, next_triangle_count, face_contacts);
 	
 	int next_triangle_start = current_triangle_count;
 	
@@ -665,15 +656,11 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 		__shared__ std::array<int, 3> current_contact_triangle;
 		__shared__ bool current_contact_triangle_is_alpha;
 		
-		//printf("TEST1.1 %d # %d %d %d # %d # %d - ", static_cast<int>(blockIdx.x), cellid[0], cellid[1], cellid[2], static_cast<int>(threadIdx.x), contact_indices[contact_triangle_index]);
-		
 		if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(contact_indices[contact_triangle_index]) == threadIdx.x){
 			thrust::copy(thrust::seq, triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(contact_indices[contact_triangle_index])].begin(), triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(contact_indices[contact_triangle_index])].end(), current_contact_triangle.begin());
 			current_contact_triangle_is_alpha = triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(contact_indices[contact_triangle_index])];
 		}
 		__syncthreads();
-		
-		//printf("TEST1.2 %d %d %d # %d # %d %d %d - ", cellid[0], cellid[1], cellid[2], static_cast<int>(threadIdx.x), current_contact_triangle[0], current_contact_triangle[1], current_contact_triangle[2]);
 		
 		//If the new tetrahedron is in alpha and the current face is not, then the current face is a boundary face that has to be kept; Same the other way round
 		if(current_contact_triangle_is_alpha != is_alpha){
@@ -695,9 +682,6 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 			}
 		}
 		
-		//printf("TEST1.3 %d %d %d # %d - ", cellid[0], cellid[1], cellid[2], static_cast<int>(threadIdx.x));
-		
-		
 		//Swap contact triangles to end of list to remove them
 		int swap_index;
 		if(contact_indices[contact_triangle_index] < current_triangle_count){
@@ -716,14 +700,10 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 			}
 		}
 		
-		//printf("TEST1.4 %d %d %d # %d - ", cellid[0], cellid[1], cellid[2], static_cast<int>(threadIdx.x));
-		
 		//Swap contacting triangle to the end
 		alpha_shapes_block_swap<std::array<int, 3>, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangles, contact_indices[contact_triangle_index], swap_index);
 		alpha_shapes_block_swap<bool, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(triangles_is_alpha, contact_indices[contact_triangle_index], swap_index);
 		
-		//printf("TEST1.5 %d %d %d # %d - ", cellid[0], cellid[1], cellid[2], static_cast<int>(threadIdx.x));
-
 		//Update mappings
 		if(threadIdx.x == 0){
 			int first_swap_mapping = -1;
@@ -760,11 +740,7 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 			}
 		}
 		__syncthreads();
-		
-		//printf("TEST1.6 %d %d %d # %d - ", cellid[0], cellid[1], cellid[2], static_cast<int>(threadIdx.x));
 	}
-	
-	//printf("TEST2 %d %d %d # %d # %d %d - ", cellid[0], cellid[1], cellid[2], static_cast<int>(threadIdx.x), current_triangle_count, next_triangle_count);
 	
 	//Fill gap between current list and next list
 	for(int i = 0; i < next_triangle_start - current_triangle_count; ++i) {
@@ -793,8 +769,6 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 			//Other cases cannot appear, cause we are only swapping indices previously already swapped
 		}
 	}
-	
-	//printf("TEST3 %d %d %d # %d # %d %d - ", cellid[0], cellid[1], cellid[2], static_cast<int>(threadIdx.x), current_triangle_count, next_triangle_count);
 	
 	//Remove all contacting triangles from temporary hull
 	if(threadIdx.x == 0){
@@ -834,8 +808,6 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 		}
 	}
 	
-	//printf("TEST4 %d %d %d # %d # %d %d - ", cellid[0], cellid[1], cellid[2], static_cast<int>(threadIdx.x), current_triangle_count, next_triangle_count);
-	
 	int next_triangle_end = current_triangle_count + next_triangle_count;
 	if(threadIdx.x == 0){
 		next_triangle_count += (4 - face_contacts);
@@ -857,8 +829,6 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 	}
 	
 	__syncthreads();
-	
-	//printf("TEST5 %d %d %d # %d # %d %d - ", cellid[0], cellid[1], cellid[2], static_cast<int>(threadIdx.x), current_triangle_count, next_triangle_count);
 	
 	//Add new triangles
 	//Ensure correct order (current_triangle cw normal points outwards)
@@ -958,8 +928,6 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 			}
 		}
 	}//Otherwise nothing to do, just faces removed
-	
-	//printf("TEST6 %d %d %d # %d # %d %d - ", cellid[0], cellid[1], cellid[2], static_cast<int>(threadIdx.x), current_triangle_count, next_triangle_count);
 }
 
 //TODO: In this and the following functions (<- plural!) actually we do not need atomic add (just normal add). Also we need synchronization if we would use several threads and atomic
@@ -2326,7 +2294,7 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 		
 		if(threadIdx.x == 0){
 			for(int i = 0; i < temporary_convex_hull_triangles_count; ++i){
-				printf("A4 %d %d %d # %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, shared_memory_storage->circumsphere_triangles[i]);
+				//printf("A4 %d %d %d # %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, shared_memory_storage->circumsphere_triangles[i]);
 			}
 			for(int i = temporary_convex_hull_triangles_count; i < temporary_convex_hull_triangles_count + next_temporary_convex_hull_triangles_count; ++i){
 				//printf("B4 %d %d %d # %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, shared_memory_storage->circumsphere_triangles[i]);
@@ -3005,7 +2973,9 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 						particle_indices[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(particle_bucket_size - removed_particle_count - 1)] = -1;
 					}
 					if((particle_bucket_size - removed_particle_count - 1) < particle_indices_start + particle_indices_count){
-						i--; // Revisit swapped index if it is in range
+						if(i != particle_bucket_size - removed_particle_count - 1){
+							i--; // Revisit swapped index
+						}
 					}
 					if(threadIdx.x == 0){
 						removed_particle_count++;
@@ -3098,11 +3068,6 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 	//If alpha is too big print a warning
 	if(alpha > config::MAX_ALPHA){
 		printf("Alpha too big. Is %.28f, but should not be bigger than %.28f.", alpha, config::MAX_ALPHA);
-	}
-	
-	//printf("NEW_CALL - ");
-	if(cellid[0] != 126 || cellid[1] != 50 || cellid[2] != 128){
-		//return;
 	}
 	
 	//TODO: Actually we only need to handle blocks in radius of sqrt(alpha) around box
@@ -3215,12 +3180,6 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 	});
 	__syncthreads();
 	
-	if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 126){
-		if(threadIdx.x == 0){
-			//printf("B %d - ", particle_bucket_size);
-		}
-	}
-	
 	//NOTE: Data is blocked now
 	
 	//Distribute accross threads based on indexing methods
@@ -3258,19 +3217,23 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 			first_triangle = triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(0)];
 		}
 		__syncthreads();
+		
 		for(int i = 0; i < particle_bucket_size - removed_particle_count; ++i){
 			__shared__ int current_particle_index;
 			if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(i) == threadIdx.x){
 				current_particle_index = particle_indices[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(i)];
 			}
 			__syncthreads();
+			
 			for(int j = 0; j < 3; ++j){
 				if(current_particle_index == first_triangle[j]){
 					alpha_shapes_block_swap<int, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(particle_indices, i, particle_bucket_size - removed_particle_count - 1);
 					if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(particle_bucket_size - removed_particle_count - 1) == threadIdx.x){
 						particle_indices[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(particle_bucket_size - removed_particle_count - 1)] = -1;
 					}
-					i--; // Revisit swapped index
+					if(i != particle_bucket_size - removed_particle_count - 1){
+						i--; // Revisit swapped index
+					}
 					if(threadIdx.x == 0){
 						removed_particle_count++;
 					}
@@ -3293,6 +3256,10 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 		__syncthreads();
 		
 		found_initial_tetrahedron = (current_triangle_count > 1);
+	}
+	
+	if(threadIdx.x == 0){
+		//printf("TEST6 %d - ", static_cast<int>(blockIdx.x));
 	}
 	
 	__shared__ int active_particles_start;
