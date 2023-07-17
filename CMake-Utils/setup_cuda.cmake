@@ -44,10 +44,15 @@ endfunction()
 function(add_cuda_executable binary)
 	if(CUDA_FOUND)
 		add_executable(${binary} ${ARGN})
+		
+		
+		if(WIN32)
+			set(ADDITIONAL_CUDA_EXECUTABLE_HOST_OPTIONS "/bigobj")
+		endif()
 
 		# seems not working
 		target_compile_options(${binary} 
-			PRIVATE $<$<AND:$<CONFIG:Debug>,$<COMPILE_LANGUAGE:CUDA>>:-g> --expt-extended-lambda --expt-relaxed-constexpr --default-stream=per-thread --use_fast_math -lineinfo --ptxas-options=-allow-expensive-optimizations=true>
+			PRIVATE $<$<AND:$<CONFIG:Debug>,$<COMPILE_LANGUAGE:CUDA>>:-g> --expt-extended-lambda --expt-relaxed-constexpr --default-stream=per-thread --use_fast_math -lineinfo --compiler-options=${ADDITIONAL_CUDA_EXECUTABLE_HOST_OPTIONS} --ptxas-options=-allow-expensive-optimizations=true>
 		)
 
 		target_compile_features(${binary}

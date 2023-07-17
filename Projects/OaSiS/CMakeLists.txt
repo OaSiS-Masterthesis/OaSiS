@@ -12,6 +12,7 @@ if (CUDA_FOUND)
 					fmt
 					rapidjson
 					range-v3
+					Ginkgo::ginkgo
 	)
 
 	#Add headers as system headers

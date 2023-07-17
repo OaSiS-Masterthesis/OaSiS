@@ -263,6 +263,33 @@ void parse_scene(const std::string& fn, std::unique_ptr<mn::OasisSimulator>& ben
 				}
 			}
 		}///< end models parsing
+		{
+			auto it = doc.FindMember("physical_systems");
+			if(it != doc.MemberEnd()) {
+				if(it->value.IsArray()) {
+					fmt::print("has {} physical systems\n", it->value.Size());
+					for(auto& physical_systems : it->value.GetArray()) {
+						if(!check_member(physical_systems, "type")) {
+							return;
+						}
+						std::string type {physical_systems["type"].GetString()};
+						
+						if(type == "solid-fluid coupling"){
+							if(!check_member(physical_systems, "solid") || !check_member(physical_systems, "fluid")) {
+								return;
+							}
+							
+							const int solid = physical_systems["solid"].GetInt();
+							const int fluid = physical_systems["fluid"].GetInt();
+							
+							benchmark->init_solid_fluid_coupling(solid, fluid);
+						}else{
+							fmt::print("Unknown physical system type: {}", physical_systems["type"].GetString());
+						}
+					}
+				}
+			}
+		}///< end physical_systems parsing
 	}
 }
 //NOLINTEND(clang-analyzer-cplusplus.PlacementNew)

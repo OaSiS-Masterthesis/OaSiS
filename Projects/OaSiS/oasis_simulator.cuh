@@ -12,6 +12,7 @@
 #include <MnBase/Profile/CudaTimers.cuh>
 #include <MnSystem/IO/ParticleIO.hpp>
 #include <MnSystem/IO/OBJIO.hpp>
+#include <ginkgo/ginkgo.hpp>
 #include <array>
 #include <vector>
 
@@ -105,6 +106,7 @@ struct OasisSimulator {
 	std::vector<Partition<1>> partitions								= {};///< with halo info
 	std::vector<ParticleArray> particles								= {};
 	std::vector<AlphaShapesParticleBuffer> alpha_shapes_particle_buffers = {};
+	std::vector<std::array<int, 2>> solid_fluid_couplings = {};
 
 	Intermediates tmps;
 
@@ -139,6 +141,12 @@ struct OasisSimulator {
 	std::vector<std::vector<std::array<float, config::NUM_DIMENSIONS>>> triangle_mesh_transfer_host_buffers = {};
 	std::vector<std::vector<std::array<unsigned int, config::NUM_DIMENSIONS>>> triangle_mesh_face_buffers = {};
 	std::array<std::vector<TriangleShellGridBuffer>, BIN_COUNT> triangle_shell_grid_buffer = {};//For mass redistribution and such
+	
+	std::shared_ptr<gko::Executor> ginkgo_executor;
+	std::shared_ptr<gko::matrix::Csr<float, int>> iq_lhs;
+	std::shared_ptr<gko::matrix::Dense<float>> iq_rhs;
+	std::shared_ptr<gko::matrix::Dense<float>> iq_result;
+	std::shared_ptr<gko::solver::Cg<float>::Factory> iq_solver_factory;
 
 	explicit OasisSimulator(int gpu = 0, Duration dt = DEFAULT_DT, int fps = DEFAULT_FPS, int frames = DEFAULT_FRAMES)
 		: gpuid(gpu)
@@ -185,6 +193,88 @@ struct OasisSimulator {
 
 		cu_dev.syncStream<streamIdx::COMPUTE>();
 		cur_num_active_blocks = config::G_MAX_ACTIVE_BLOCK;
+		
+		//Create Ginkgo executor and IQ-System stuff
+		ginkgo_executor = gko::CudaExecutor::create(cu_dev.get_dev_id(), gko::ReferenceExecutor::create(), false, gko::allocation_mode::device, cu_dev.stream_compute());
+		//TODO: Maybe specify csr strategy
+		iq_lhs = gko::share(
+			gko::matrix::Csr<float, int>::create(ginkgo_executor, gko::dim<2>(4 * config::G_MAX_ACTIVE_BLOCK, 4 * config::G_MAX_ACTIVE_BLOCK), 4 * config::G_MAX_ACTIVE_BLOCK)
+		);
+		iq_rhs = gko::share(
+			gko::matrix::Dense<float>::create(ginkgo_executor, gko::dim<2>(4 * config::G_MAX_ACTIVE_BLOCK, 1))
+		);
+		iq_result = gko::share(
+			gko::matrix::Dense<float>::create(ginkgo_executor, gko::dim<2>(4 * config::G_MAX_ACTIVE_BLOCK, 1))
+		);
+		
+		//Create IQ-Solver
+		//TODO: Adjust parameters. Maybe copy from IQ-MPM paper. Add comments
+		{
+			const gko::remove_complex<float> tolerance = 1e-8f;
+			std::shared_ptr<gko::stop::Iteration::Factory> iter_stop = gko::share(
+				gko::stop::Iteration::build()
+				.with_max_iters(100u)
+				.on(ginkgo_executor)
+			);
+			std::shared_ptr<gko::stop::ResidualNorm<float>::Factory> tol_stop = gko::share(
+				gko::stop::ResidualNorm<float>::build()
+				.with_baseline(gko::stop::mode::absolute)
+				.with_reduction_factor(tolerance)
+				.on(ginkgo_executor)
+			);
+			std::shared_ptr<gko::stop::ResidualNorm<float>::Factory> exact_tol_stop = gko::share(
+				gko::stop::ResidualNorm<float>::build()
+				.with_baseline(gko::stop::mode::rhs_norm)
+				.with_reduction_factor(1e-14f)
+				.on(ginkgo_executor)
+			);
+
+			//Incomplete cholesky
+			std::shared_ptr<gko::preconditioner::Ic<gko::solver::LowerTrs<float>>::Factory> ic_gen = gko::share(
+				gko::preconditioner::Ic<gko::solver::LowerTrs<float>>::build()
+				.with_factorization_factory(gko::factorization::Ic<float, int>::build().on(ginkgo_executor))
+				.on(ginkgo_executor)
+			);
+			
+			//Smoother
+			std::shared_ptr<gko::solver::Ir<float>::Factory> smoother_gen = gko::share(
+				gko::solver::build_smoother(ic_gen, 2u, static_cast<float>(0.9f))
+			);
+			
+			std::shared_ptr<gko::multigrid::Pgm<float, int>::Factory> mg_level_gen = gko::share(
+				gko::multigrid::Pgm<float, int>::build()
+				.with_deterministic(true)
+				.on(ginkgo_executor)
+			);
+			
+			std::shared_ptr<gko::solver::Cg<float>::Factory> coarsest_gen = gko::share(
+				gko::solver::Cg<float>::build()
+				.with_preconditioner(ic_gen)
+				.with_criteria(iter_stop, exact_tol_stop)
+				.on(ginkgo_executor)
+			);
+
+			std::shared_ptr<gko::LinOpFactory> multigrid_gen = gko::solver::Multigrid::build()
+				.with_max_levels(10u)
+				.with_min_coarse_rows(32u)
+				.with_pre_smoother(smoother_gen)
+				.with_post_uses_pre(true)
+				.with_mg_level(mg_level_gen)
+				.with_coarsest_solver(coarsest_gen)
+				.with_default_initial_guess(gko::solver::initial_guess_mode::zero)
+				.with_criteria(gko::stop::Iteration::build().with_max_iters(1u).on(ginkgo_executor))
+				.on(ginkgo_executor)
+			;
+
+			// Create solver factory
+			iq_solver_factory = gko::share(
+				gko::solver::Cg<float>::build()
+				.with_criteria(iter_stop, tol_stop)
+				.with_preconditioner(multigrid_gen)
+				.on(ginkgo_executor)
+			);
+		}
+   
 	}
 	
 	void init_triangle_mesh(const std::vector<std::array<float, config::NUM_DIMENSIONS>>& positions, const std::vector<std::array<unsigned int, config::NUM_DIMENSIONS>>& faces){
@@ -300,6 +390,25 @@ struct OasisSimulator {
 			end_write_partio(fn, parts);
 		});
 		IO::flush();
+	}
+	
+	void init_solid_fluid_coupling(const int solid_id, const int fluid_id) {
+		if(solid_id < particle_counts.size() && fluid_id < particle_counts.size()){
+			bool already_coupled = false;
+			for(size_t i = 0; i < solid_fluid_couplings.size(); ++i){
+				if(solid_fluid_couplings[i][0] == solid_id || solid_fluid_couplings[i][1] == solid_id || solid_fluid_couplings[i][0] == fluid_id || solid_fluid_couplings[i][1] == fluid_id){
+					already_coupled = true;
+					fmt::print("Model already coupled: {}<->{} but already exists {}<->{}", solid_id, fluid_id, solid_fluid_couplings[i][0], solid_fluid_couplings[i][1]);
+					break;
+				}
+			}
+			
+			if(!already_coupled){
+				solid_fluid_couplings.push_back({solid_id, fluid_id});
+			}
+		}else{
+			fmt::print("Model ids out of range: {} {} but model count is", solid_id, fluid_id, particle_counts.size());
+		}
 	}
 	
 	void update_triangle_mesh_parameters(float mass, const std::function<vec3(Duration, Duration)>& animation_linear_func, const std::function<vec3(Duration, Duration)>& animation_rotational_func) {
@@ -528,6 +637,30 @@ struct OasisSimulator {
 					}
 					
 					timer.tock(fmt::format("GPU[{}] frame {} step {} alpha_shapes", gpuid, cur_frame, cur_step));
+					
+					timer.tick();
+					
+					{
+						//FIXME: Clear matrices
+						
+						//TODO: For each given combination of objects
+						//IQ-System create
+						
+						ginkgo_executor->synchronize();
+						
+						
+						//IQ-System solve
+						// Create solver
+						std::unique_ptr<gko::solver::Cg<float>> iq_solver = iq_solver_factory->generate(iq_lhs);
+						ginkgo_executor->synchronize();
+
+						// Solve system
+						ginkgo_executor->synchronize();
+						iq_solver->apply(iq_rhs, iq_result);
+						ginkgo_executor->synchronize();
+					}
+					
+					timer.tock(fmt::format("GPU[{}] frame {} step {} IQ solve", gpuid, cur_frame, cur_step));
 				}
 
 				/// g2p2g
