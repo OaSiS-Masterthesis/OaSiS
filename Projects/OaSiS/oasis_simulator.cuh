@@ -23,6 +23,7 @@
 #include "settings.h"
 #include "triangle_mesh.cuh"
 #include "alpha_shapes.cuh"
+#include "iq.cuh"
 
 #define OUTPUT_TRIANGLE_SHELL_OUTER_POS 1
 #define UPDATE_ALPHA_SHAPES_BEFORE_OUTPUT 1
@@ -142,9 +143,13 @@ struct OasisSimulator {
 	std::vector<std::vector<std::array<unsigned int, config::NUM_DIMENSIONS>>> triangle_mesh_face_buffers = {};
 	std::array<std::vector<TriangleShellGridBuffer>, BIN_COUNT> triangle_shell_grid_buffer = {};//For mass redistribution and such
 	
+	//TemporaryGridBuffer temporary_grid_buffer;
+	
 	std::shared_ptr<gko::Executor> ginkgo_executor;
-	std::shared_ptr<gko::matrix::Csr<float, int>> iq_lhs;
 	std::shared_ptr<gko::matrix::Dense<float>> iq_rhs;
+	gko::array<int> iq_lhs_rows;
+	gko::array<int> iq_lhs_columns;
+	gko::array<float> iq_lhs_values;
 	std::shared_ptr<gko::matrix::Dense<float>> iq_result;
 	std::shared_ptr<gko::solver::Cg<float>::Factory> iq_solver_factory;
 
@@ -165,7 +170,9 @@ struct OasisSimulator {
 		, max_vels()
 		, partition_block_count()
 		, neighbor_block_count()
-		, exterior_block_count()		{
+		, exterior_block_count()
+		//, temporary_grid_buffer(DeviceAllocator {})		
+		{
 		// data
 		initialize();
 	}
@@ -197,15 +204,16 @@ struct OasisSimulator {
 		//Create Ginkgo executor and IQ-System stuff
 		ginkgo_executor = gko::CudaExecutor::create(cu_dev.get_dev_id(), gko::ReferenceExecutor::create(), false, gko::allocation_mode::device, cu_dev.stream_compute());
 		//TODO: Maybe specify csr strategy
-		iq_lhs = gko::share(
-			gko::matrix::Csr<float, int>::create(ginkgo_executor, gko::dim<2>(4 * config::G_MAX_ACTIVE_BLOCK, 4 * config::G_MAX_ACTIVE_BLOCK), 4 * config::G_MAX_ACTIVE_BLOCK)
+		iq_result = gko::share(
+			gko::matrix::Dense<float>::create(ginkgo_executor, gko::dim<2>(iq::MATRIX_SIZE_Y * config::G_MAX_ACTIVE_BLOCK, 1))
 		);
 		iq_rhs = gko::share(
-			gko::matrix::Dense<float>::create(ginkgo_executor, gko::dim<2>(4 * config::G_MAX_ACTIVE_BLOCK, 1))
+			gko::matrix::Dense<float>::create(ginkgo_executor, gko::dim<2>(iq::MATRIX_SIZE_Y * config::G_MAX_ACTIVE_BLOCK, 1))
 		);
-		iq_result = gko::share(
-			gko::matrix::Dense<float>::create(ginkgo_executor, gko::dim<2>(4 * config::G_MAX_ACTIVE_BLOCK, 1))
-		);
+		iq_lhs_rows = gko::array<int>(ginkgo_executor, iq::MATRIX_SIZE_Y * config::G_MAX_ACTIVE_BLOCK);
+		iq_lhs_columns = gko::array<int>(ginkgo_executor, iq::MATRIX_SIZE_X * iq::MATRIX_SIZE_Y * config::G_MAX_ACTIVE_BLOCK);
+		iq_lhs_values = gko::array<float>(ginkgo_executor, iq::MATRIX_SIZE_X * iq::MATRIX_SIZE_Y * config::G_MAX_ACTIVE_BLOCK);
+		
 		
 		//Create IQ-Solver
 		//TODO: Adjust parameters. Maybe copy from IQ-MPM paper. Add comments
@@ -640,14 +648,41 @@ struct OasisSimulator {
 					
 					timer.tick();
 					
-					{
-						//FIXME: Clear matrices
+					//Resize vectors
+					//iq_rhs->resize(iq::MATRIX_SIZE_Y * partition_block_count);
+					//iq_result->resize(iq::MATRIX_SIZE_Y * partition_block_count);
+					
+					for(int i = 0; i < solid_fluid_couplings.size(); ++i){
+						const int solid_id = solid_fluid_couplings[i][0];
+						const int fluid_id = solid_fluid_couplings[i][1];
 						
-						//TODO: For each given combination of objects
-						//IQ-System create
+						//Clear matrix and vectors
+						iq_rhs->fill(0.0f);
+						iq_result->fill(0.0f);
+						
+						iq_lhs_rows.resize_and_reset(iq::MATRIX_SIZE_Y * partition_block_count);
+						iq_lhs_columns.resize_and_reset(iq::MATRIX_SIZE_Y * iq::MATRIX_SIZE_X * partition_block_count);
+						iq_lhs_values.resize_and_reset(iq::MATRIX_SIZE_Y * iq::MATRIX_SIZE_X * partition_block_count);
+						cu_dev.compute_launch({partition_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::clear_iq_system, static_cast<uint32_t>(partition_block_count), partitions[rollid], iq_lhs_rows.get_data(), iq_lhs_columns.get_data(), iq_lhs_values.get_data());
 						
 						ginkgo_executor->synchronize();
 						
+						//IQ-System create
+						match(particle_bins[rollid][solid_id], particle_bins[rollid][fluid_id])([this, &cu_dev, &solid_id, &fluid_id](const auto& particle_buffer_solid, const auto& particle_buffer_fluid) {
+							cu_dev.compute_launch({partition_block_count, iq::BLOCK_SIZE}, iq::create_iq_system, static_cast<uint32_t>(partition_block_count), dt, particle_buffer_solid, particle_buffer_fluid, get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]), get<typename std::decay_t<decltype(particle_buffer_fluid)>>(particle_bins[(rollid + 1) % BIN_COUNT][fluid_id]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_lhs_rows.get_const_data(), iq_lhs_columns.get_const_data(), iq_lhs_values.get_data(), iq_rhs->get_values());
+						});
+						
+						ginkgo_executor->synchronize();
+						
+						const std::shared_ptr<const gko::matrix::Csr<float, int>> iq_lhs = gko::share(
+							gko::matrix::Csr<float, int>::create_const(
+								  ginkgo_executor
+								, gko::dim<2>(iq::MATRIX_SIZE_X * partition_block_count, iq::MATRIX_SIZE_Y * partition_block_count)
+								, std::move(iq_lhs_values.as_const_view())
+								, std::move(iq_lhs_columns.as_const_view())
+								, std::move(iq_lhs_rows.as_const_view())
+							)
+						);
 						
 						//IQ-System solve
 						// Create solver
@@ -1007,6 +1042,7 @@ struct OasisSimulator {
 							triangle_shell_grid_buffer[(rollid + 1) % BIN_COUNT][i].resize(DeviceAllocator {}, cur_num_active_blocks);
 						}
 						tmps.resize(cur_num_active_blocks);
+						//temporary_grid_buffer.resize(DeviceAllocator {}, cur_num_active_blocks);
 					}
 				}
 
