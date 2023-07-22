@@ -210,7 +210,7 @@ struct OasisSimulator {
 		iq_rhs = gko::share(
 			gko::matrix::Dense<float>::create(ginkgo_executor, gko::dim<2>(iq::MATRIX_SIZE_Y * config::G_MAX_ACTIVE_BLOCK, 1))
 		);
-		iq_lhs_rows = gko::array<int>(ginkgo_executor, iq::MATRIX_SIZE_Y * config::G_MAX_ACTIVE_BLOCK);
+		iq_lhs_rows = gko::array<int>(ginkgo_executor, iq::MATRIX_SIZE_Y * config::G_MAX_ACTIVE_BLOCK + 1);
 		iq_lhs_columns = gko::array<int>(ginkgo_executor, iq::MATRIX_SIZE_X * iq::MATRIX_SIZE_Y * config::G_MAX_ACTIVE_BLOCK);
 		iq_lhs_values = gko::array<float>(ginkgo_executor, iq::MATRIX_SIZE_X * iq::MATRIX_SIZE_Y * config::G_MAX_ACTIVE_BLOCK);
 		
@@ -660,7 +660,7 @@ struct OasisSimulator {
 						iq_rhs->fill(0.0f);
 						iq_result->fill(0.0f);
 						
-						iq_lhs_rows.resize_and_reset(iq::MATRIX_SIZE_Y * partition_block_count);
+						iq_lhs_rows.resize_and_reset(iq::MATRIX_SIZE_Y * partition_block_count + 1);
 						iq_lhs_columns.resize_and_reset(iq::MATRIX_SIZE_Y * iq::MATRIX_SIZE_X * partition_block_count);
 						iq_lhs_values.resize_and_reset(iq::MATRIX_SIZE_Y * iq::MATRIX_SIZE_X * partition_block_count);
 						cu_dev.compute_launch({partition_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::clear_iq_system, static_cast<uint32_t>(partition_block_count), partitions[rollid], iq_lhs_rows.get_data(), iq_lhs_columns.get_data(), iq_lhs_values.get_data());
@@ -674,13 +674,14 @@ struct OasisSimulator {
 						
 						ginkgo_executor->synchronize();
 						
+						//TODO: If making this non-const move array views to prevent copying?
 						const std::shared_ptr<const gko::matrix::Csr<float, int>> iq_lhs = gko::share(
 							gko::matrix::Csr<float, int>::create_const(
 								  ginkgo_executor
 								, gko::dim<2>(iq::MATRIX_SIZE_X * partition_block_count, iq::MATRIX_SIZE_Y * partition_block_count)
-								, std::move(iq_lhs_values.as_const_view())
-								, std::move(iq_lhs_columns.as_const_view())
-								, std::move(iq_lhs_rows.as_const_view())
+								, iq_lhs_values.as_const_view()
+								, iq_lhs_columns.as_const_view()
+								, iq_lhs_rows.as_const_view()
 							)
 						);
 						
