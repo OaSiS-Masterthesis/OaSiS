@@ -30,6 +30,7 @@ constexpr size_t NUM_COLUMNS_PER_BLOCK = (2 * INTERPOLATION_DEGREE_MAX + 1) * (2
 constexpr size_t MATRIX_SIZE_Y = 4;
 constexpr size_t MATRIX_SIZE_X = 4;
 
+constexpr size_t MATRIX_TOTAL_BLOCK_COUNT = 12;
 __device__ const std::array<size_t, MATRIX_SIZE_Y> num_blocks_per_row = {
 	  2
 	, 3
@@ -98,7 +99,7 @@ __forceinline__ __device__ void add_up_shared(T& data, const T init){
 
 //TODO: Maybe activate on cell level (but data is on block level); Maybe recheck that blocks are not empty
 template<typename Partition>
-__global__ void clear_iq_system(const uint32_t num_active_blocks, const Partition partition, int* iq_lhs_rows, int* iq_lhs_columns, float* iq_lhs_values) {
+__global__ void clear_iq_system(const uint32_t num_active_blocks, const uint32_t num_blocks, const Partition partition, int* iq_lhs_rows, int* iq_lhs_columns, float* iq_lhs_values) {
 	//const int src_blockno		   = static_cast<int>(blockIdx.x);
 	const auto blockid			   = partition.active_keys[blockIdx.x];
 	
@@ -108,9 +109,9 @@ __global__ void clear_iq_system(const uint32_t num_active_blocks, const Partitio
 	
 	//Accumulate blocks per row
 	std::array<size_t, MATRIX_SIZE_Y> accumulated_blocks_per_row;
-	accumulated_blocks_per_row[0] = num_blocks_per_row[0];
+	accumulated_blocks_per_row[0] = 0;
 	for(size_t i = 1; i < MATRIX_SIZE_Y; ++i){
-		accumulated_blocks_per_row[i] = accumulated_blocks_per_row[i - 1] + num_blocks_per_row[i];
+		accumulated_blocks_per_row[i] = accumulated_blocks_per_row[i - 1] + num_blocks_per_row[i - 1];
 	}
 	
 	//Fill matrix
@@ -118,12 +119,12 @@ __global__ void clear_iq_system(const uint32_t num_active_blocks, const Partitio
 		const ivec3 cellid = blockid * static_cast<int>(config::G_BLOCKSIZE) + ivec3((static_cast<int>(row) / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE, (static_cast<int>(row) / config::G_BLOCKSIZE) % config::G_BLOCKSIZE, static_cast<int>(row) % config::G_BLOCKSIZE);
 		
 		for(size_t row_offset = 0; row_offset < MATRIX_SIZE_Y; ++row_offset){
-			iq_lhs_rows[row_offset * NUM_ROWS_PER_BLOCK * num_active_blocks + base_row + row] = accumulated_blocks_per_row[row_offset] * NUM_ROWS_PER_BLOCK * num_active_blocks * NUM_COLUMNS_PER_BLOCK + num_blocks_per_row[row_offset] * base_row * NUM_COLUMNS_PER_BLOCK;
+			iq_lhs_rows[row_offset * NUM_ROWS_PER_BLOCK * num_blocks + base_row + row] = accumulated_blocks_per_row[row_offset] * NUM_ROWS_PER_BLOCK * num_active_blocks * NUM_COLUMNS_PER_BLOCK + num_blocks_per_row[row_offset] * (base_row + row) * NUM_COLUMNS_PER_BLOCK;
 		}
 		
 		int neighbour_cellnos[NUM_COLUMNS_PER_BLOCK];
 		for(size_t column = 0; column < NUM_COLUMNS_PER_BLOCK; ++column){
-			const ivec3 neighbour_local_id = ivec3(static_cast<int>((column / ((2 * INTERPOLATION_DEGREE_MAX) * (2 * INTERPOLATION_DEGREE_MAX))) % (2 * INTERPOLATION_DEGREE_MAX)), static_cast<int>((column / (2 * INTERPOLATION_DEGREE_MAX)) % (2 * INTERPOLATION_DEGREE_MAX)), static_cast<int>(column % (2 * INTERPOLATION_DEGREE_MAX))) - ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));
+			const ivec3 neighbour_local_id = ivec3(static_cast<int>((column / ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1))) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>((column / (2 * INTERPOLATION_DEGREE_MAX + 1)) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>(column % (2 * INTERPOLATION_DEGREE_MAX + 1))) - ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));
 			const ivec3 neighbour_cellid = cellid + neighbour_local_id;
 			const ivec3 neighbour_blockid = neighbour_cellid / static_cast<int>(config::G_BLOCKSIZE);
 			
@@ -142,10 +143,39 @@ __global__ void clear_iq_system(const uint32_t num_active_blocks, const Partitio
 		for(size_t column = 0; column < NUM_COLUMNS_PER_BLOCK; ++column){
 			for(size_t row_offset = 0; row_offset < MATRIX_SIZE_Y; ++row_offset){
 				for(size_t column_offset_index = 0; column_offset_index < num_blocks_per_row[row_offset]; ++column_offset_index){
-					iq_lhs_columns[iq_lhs_rows[row_offset * NUM_ROWS_PER_BLOCK * num_active_blocks + base_row + row] + column_offset_index * NUM_COLUMNS_PER_BLOCK + column] = block_offsets_per_row[row_offset][column_offset_index] * num_active_blocks * NUM_ROWS_PER_BLOCK + neighbour_cellnos[column];
-					iq_lhs_values[iq_lhs_rows[row_offset * NUM_ROWS_PER_BLOCK * num_active_blocks + base_row + row] + column_offset_index * NUM_COLUMNS_PER_BLOCK + column] = 0.0f;
+					iq_lhs_columns[iq_lhs_rows[row_offset * NUM_ROWS_PER_BLOCK * num_blocks + base_row + row] + column_offset_index * NUM_COLUMNS_PER_BLOCK + column] = block_offsets_per_row[row_offset][column_offset_index] * num_blocks * NUM_ROWS_PER_BLOCK + neighbour_cellnos[column];
+					iq_lhs_values[iq_lhs_rows[row_offset * NUM_ROWS_PER_BLOCK * num_blocks + base_row + row] + column_offset_index * NUM_COLUMNS_PER_BLOCK + column] = 0.0f;
 				}
 			}
+		}
+	}
+}
+
+template<typename Partition>
+__global__ void fill_empty_rows(const uint32_t num_blocks, const Partition partition, int* iq_lhs_rows) {
+	//const int src_blockno		   = static_cast<int>(blockIdx.x);
+	const auto blockid			   = partition.active_keys[blockIdx.x];
+	
+	//Handle own rows and add column data for all neighbour cells of each cell (fixed amount)
+	//We can calculate the offset in the column array by our id and the amount of neighbour cells (=columns)
+	const size_t base_row = NUM_ROWS_PER_BLOCK * blockIdx.x;
+	
+	//Fill empty rows
+	for(size_t row = static_cast<int>(threadIdx.x); row < NUM_ROWS_PER_BLOCK; row += static_cast<int>(blockDim.x)){
+		const ivec3 cellid = blockid * static_cast<int>(config::G_BLOCKSIZE) + ivec3((static_cast<int>(row) / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE, (static_cast<int>(row) / config::G_BLOCKSIZE) % config::G_BLOCKSIZE, static_cast<int>(row) % config::G_BLOCKSIZE);
+
+		//TODO: Use more efficient way, like maybe binary search
+		int next_active_base_row;
+		int next_active_row;
+		for(int next_row_offset = 0; (base_row + row + next_row_offset) < (NUM_ROWS_PER_BLOCK * num_blocks + 1); ++next_row_offset){
+			if(iq_lhs_rows[base_row + row + next_row_offset] != 0){
+				next_active_base_row = (base_row + row + next_row_offset) / NUM_ROWS_PER_BLOCK;
+				next_active_row = (base_row + row + next_row_offset) % NUM_ROWS_PER_BLOCK;
+			}
+		}
+
+		for(size_t row_offset = 0; row_offset < MATRIX_SIZE_Y; ++row_offset){
+			iq_lhs_rows[row_offset * NUM_ROWS_PER_BLOCK * num_blocks + base_row + row] = iq_lhs_rows[row_offset * NUM_ROWS_PER_BLOCK * num_blocks + next_active_base_row + next_active_row];
 		}
 	}
 }
@@ -386,7 +416,7 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 									const ivec3 neighbour_relative_local_id = (neighbour_local_id - local_id);
 									const ivec3 neighbour_offset_local_id = neighbour_relative_local_id + ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));
 									
-									const int column = neighbour_offset_local_id[0] * (INTERPOLATION_DEGREE_MAX * INTERPOLATION_DEGREE_MAX) + neighbour_offset_local_id[1] * INTERPOLATION_DEGREE_MAX + neighbour_offset_local_id[2];
+									const int column = neighbour_offset_local_id[0] * ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1)) + neighbour_offset_local_id[1] * (2 * INTERPOLATION_DEGREE_MAX + 1) + neighbour_offset_local_id[2];
 									//Only handle for neighbours of neighbour
 									if(
 										   column_start >= column_start && column < column_end
@@ -513,7 +543,7 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 									const ivec3 neighbour_relative_local_id = (neighbour_local_id - local_id);
 									const ivec3 neighbour_offset_local_id = neighbour_relative_local_id + ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));
 									
-									const int column = neighbour_offset_local_id[0] * (INTERPOLATION_DEGREE_MAX * INTERPOLATION_DEGREE_MAX) + neighbour_offset_local_id[1] * INTERPOLATION_DEGREE_MAX + neighbour_offset_local_id[2];
+									const int column = neighbour_offset_local_id[0] * ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1)) + neighbour_offset_local_id[1] * (2 * INTERPOLATION_DEGREE_MAX + 1) + neighbour_offset_local_id[2];
 									//Only handle for neighbours of neighbour
 									if(
 										    column_start >= column_start && column < column_end
@@ -536,7 +566,7 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 }
 
 template<typename Partition, typename Grid, MaterialE MaterialTypeSolid, MaterialE MaterialTypeFluid>
-__global__ void create_iq_system(const uint32_t num_active_blocks, Duration dt, const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition partition, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, const int* iq_lhs_rows, const int* iq_lhs_columns, float* iq_lhs_values, float* iq_rhs) {
+__global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition partition, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, const int* iq_lhs_rows, const int* iq_lhs_columns, float* iq_lhs_values, float* iq_rhs) {
 	constexpr size_t KERNEL_SIZE = INTERPOLATION_DEGREE_MAX / config::G_BLOCKSIZE;
 	
 	const size_t base_row = NUM_ROWS_PER_BLOCK * blockIdx.x;
@@ -570,47 +600,41 @@ __global__ void create_iq_system(const uint32_t num_active_blocks, Duration dt, 
 	boundary_normal[2] = (blockid[2] < boundary_condition) ? 1.0f : ((blockid[2] >= config::G_GRID_SIZE - boundary_condition) ? -1.0f : 0.0f);
 	
 	//If we have no particles in the bucket return
-	if(particle_bucket_size_solid == 0 || particle_bucket_size_fluid == 0) {
+	if(particle_bucket_size_solid == 0 && particle_bucket_size_fluid == 0) {
 		return;
 	}
 	
 	//Init memory/Load velocity
 	const auto grid_block_solid	  = grid_solid.ch(_0, src_blockno);
 	const auto grid_block_fluid	  = grid_fluid.ch(_0, src_blockno);
-	for(size_t i = 0; i < config::G_BLOCKVOLUME; ++i){
-		if(get_thread_index<BLOCK_SIZE, (1 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(i) == threadIdx.x){
-			scaling_solid_local[i] = 0.0f;
-			pressure_solid_nominator_local[i] = 0.0f;
-			pressure_solid_denominator_local[i] = 0.0f;
-		}
-		for(size_t j = 0; j < 3; ++j){
-			if(get_thread_index<BLOCK_SIZE, (3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * i + j) == threadIdx.x){
-				mass_solid_local[3 * i + j] = 0.0f;
-				mass_fluid_local[3 * i + j] = 0.0f;
-				if(j == 0) {
-					velocity_solid_local[3 * i + j] = grid_block_solid.val_1d(_1, i);
-					velocity_fluid_local[3 * i + j] = grid_block_fluid.val_1d(_1, i);
-				} else if(j == 1) {
-					velocity_solid_local[3 * i + j] = grid_block_solid.val_1d(_2, i);
-					velocity_fluid_local[3 * i + j] = grid_block_fluid.val_1d(_2, i);
-				} else {
-					velocity_solid_local[3 * i + j] = grid_block_solid.val_1d(_3, i);
-					velocity_fluid_local[3 * i + j] = grid_block_fluid.val_1d(_3, i);
-				}
-			}
-			
-			
-			for(size_t k = 0; k < NUM_COLUMNS_PER_BLOCK; ++k){
-				if(get_thread_index<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * NUM_COLUMNS_PER_BLOCK * i + 3 * k + j) == threadIdx.x){			
-					gradient_solid_local[3 * NUM_COLUMNS_PER_BLOCK * i + 3 * k + j] = 0.0f;
-					gradient_fluid_local[3 * NUM_COLUMNS_PER_BLOCK * i + 3 * k + j] = 0.0f;
-					
-					boundary_fluid_local[3 * NUM_COLUMNS_PER_BLOCK * i + 3 * k + j] = 0.0f;
-					coupling_solid_local[3 * NUM_COLUMNS_PER_BLOCK * i + 3 * k + j] = 0.0f;
-					coupling_fluid_local[3 * NUM_COLUMNS_PER_BLOCK * i + 3 * k + j] = 0.0f;
-				}
+	for(size_t i = 0; i < (1 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE; ++i){
+		scaling_solid_local[i] = 0.0f;
+		pressure_solid_nominator_local[i] = 0.0f;
+		pressure_solid_denominator_local[i] = 0.0f;
+	}
+	for(size_t i = 0; i < (3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE; ++i){
+		mass_solid_local[i] = 0.0f;
+		mass_fluid_local[i] = 0.0f;
+		if(get_global_index<BLOCK_SIZE, (1 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, i / 3) < config::G_BLOCKVOLUME){
+			if((i % 3) == 0) {
+				velocity_solid_local[i] = grid_block_solid.val_1d(_1, get_global_index<BLOCK_SIZE, (1 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, i / 3));
+				velocity_fluid_local[i] = grid_block_fluid.val_1d(_1, get_global_index<BLOCK_SIZE, (1 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, i / 3));
+			} else if((i % 3) == 1) {
+				velocity_solid_local[i] = grid_block_solid.val_1d(_2, get_global_index<BLOCK_SIZE, (1 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, i / 3));
+				velocity_fluid_local[i] = grid_block_fluid.val_1d(_2, get_global_index<BLOCK_SIZE, (1 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, i / 3));
+			} else {
+				velocity_solid_local[i] = grid_block_solid.val_1d(_3, get_global_index<BLOCK_SIZE, (1 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, i / 3));
+				velocity_fluid_local[i] = grid_block_fluid.val_1d(_3, get_global_index<BLOCK_SIZE, (1 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, i / 3));
 			}
 		}
+	}		
+	for(size_t i = 0; i < (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE; ++i){				
+		gradient_solid_local[i] = 0.0f;
+		gradient_fluid_local[i] = 0.0f;
+		
+		boundary_fluid_local[i] = 0.0f;
+		coupling_solid_local[i] = 0.0f;
+		coupling_fluid_local[i] = 0.0f;
 	}
 
 	//Aggregate data		
@@ -888,7 +912,7 @@ __global__ void create_iq_system(const uint32_t num_active_blocks, Duration dt, 
 			
 			//Store at index (blockid + row, blockid + column), adding it to existing value
 			for(size_t i = 0; i < MATRIX_SIZE_Y; ++i){
-				const int row_index = i * NUM_ROWS_PER_BLOCK * num_active_blocks + base_row + row;
+				const int row_index = i * NUM_ROWS_PER_BLOCK * num_blocks + base_row + row;
 				for(size_t j = 0; j < num_blocks_per_row[i]; ++j){
 					
 					const int column_index = iq_lhs_rows[row_index] + j * NUM_COLUMNS_PER_BLOCK + column;
@@ -911,7 +935,7 @@ __global__ void create_iq_system(const uint32_t num_active_blocks, Duration dt, 
 		b[3] = coupling_and_velocity_solid - coupling_and_velocity_fluid;
 		
 		for(size_t i = 0; i < MATRIX_SIZE_Y; ++i){
-			const int row_index = i * NUM_ROWS_PER_BLOCK * num_active_blocks + base_row + row;
+			const int row_index = i * NUM_ROWS_PER_BLOCK * num_blocks + base_row + row;
 			atomicAdd(&(iq_rhs[row_index]), b[i]);
 		}
 	}

@@ -146,12 +146,12 @@ struct OasisSimulator {
 	//TemporaryGridBuffer temporary_grid_buffer;
 	
 	std::shared_ptr<gko::Executor> ginkgo_executor;
-	std::shared_ptr<gko::matrix::Dense<float>> iq_rhs;
+	gko::array<float> iq_rhs_array;
+	gko::array<float> iq_result_array;
 	gko::array<int> iq_lhs_rows;
 	gko::array<int> iq_lhs_columns;
 	gko::array<float> iq_lhs_values;
-	std::shared_ptr<gko::matrix::Dense<float>> iq_result;
-	std::shared_ptr<gko::solver::Cg<float>::Factory> iq_solver_factory;
+	std::shared_ptr<gko::solver::Bicgstab<float>::Factory> iq_solver_factory;
 
 	explicit OasisSimulator(int gpu = 0, Duration dt = DEFAULT_DT, int fps = DEFAULT_FPS, int frames = DEFAULT_FRAMES)
 		: gpuid(gpu)
@@ -204,79 +204,96 @@ struct OasisSimulator {
 		//Create Ginkgo executor and IQ-System stuff
 		ginkgo_executor = gko::CudaExecutor::create(cu_dev.get_dev_id(), gko::ReferenceExecutor::create(), false, gko::allocation_mode::device, cu_dev.stream_compute());
 		//TODO: Maybe specify csr strategy
-		iq_result = gko::share(
-			gko::matrix::Dense<float>::create(ginkgo_executor, gko::dim<2>(iq::MATRIX_SIZE_Y * config::G_MAX_ACTIVE_BLOCK, 1))
-		);
-		iq_rhs = gko::share(
-			gko::matrix::Dense<float>::create(ginkgo_executor, gko::dim<2>(iq::MATRIX_SIZE_Y * config::G_MAX_ACTIVE_BLOCK, 1))
-		);
-		iq_lhs_rows = gko::array<int>(ginkgo_executor, iq::MATRIX_SIZE_Y * config::G_MAX_ACTIVE_BLOCK + 1);
-		iq_lhs_columns = gko::array<int>(ginkgo_executor, iq::MATRIX_SIZE_X * iq::MATRIX_SIZE_Y * config::G_MAX_ACTIVE_BLOCK);
-		iq_lhs_values = gko::array<float>(ginkgo_executor, iq::MATRIX_SIZE_X * iq::MATRIX_SIZE_Y * config::G_MAX_ACTIVE_BLOCK);
+		//Initially alloc for 32 blocks
+		iq_rhs_array = gko::array<float>(ginkgo_executor, iq::MATRIX_SIZE_Y * 32 * config::G_BLOCKVOLUME);
+		iq_result_array = gko::array<float>(ginkgo_executor, iq::MATRIX_SIZE_Y * 32 * config::G_BLOCKVOLUME);
+		iq_lhs_rows = gko::array<int>(ginkgo_executor, iq::MATRIX_SIZE_Y * 32 * config::G_BLOCKVOLUME + 1);
+		iq_lhs_columns = gko::array<int>(ginkgo_executor, iq::MATRIX_TOTAL_BLOCK_COUNT * 32 * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+		iq_lhs_values = gko::array<float>(ginkgo_executor,  iq::MATRIX_TOTAL_BLOCK_COUNT* 32 * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
 		
 		
 		//Create IQ-Solver
-		//TODO: Adjust parameters. Maybe copy from IQ-MPM paper. Add comments
 		{
 			const gko::remove_complex<float> tolerance = 1e-8f;
+			//Maximum 100 iterations
 			std::shared_ptr<gko::stop::Iteration::Factory> iter_stop = gko::share(
 				gko::stop::Iteration::build()
 				.with_max_iters(100u)
 				.on(ginkgo_executor)
 			);
+			
+			//Tolerance
 			std::shared_ptr<gko::stop::ResidualNorm<float>::Factory> tol_stop = gko::share(
 				gko::stop::ResidualNorm<float>::build()
-				.with_baseline(gko::stop::mode::absolute)
+				.with_baseline(gko::stop::mode::absolute)//Against residual norm
 				.with_reduction_factor(tolerance)
 				.on(ginkgo_executor)
 			);
+			
+			//Tolerance for coarse level solver
 			std::shared_ptr<gko::stop::ResidualNorm<float>::Factory> exact_tol_stop = gko::share(
 				gko::stop::ResidualNorm<float>::build()
-				.with_baseline(gko::stop::mode::rhs_norm)
+				.with_baseline(gko::stop::mode::rhs_norm)//Against residual norm / rhs norm
 				.with_reduction_factor(1e-14f)
 				.on(ginkgo_executor)
 			);
 
-			//Incomplete cholesky
+			//Incomplete cholesky for smoothing
+			//TODO: Maybe use different smoother
 			std::shared_ptr<gko::preconditioner::Ic<gko::solver::LowerTrs<float>>::Factory> ic_gen = gko::share(
 				gko::preconditioner::Ic<gko::solver::LowerTrs<float>>::build()
-				.with_factorization_factory(gko::factorization::Ic<float, int>::build().on(ginkgo_executor))
+				.with_factorization_factory(
+					gko::factorization::Ic<float, int>::build()
+					.with_skip_sorting(true) //We know that our matrix is sorted
+					.on(ginkgo_executor)
+				)
 				.on(ginkgo_executor)
 			);
 			
 			//Smoother
+			//TODO: Maybe other smoother or adjust params.
 			std::shared_ptr<gko::solver::Ir<float>::Factory> smoother_gen = gko::share(
-				gko::solver::build_smoother(ic_gen, 2u, static_cast<float>(0.9f))
+				gko::solver::build_smoother(ic_gen, 2u, static_cast<float>(0.9f))//Two iterations with relaxation factor 0.9
 			);
 			
+			//Use PGM for generating coarse levels (==amgcl::smoothed_aggregation?)
+			//TODO: Maybe somehow use neighbouring information of grid instead
 			std::shared_ptr<gko::multigrid::Pgm<float, int>::Factory> mg_level_gen = gko::share(
 				gko::multigrid::Pgm<float, int>::build()
-				.with_deterministic(true)
+				.with_max_iterations(15u)
+				.with_max_unassigned_ratio(0.05f)
+				.with_deterministic(true) //Ensure same result at different runs
+				.with_skip_sorting (true) //We know that our matrix is sorted
 				.on(ginkgo_executor)
 			);
 			
+			//Use CG for solving at coarsest level
+			//TODO: Maybe other solver
 			std::shared_ptr<gko::solver::Cg<float>::Factory> coarsest_gen = gko::share(
 				gko::solver::Cg<float>::build()
-				.with_preconditioner(ic_gen)
+				.with_preconditioner(ic_gen)//Using same solver for preconditioning as we use in smoother
 				.with_criteria(iter_stop, exact_tol_stop)
 				.on(ginkgo_executor)
 			);
 
+			//Default level_selector, smoother_selector
 			std::shared_ptr<gko::LinOpFactory> multigrid_gen = gko::solver::Multigrid::build()
-				.with_max_levels(10u)
-				.with_min_coarse_rows(32u)
+				.with_cycle(gko::solver::multigrid::cycle::w) //Use w-cycle
+				.with_max_levels(10u) //Max level count
+				.with_min_coarse_rows(static_cast<size_t>(config::G_BLOCKVOLUME)) //Minimum number of rows; Set to Blockvolum, otherwise nothing is solved if we have only one block
 				.with_pre_smoother(smoother_gen)
-				.with_post_uses_pre(true)
+				.with_post_uses_pre(true) //Use same smoother for pre and post smoothing
+				.with_mid_case(gko::solver::multigrid::mid_smooth_type::both) //Mid smoothing keeps original behaviour
 				.with_mg_level(mg_level_gen)
 				.with_coarsest_solver(coarsest_gen)
-				.with_default_initial_guess(gko::solver::initial_guess_mode::zero)
-				.with_criteria(gko::stop::Iteration::build().with_max_iters(1u).on(ginkgo_executor))
+				.with_default_initial_guess(gko::solver::initial_guess_mode::zero) //Zero as initial guess
+				.with_criteria(gko::stop::Iteration::build().with_max_iters(1u).on(ginkgo_executor))//Only one iteration for preconditioning
 				.on(ginkgo_executor)
 			;
 
 			// Create solver factory
 			iq_solver_factory = gko::share(
-				gko::solver::Cg<float>::build()
+				gko::solver::Bicgstab<float>::build()
 				.with_criteria(iter_stop, tol_stop)
 				.with_preconditioner(multigrid_gen)
 				.on(ginkgo_executor)
@@ -648,29 +665,36 @@ struct OasisSimulator {
 					
 					timer.tick();
 					
-					//Resize vectors
-					//iq_rhs->resize(iq::MATRIX_SIZE_Y * partition_block_count);
-					//iq_result->resize(iq::MATRIX_SIZE_Y * partition_block_count);
-					
 					for(int i = 0; i < solid_fluid_couplings.size(); ++i){
 						const int solid_id = solid_fluid_couplings[i][0];
 						const int fluid_id = solid_fluid_couplings[i][1];
 						
 						//Clear matrix and vectors
-						iq_rhs->fill(0.0f);
-						iq_result->fill(0.0f);
+						iq_rhs_array.resize_and_reset(iq::MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
+						iq_result_array.resize_and_reset(iq::MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
 						
-						iq_lhs_rows.resize_and_reset(iq::MATRIX_SIZE_Y * partition_block_count + 1);
-						iq_lhs_columns.resize_and_reset(iq::MATRIX_SIZE_Y * iq::MATRIX_SIZE_X * partition_block_count);
-						iq_lhs_values.resize_and_reset(iq::MATRIX_SIZE_Y * iq::MATRIX_SIZE_X * partition_block_count);
-						cu_dev.compute_launch({partition_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::clear_iq_system, static_cast<uint32_t>(partition_block_count), partitions[rollid], iq_lhs_rows.get_data(), iq_lhs_columns.get_data(), iq_lhs_values.get_data());
+						iq_lhs_rows.resize_and_reset(iq::MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1);
+						iq_lhs_columns.resize_and_reset(iq::MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						iq_lhs_values.resize_and_reset(iq::MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
 						
-						ginkgo_executor->synchronize();
+						//Init rows and columns
+						cu_dev.compute_launch({partition_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::clear_iq_system, static_cast<uint32_t>(partition_block_count), static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_lhs_rows.get_data(), iq_lhs_columns.get_data(), iq_lhs_values.get_data());
+						
+						//Set last row value == number nonzero elements
+						const int number_of_nonzeros = static_cast<int>(iq::MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						cudaMemcpyAsync((iq_lhs_rows.get_data() + iq::MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME), &number_of_nonzeros, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute());
+						
+						cu_dev.syncStream<streamIdx::COMPUTE>();
+						
+						//Fill empty space in row matrix
+						cu_dev.compute_launch({exterior_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::fill_empty_rows, static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_lhs_rows.get_data());
+						
+						cu_dev.syncStream<streamIdx::COMPUTE>();
 						
 						//IQ-System create
-						match(particle_bins[rollid][solid_id], particle_bins[rollid][fluid_id])([this, &cu_dev, &solid_id, &fluid_id](const auto& particle_buffer_solid, const auto& particle_buffer_fluid) {
-							cu_dev.compute_launch({partition_block_count, iq::BLOCK_SIZE}, iq::create_iq_system, static_cast<uint32_t>(partition_block_count), dt, particle_buffer_solid, particle_buffer_fluid, get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]), get<typename std::decay_t<decltype(particle_buffer_fluid)>>(particle_bins[(rollid + 1) % BIN_COUNT][fluid_id]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_lhs_rows.get_const_data(), iq_lhs_columns.get_const_data(), iq_lhs_values.get_data(), iq_rhs->get_values());
-						});
+						//match(particle_bins[rollid][solid_id], particle_bins[rollid][fluid_id])([this, &cu_dev, &solid_id, &fluid_id](const auto& particle_buffer_solid, const auto& particle_buffer_fluid) {
+						//	cu_dev.compute_launch({partition_block_count, iq::BLOCK_SIZE}, iq::create_iq_system, static_cast<uint32_t>(exterior_block_count), dt, particle_buffer_solid, particle_buffer_fluid, get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]), get<typename std::decay_t<decltype(particle_buffer_fluid)>>(particle_bins[(rollid + 1) % BIN_COUNT][fluid_id]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_lhs_rows.get_const_data(), iq_lhs_columns.get_const_data(), iq_lhs_values.get_data(), iq_rhs_array.get_data());
+						//});
 						
 						ginkgo_executor->synchronize();
 						
@@ -678,16 +702,57 @@ struct OasisSimulator {
 						const std::shared_ptr<const gko::matrix::Csr<float, int>> iq_lhs = gko::share(
 							gko::matrix::Csr<float, int>::create_const(
 								  ginkgo_executor
-								, gko::dim<2>(iq::MATRIX_SIZE_X * partition_block_count, iq::MATRIX_SIZE_Y * partition_block_count)
+								, gko::dim<2>(iq::MATRIX_SIZE_X * exterior_block_count * config::G_BLOCKVOLUME, iq::MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME)
 								, iq_lhs_values.as_const_view()
 								, iq_lhs_columns.as_const_view()
 								, iq_lhs_rows.as_const_view()
 							)
 						);
+						const std::shared_ptr<const gko::matrix::Dense<float>> iq_rhs = gko::share(
+							gko::matrix::Dense<float>::create_const(
+								  ginkgo_executor
+								, gko::dim<2>(iq::MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, 1)
+								, iq_rhs_array.as_const_view()
+								, 1
+							)
+						);
+						std::shared_ptr<gko::matrix::Dense<float>> iq_result = gko::share(
+							gko::matrix::Dense<float>::create(
+								  ginkgo_executor
+								, gko::dim<2>(iq::MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, 1)
+								, std::move(iq_result_array.as_view())
+								, 1
+							)
+						);
+						
+						std::vector<int> printout_tmp0(iq::MATRIX_SIZE_Y * partition_block_count * config::G_BLOCKVOLUME + 1);
+						std::vector<int> printout_tmp1(iq::MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						std::vector<float> printout_tmp2(iq::MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+
+						cudaMemcpyAsync(printout_tmp0.data(), iq_lhs->get_const_row_ptrs(), sizeof(int) * iq::MATRIX_SIZE_Y * partition_block_count * config::G_BLOCKVOLUME + 1, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp1.data(), iq_lhs->get_const_col_idxs(), sizeof(int) * iq::MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp2.data(), iq_lhs->get_const_values(), sizeof(float) * iq::MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK, cudaMemcpyDefault, cu_dev.stream_compute());
+						
+						cudaDeviceSynchronize();
+						/*
+						std::cout << std::endl;
+						for(size_t j = 0; j < iq::MATRIX_SIZE_Y * partition_block_count * config::G_BLOCKVOLUME + 1; ++j){
+							std::cout << printout_tmp0[j] << " ";
+						}
+						std::cout << std::endl;
+						for(size_t j = 0; j < iq::MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK; ++j){
+							std::cout << printout_tmp1[j] << " ";
+						}
+						std::cout << std::endl;
+						for(size_t j = 0; j < iq::MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK; ++j){
+							//std::cout << printout_tmp2[j] << " ";
+						}
+						//std::cout << std::endl;
+						*/
 						
 						//IQ-System solve
 						// Create solver
-						std::unique_ptr<gko::solver::Cg<float>> iq_solver = iq_solver_factory->generate(iq_lhs);
+						std::unique_ptr<gko::solver::Bicgstab<float>> iq_solver = iq_solver_factory->generate(iq_lhs);
 						ginkgo_executor->synchronize();
 
 						// Solve system
