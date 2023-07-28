@@ -8,20 +8,20 @@ namespace mn {
 //NOLINTBEGIN(readability-magic-numbers) Magic numbers are formula-specific
 /// assume p is already within kernel range [-1.5, 1.5]
 template <typename T, size_t Degree>
-constexpr vec<T, Degree + 1> bspline_weight(T p);
+constexpr std::array<T, Degree + 1> bspline_weight(T p);
 
 //Copied from IQ-MPM repro
 template<>
-constexpr vec<float, 1> bspline_weight<float, 0>(float p) 
+constexpr std::array<float, 1> bspline_weight<float, 0>(float p) 
 {
-	vec<float, 1> dw {1.0f};
+	std::array<float, 1> dw {1.0f};
 	return dw;
 }
 
 template<>
-constexpr vec<float, 2> bspline_weight<float, 1>(float p) 
+constexpr std::array<float, 2> bspline_weight<float, 1>(float p) 
 {
-	vec<float, 2> dw {0.0f, 0.0f};
+	std::array<float, 2> dw {0.0f, 0.0f};
 	float dx = p * config::G_DX_INV;///< normalized offset
 	
 	dw[0] = 1 - dx;
@@ -31,9 +31,9 @@ constexpr vec<float, 2> bspline_weight<float, 1>(float p)
 }
 
 template<>
-constexpr vec<float, 3> bspline_weight<float, 2>(float p) 
+constexpr std::array<float, 3> bspline_weight<float, 2>(float p) 
 {
-	vec<float, 3> dw {0.0f, 0.0f, 0.0f};
+	std::array<float, 3> dw {0.0f, 0.0f, 0.0f};
 	float d0 = p * config::G_DX_INV;///< normalized offset
 	
 	float z = 1.5f - d0;
@@ -50,9 +50,9 @@ constexpr vec<float, 3> bspline_weight<float, 2>(float p)
 }
 
 template<>
-constexpr vec<float, 4> bspline_weight<float, 3>(float p) 
+constexpr std::array<float, 4> bspline_weight<float, 3>(float p) 
 {
-	vec<float, 4> dw {0.0f, 0.0f, 0.0f, 0.0f};
+	std::array<float, 4> dw {0.0f, 0.0f, 0.0f, 0.0f};
 	float d0 = p * config::G_DX_INV;///< normalized offset
 
 	float z = 2.0f - d0;
@@ -76,13 +76,13 @@ constexpr vec<float, 4> bspline_weight<float, 3>(float p)
 //NOLINTBEGIN(readability-magic-numbers) Magic numbers are formula-specific
 /// assume p is already within kernel range [-1.5, 1.5]
 template <typename T, size_t Degree>
-constexpr vec<T, Degree + 1> bspline_gradient_weight(T p);
+constexpr std::array<T, Degree + 1> bspline_gradient_weight(T p);
 
 //Copied from IQ-MPM repro
 template<>
-constexpr vec<float, 2> bspline_gradient_weight<float, 1>(float p) 
+constexpr std::array<float, 2> bspline_gradient_weight<float, 1>(float p) 
 {
-	vec<float, 2> dw {0.0f, 0.0f};
+	std::array<float, 2> dw {0.0f, 0.0f};
 	float dx = p * config::G_DX_INV;///< normalized offset
 	
 	dw[0] = -1.0;
@@ -92,9 +92,9 @@ constexpr vec<float, 2> bspline_gradient_weight<float, 1>(float p)
 }
 
 template<>
-constexpr vec<float, 3> bspline_gradient_weight<float, 2>(float p) 
+constexpr std::array<float, 3> bspline_gradient_weight<float, 2>(float p) 
 {
-	vec<float, 3> dw {0.0f, 0.0f, 0.0f};
+	std::array<float, 3> dw {0.0f, 0.0f, 0.0f};
 	float d0 = p * config::G_DX_INV;///< normalized offset
 	
 	float z = 1.5f - d0;
@@ -109,9 +109,9 @@ constexpr vec<float, 3> bspline_gradient_weight<float, 2>(float p)
 }
 
 template<>
-constexpr vec<float, 4> bspline_gradient_weight<float, 3>(float p) 
+constexpr std::array<float, 4> bspline_gradient_weight<float, 3>(float p) 
 {
-	vec<float, 4> dw {0.0f, 0.0f, 0.0f, 0.0f};
+	std::array<float, 4> dw {0.0f, 0.0f, 0.0f, 0.0f};
 	float d0 = p * config::G_DX_INV;///< normalized offset
 
 	float z = 2.0f - d0;
@@ -128,8 +128,14 @@ constexpr vec<float, 4> bspline_gradient_weight<float, 3>(float p)
 	return dw;
 }
 
+template <size_t Degree, typename std::enable_if<(Degree <= 1), bool>::type = true>
 constexpr ivec3 get_cell_id(const std::array<float, 3>& position, const std::array<float, 3>& relative_offset) {
-	return ivec3(static_cast<int>(std::lround(position[0] * config::G_DX_INV - relative_offset[0] * config::G_BLOCKSIZE)), static_cast<int>(std::lround(position[1] * config::G_DX_INV - relative_offset[1] * config::G_BLOCKSIZE)), static_cast<int>(std::lround(position[2] * config::G_DX_INV - relative_offset[2] * config::G_BLOCKSIZE)));
+	return ivec3(static_cast<int>(std::floor(position[0] * config::G_DX_INV - relative_offset[0] * config::G_BLOCKSIZE)), static_cast<int>(std::floor(position[1] * config::G_DX_INV - relative_offset[1] * config::G_BLOCKSIZE)), static_cast<int>(std::floor(position[2] * config::G_DX_INV - relative_offset[2] * config::G_BLOCKSIZE)));
+}
+
+template <size_t Degree, typename std::enable_if<(Degree > 1), bool>::type = true>
+constexpr ivec3 get_cell_id(const std::array<float, 3>& position, const std::array<float, 3>& relative_offset) {
+	return ivec3(static_cast<int>(std::floor(position[0] * config::G_DX_INV - relative_offset[0] * config::G_BLOCKSIZE - 0.5f * (Degree - 1))), static_cast<int>(std::floor(position[1] * config::G_DX_INV - relative_offset[1] * config::G_BLOCKSIZE - 0.5f * (Degree - 1))), static_cast<int>(std::floor(position[2] * config::G_DX_INV - relative_offset[2] * config::G_BLOCKSIZE - 0.5f * (Degree - 1))));
 }
 
 constexpr int dir_offset(const std::array<int, 3>& d) {

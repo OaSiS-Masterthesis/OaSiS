@@ -25,23 +25,38 @@ constexpr size_t INTERPOLATION_DEGREE_INTERFACE_PRESSURE = 0;
 constexpr size_t INTERPOLATION_DEGREE_MAX = std::max(std::max(std::max(INTERPOLATION_DEGREE_SOLID_VELOCITY, INTERPOLATION_DEGREE_SOLID_PRESSURE), std::max(INTERPOLATION_DEGREE_FLUID_VELOCITY, INTERPOLATION_DEGREE_FLUID_PRESSURE)), INTERPOLATION_DEGREE_INTERFACE_PRESSURE);
 
 //Matrix layout
-constexpr size_t NUM_ROWS_PER_BLOCK = config::G_BLOCKVOLUME;
+constexpr size_t LHS_NUM_ROWS_PER_BLOCK = config::G_BLOCKVOLUME;
 constexpr size_t NUM_COLUMNS_PER_BLOCK = (2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1);
-constexpr size_t MATRIX_SIZE_Y = 4;
-constexpr size_t MATRIX_SIZE_X = 4;
+constexpr size_t LHS_MATRIX_SIZE_Y = 4;
+constexpr size_t LHS_MATRIX_SIZE_X = 4;
 
-constexpr size_t MATRIX_TOTAL_BLOCK_COUNT = 12;
-__device__ const std::array<size_t, MATRIX_SIZE_Y> num_blocks_per_row = {
+constexpr size_t LHS_MATRIX_TOTAL_BLOCK_COUNT = 12;
+__device__ const std::array<size_t, LHS_MATRIX_SIZE_Y> lhs_num_blocks_per_row = {
 	  2
 	, 3
 	, 3
 	, 4
 };
-__device__ const std::array<std::array<size_t, MATRIX_SIZE_X>, MATRIX_SIZE_Y> block_offsets_per_row = {{
+__device__ const std::array<std::array<size_t, LHS_MATRIX_SIZE_X>, LHS_MATRIX_SIZE_Y> lhs_block_offsets_per_row = {{
 	  {0, 3, std::numeric_limits<size_t>::max(), std::numeric_limits<size_t>::max()}
 	, {1, 2, 3, std::numeric_limits<size_t>::max()}
 	, {1, 2, 3, std::numeric_limits<size_t>::max()}
 	, {0, 1, 2, 3}
+}};
+
+constexpr size_t SOLVE_VELOCITY_NUM_ROWS_PER_BLOCK = 3 * config::G_BLOCKVOLUME;
+
+constexpr size_t SOLVE_VELOCITY_MATRIX_SIZE_Y = 2;
+constexpr size_t SOLVE_VELOCITY_MATRIX_SIZE_X = 4;
+
+constexpr size_t SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT = 5;
+__device__ const std::array<size_t, SOLVE_VELOCITY_MATRIX_SIZE_Y> solve_velocity_num_blocks_per_row = {
+	  2
+	, 3
+};
+__device__ const std::array<std::array<size_t, SOLVE_VELOCITY_MATRIX_SIZE_X>, SOLVE_VELOCITY_MATRIX_SIZE_Y> solve_velocity_block_offsets_per_row = {{
+	  {0, 3, std::numeric_limits<size_t>::max(), std::numeric_limits<size_t>::max()}
+	, {1, 2, 3, std::numeric_limits<size_t>::max()}
 }};
 
 //FIXME: If INTERPOLATION_DEGREE_MAX is too big neighbour blocks were not activated
@@ -68,58 +83,29 @@ constexpr size_t get_global_index(const size_t thread_id, const size_t offset){
 	return offset * BLOCK_SIZE + thread_id;
 }
 
-template<typename T, size_t BLOCK_SIZE, size_t ITEMS_PER_THREAD>
-__forceinline__ __device__ void spread_data(T (&data)[ITEMS_PER_THREAD]){
-	constexpr size_t DATA_SIZE = BLOCK_SIZE * ITEMS_PER_THREAD;
-	__shared__ T shmem[DATA_SIZE];
-	
-	for(size_t i = 0; i < ITEMS_PER_THREAD; ++i){
-		shmem[threadIdx.x * ITEMS_PER_THREAD + i] = data[i];
-	}
-	__syncthreads();
-	for(size_t i = 0; i < ITEMS_PER_THREAD; ++i){
-		data[i] = shmem[alpha_shapes_get_global_index<ALPHA_SHAPES_BLOCK_SIZE, ITEMS_PER_THREAD>(threadIdx.x, i)];
-	}
-}
-
-template<typename T>
-__forceinline__ __device__ void add_up_shared(T& data, const T init){
-	__shared__ T tmp;
-	
-	if(threadIdx.x == 0){
-		tmp = init;
-	}
-	
-	atomicAdd(&tmp, data);
-	
-	__syncthreads();
-	
-	data = tmp;
-}
-
 //TODO: Maybe activate on cell level (but data is on block level); Maybe recheck that blocks are not empty
-template<typename Partition>
-__global__ void clear_iq_system(const uint32_t num_active_blocks, const uint32_t num_blocks, const Partition partition, int* iq_lhs_rows, int* iq_lhs_columns, float* iq_lhs_values) {
+template<size_t MatrixSizeX, size_t MatrixSizeY, size_t NumRowsPerBlock, typename Partition>
+__global__ void clear_iq_system(const size_t* lhs_num_blocks_per_row, const std::array<size_t, MatrixSizeX>* lhs_block_offsets_per_row, const uint32_t num_active_blocks, const uint32_t num_blocks, const Partition partition, int* iq_lhs_rows, int* iq_lhs_columns, float* iq_lhs_values) {
 	//const int src_blockno		   = static_cast<int>(blockIdx.x);
 	const auto blockid			   = partition.active_keys[blockIdx.x];
 	
 	//Handle own rows and add column data for all neighbour cells of each cell (fixed amount)
 	//We can calculate the offset in the column array by our id and the amount of neighbour cells (=columns)
-	const size_t base_row = NUM_ROWS_PER_BLOCK * blockIdx.x;
+	const size_t base_row = NumRowsPerBlock * blockIdx.x;
 	
 	//Accumulate blocks per row
-	std::array<size_t, MATRIX_SIZE_Y> accumulated_blocks_per_row;
+	std::array<size_t, MatrixSizeY> accumulated_blocks_per_row;
 	accumulated_blocks_per_row[0] = 0;
-	for(size_t i = 1; i < MATRIX_SIZE_Y; ++i){
-		accumulated_blocks_per_row[i] = accumulated_blocks_per_row[i - 1] + num_blocks_per_row[i - 1];
+	for(size_t i = 1; i < MatrixSizeY; ++i){
+		accumulated_blocks_per_row[i] = accumulated_blocks_per_row[i - 1] + lhs_num_blocks_per_row[i - 1];
 	}
 	
 	//Fill matrix
-	for(size_t row = static_cast<int>(threadIdx.x); row < NUM_ROWS_PER_BLOCK; row += static_cast<int>(blockDim.x)){
+	for(size_t row = static_cast<int>(threadIdx.x); row < NumRowsPerBlock; row += static_cast<int>(blockDim.x)){
 		const ivec3 cellid = blockid * static_cast<int>(config::G_BLOCKSIZE) + ivec3((static_cast<int>(row) / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE, (static_cast<int>(row) / config::G_BLOCKSIZE) % config::G_BLOCKSIZE, static_cast<int>(row) % config::G_BLOCKSIZE);
 		
-		for(size_t row_offset = 0; row_offset < MATRIX_SIZE_Y; ++row_offset){
-			iq_lhs_rows[row_offset * NUM_ROWS_PER_BLOCK * num_blocks + base_row + row] = accumulated_blocks_per_row[row_offset] * NUM_ROWS_PER_BLOCK * num_active_blocks * NUM_COLUMNS_PER_BLOCK + num_blocks_per_row[row_offset] * (base_row + row) * NUM_COLUMNS_PER_BLOCK;
+		for(size_t row_offset = 0; row_offset < MatrixSizeY; ++row_offset){
+			iq_lhs_rows[row_offset * NumRowsPerBlock * num_blocks + base_row + row] = accumulated_blocks_per_row[row_offset] * NumRowsPerBlock * num_active_blocks * NUM_COLUMNS_PER_BLOCK + lhs_num_blocks_per_row[row_offset] * (base_row + row) * NUM_COLUMNS_PER_BLOCK;
 		}
 		
 		int neighbour_cellnos[NUM_COLUMNS_PER_BLOCK];
@@ -132,7 +118,7 @@ __global__ void clear_iq_system(const uint32_t num_active_blocks, const uint32_t
 			const ivec3 neighbour_celloffset = neighbour_cellid - neighbour_base_cellid;
 			
 			const int neighbour_blockno = partition.query(neighbour_blockid);
-			const int neighbour_cellno = NUM_ROWS_PER_BLOCK * neighbour_blockno + 9 * neighbour_celloffset[0] + 3 * neighbour_celloffset[1] + neighbour_celloffset[2];
+			const int neighbour_cellno = NumRowsPerBlock * neighbour_blockno + (config::G_BLOCKSIZE * config::G_BLOCKSIZE) * neighbour_celloffset[0] + config::G_BLOCKSIZE * neighbour_celloffset[1] + neighbour_celloffset[2];
 			
 			neighbour_cellnos[column] = neighbour_cellno;
 		}
@@ -141,41 +127,41 @@ __global__ void clear_iq_system(const uint32_t num_active_blocks, const uint32_t
 		thrust::sort(thrust::seq, neighbour_cellnos, neighbour_cellnos + NUM_COLUMNS_PER_BLOCK);
 		
 		for(size_t column = 0; column < NUM_COLUMNS_PER_BLOCK; ++column){
-			for(size_t row_offset = 0; row_offset < MATRIX_SIZE_Y; ++row_offset){
-				for(size_t column_offset_index = 0; column_offset_index < num_blocks_per_row[row_offset]; ++column_offset_index){
-					iq_lhs_columns[iq_lhs_rows[row_offset * NUM_ROWS_PER_BLOCK * num_blocks + base_row + row] + column_offset_index * NUM_COLUMNS_PER_BLOCK + column] = block_offsets_per_row[row_offset][column_offset_index] * num_blocks * NUM_ROWS_PER_BLOCK + neighbour_cellnos[column];
-					iq_lhs_values[iq_lhs_rows[row_offset * NUM_ROWS_PER_BLOCK * num_blocks + base_row + row] + column_offset_index * NUM_COLUMNS_PER_BLOCK + column] = 0.0f;
+			for(size_t row_offset = 0; row_offset < MatrixSizeY; ++row_offset){
+				for(size_t column_offset_index = 0; column_offset_index < lhs_num_blocks_per_row[row_offset]; ++column_offset_index){
+					iq_lhs_columns[iq_lhs_rows[row_offset * NumRowsPerBlock * num_blocks + base_row + row] + column_offset_index * NUM_COLUMNS_PER_BLOCK + column] = lhs_block_offsets_per_row[row_offset][column_offset_index] * num_blocks * NumRowsPerBlock + neighbour_cellnos[column];
+					iq_lhs_values[iq_lhs_rows[row_offset * NumRowsPerBlock * num_blocks + base_row + row] + column_offset_index * NUM_COLUMNS_PER_BLOCK + column] = 0.0f;
 				}
 			}
 		}
 	}
 }
 
-template<typename Partition>
+template<size_t NumRowsPerBlock, typename Partition>
 __global__ void fill_empty_rows(const uint32_t num_blocks, const Partition partition, int* iq_lhs_rows) {
 	//const int src_blockno		   = static_cast<int>(blockIdx.x);
 	const auto blockid			   = partition.active_keys[blockIdx.x];
 	
 	//Handle own rows and add column data for all neighbour cells of each cell (fixed amount)
 	//We can calculate the offset in the column array by our id and the amount of neighbour cells (=columns)
-	const size_t base_row = NUM_ROWS_PER_BLOCK * blockIdx.x;
+	const size_t base_row = NumRowsPerBlock * blockIdx.x;
 	
 	//Fill empty rows
-	for(size_t row = static_cast<int>(threadIdx.x); row < NUM_ROWS_PER_BLOCK; row += static_cast<int>(blockDim.x)){
+	for(size_t row = static_cast<int>(threadIdx.x); row < NumRowsPerBlock; row += static_cast<int>(blockDim.x)){
 		const ivec3 cellid = blockid * static_cast<int>(config::G_BLOCKSIZE) + ivec3((static_cast<int>(row) / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE, (static_cast<int>(row) / config::G_BLOCKSIZE) % config::G_BLOCKSIZE, static_cast<int>(row) % config::G_BLOCKSIZE);
 
 		//TODO: Use more efficient way, like maybe binary search
 		int next_active_base_row;
 		int next_active_row;
-		for(int next_row_offset = 0; (base_row + row + next_row_offset) < (NUM_ROWS_PER_BLOCK * num_blocks + 1); ++next_row_offset){
+		for(int next_row_offset = 0; (base_row + row + next_row_offset) < (NumRowsPerBlock * num_blocks + 1); ++next_row_offset){
 			if(iq_lhs_rows[base_row + row + next_row_offset] != 0){
-				next_active_base_row = (base_row + row + next_row_offset) / NUM_ROWS_PER_BLOCK;
-				next_active_row = (base_row + row + next_row_offset) % NUM_ROWS_PER_BLOCK;
+				next_active_base_row = (base_row + row + next_row_offset) / NumRowsPerBlock;
+				next_active_row = (base_row + row + next_row_offset) % NumRowsPerBlock;
 			}
 		}
 
-		for(size_t row_offset = 0; row_offset < MATRIX_SIZE_Y; ++row_offset){
-			iq_lhs_rows[row_offset * NUM_ROWS_PER_BLOCK * num_blocks + base_row + row] = iq_lhs_rows[row_offset * NUM_ROWS_PER_BLOCK * num_blocks + next_active_base_row + next_active_row];
+		for(size_t row_offset = 0; row_offset < LHS_MATRIX_SIZE_Y; ++row_offset){
+			iq_lhs_rows[row_offset * NumRowsPerBlock * num_blocks + base_row + row] = iq_lhs_rows[row_offset * NumRowsPerBlock * num_blocks + next_active_base_row + next_active_row];
 		}
 	}
 }
@@ -341,11 +327,13 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 	//float J	 = fetch_particle_buffer_tmp.J;
 	
 	//Get position of grid cell
-	const ivec3 global_base_index_solid = get_cell_id(pos.data_arr(), grid_solid.get_offset()) - 1;
-	
+	const ivec3 global_base_index_solid_0 = get_cell_id<0>(pos.data_arr(), grid_solid.get_offset());
+	const ivec3 global_base_index_solid_2 = get_cell_id<2>(pos.data_arr(), grid_solid.get_offset());
+
 	//Get position relative to grid cell
-	const vec3 local_pos_solid = pos - (global_base_index_solid + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
-	
+	const vec3 local_pos_solid_0 = pos - (global_base_index_solid_0 + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
+	const vec3 local_pos_solid_2 = pos - (global_base_index_solid_2 + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
+
 	//Calculate weights
 	vec3x3 weight_solid_0;
 	vec3x3 weight_solid_2;
@@ -353,7 +341,7 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 	
 	#pragma unroll 3
 	for(int dd = 0; dd < 3; ++dd) {
-		const vec<float, INTERPOLATION_DEGREE_SOLID_PRESSURE + 1> current_weight_solid_0 = bspline_weight<float, INTERPOLATION_DEGREE_SOLID_PRESSURE>(local_pos_solid[dd]);
+		const std::array<float, INTERPOLATION_DEGREE_SOLID_PRESSURE + 1> current_weight_solid_0 = bspline_weight<float, INTERPOLATION_DEGREE_SOLID_PRESSURE>(local_pos_solid_0[dd]);
 		for(int i = 0; i < INTERPOLATION_DEGREE_SOLID_PRESSURE + 1; ++i){
 			weight_solid_0(dd, i)		  = current_weight_solid_0[i];
 		}
@@ -361,7 +349,7 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 			weight_solid_0(dd, i)		  = 0.0f;
 		}
 		
-		const vec<float, INTERPOLATION_DEGREE_SOLID_VELOCITY + 1> current_weight_solid_2 = bspline_weight<float, INTERPOLATION_DEGREE_SOLID_VELOCITY>(local_pos_solid[dd]);
+		const std::array<float, INTERPOLATION_DEGREE_SOLID_VELOCITY + 1> current_weight_solid_2 = bspline_weight<float, INTERPOLATION_DEGREE_SOLID_VELOCITY>(local_pos_solid_2[dd]);
 		for(int i = 0; i < INTERPOLATION_DEGREE_SOLID_VELOCITY + 1; ++i){
 			weight_solid_2(dd, i)		  = current_weight_solid_2[i];
 		}
@@ -369,7 +357,7 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 			weight_solid_2(dd, i)		  = 0.0f;
 		}
 		
-		const vec<float, INTERPOLATION_DEGREE_SOLID_VELOCITY + 1> current_gradient_weight_solid_2 = bspline_gradient_weight<float, INTERPOLATION_DEGREE_SOLID_VELOCITY>(local_pos_solid[dd]);
+		const std::array<float, INTERPOLATION_DEGREE_SOLID_VELOCITY + 1> current_gradient_weight_solid_2 = bspline_gradient_weight<float, INTERPOLATION_DEGREE_SOLID_VELOCITY>(local_pos_solid_2[dd]);
 		for(int i = 0; i < INTERPOLATION_DEGREE_SOLID_VELOCITY + 1; ++i){
 			gradient_weight_solid_2(dd, i)		  = current_gradient_weight_solid_2[i];
 		}
@@ -384,7 +372,7 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 	for(char i = -static_cast<char>(INTERPOLATION_DEGREE_MAX); i < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; i++) {
 		for(char j = -static_cast<char>(INTERPOLATION_DEGREE_MAX); j < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; j++) {
 			for(char k = -static_cast<char>(INTERPOLATION_DEGREE_MAX); k < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; k++) {
-				const ivec3 local_id = (global_base_index_solid - block_cellid) + ivec3(i, j, k);
+				const ivec3 local_id = (global_base_index_solid_2 - block_cellid) + ivec3(i, j, k);
 				//Only handle for nodes in current block
 				if(
 					   (local_id[0] >= 0 && local_id[0] < config::G_BLOCKSIZE)
@@ -392,39 +380,45 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 					&& (local_id[2] >= 0 && local_id[2] < config::G_BLOCKSIZE)
 				){
 					//Weight
-					const float W_0 = weight_solid_0(0, i) * weight_solid_0(1, j) * weight_solid_0(2, k);
-					const float W_2 = weight_solid_2(0, i) * weight_solid_2(1, j) * weight_solid_2(2, k);
+					const float W_0 = weight_solid_0(0, std::abs(i)) * weight_solid_0(1, std::abs(j)) * weight_solid_0(2, std::abs(k));
+					const float W_2 = weight_solid_2(0, std::abs(i)) * weight_solid_2(1, std::abs(j)) * weight_solid_2(2, std::abs(k));
 					
-					float* current_scaling_solid = (scaling_solid == nullptr ? nullptr : &(scaling_solid[9 * local_id[0] + 3 * local_id[1] * local_id[2]]));
-					float* current_pressure_solid_nominator = (pressure_solid_nominator == nullptr ? nullptr : &(pressure_solid_nominator[9 * local_id[0] + 3 * local_id[1] * local_id[2]]));
-					float* current_pressure_solid_denominator = (pressure_solid_denominator == nullptr ? nullptr : &(pressure_solid_denominator[9 * local_id[0] + 3 * local_id[1] * local_id[2]]));
+					float* current_scaling_solid = (scaling_solid == nullptr ? nullptr : &(scaling_solid[(config::G_BLOCKSIZE * config::G_BLOCKSIZE) * local_id[0] + config::G_BLOCKSIZE * local_id[1] + local_id[2]]));
+					float* current_pressure_solid_nominator = (pressure_solid_nominator == nullptr ? nullptr : &(pressure_solid_nominator[(config::G_BLOCKSIZE * config::G_BLOCKSIZE) * local_id[0] + config::G_BLOCKSIZE * local_id[1] + local_id[2]]));
+					float* current_pressure_solid_denominator = (pressure_solid_denominator == nullptr ? nullptr : &(pressure_solid_denominator[(config::G_BLOCKSIZE * config::G_BLOCKSIZE) * local_id[0] + config::G_BLOCKSIZE * local_id[1] + local_id[2]]));
 					
 					store_data_solid(particle_buffer_solid, current_scaling_solid, current_pressure_solid_nominator, current_pressure_solid_denominator, W_0, W_2, fetch_particle_buffer_tmp);
 						
 					for(size_t alpha = 0; alpha < 3; ++alpha){
-						const float delta_w_2 = ((alpha == 0 ? gradient_weight_solid_2(0, i) : weight_solid_2(0, i)) * (alpha == 1 ? gradient_weight_solid_2(1, j) : weight_solid_2(1, j)) * (alpha == 2 ? gradient_weight_solid_2(2, k) : weight_solid_2(2, k))) * config::G_DX_INV;
+						const float delta_w_2 = ((alpha == 0 ? gradient_weight_solid_2(0, std::abs(i)) : weight_solid_2(0, std::abs(i))) * (alpha == 1 ? gradient_weight_solid_2(1, std::abs(j)) : weight_solid_2(1, std::abs(j))) * (alpha == 2 ? gradient_weight_solid_2(2, std::abs(k)) : weight_solid_2(2, std::abs(k)))) * config::G_DX_INV;
 						
 						if(mass_solid != nullptr){
-							atomicAdd(&(mass_solid[27 * local_id[0] + 9 * local_id[1] + 3 * local_id[2] + alpha]), mass * W_2);
+							atomicAdd(&(mass_solid[(3 * config::G_BLOCKSIZE * config::G_BLOCKSIZE) * local_id[0] + (3 * config::G_BLOCKSIZE) * local_id[1] + 3 * local_id[2] + alpha]), mass * W_2);
 						}
 						
 						//Handle all neighbours
 						for(char i1 = -static_cast<char>(INTERPOLATION_DEGREE_MAX); i1 < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; i1++) {
 							for(char j1 = -static_cast<char>(INTERPOLATION_DEGREE_MAX); j1 < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; j1++) {
 								for(char k1 = -static_cast<char>(INTERPOLATION_DEGREE_MAX); k1 < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; k1++) {
-									const ivec3 neighbour_local_id = (global_base_index_solid - block_cellid) + ivec3(i1, j1, k1);
-									const ivec3 neighbour_relative_local_id = (neighbour_local_id - local_id);
-									const ivec3 neighbour_offset_local_id = neighbour_relative_local_id + ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));
+									const ivec3 neighbour_local_offset {i1, j1, k1};
+									const ivec3 neighbour_kernel_offset = ivec3(i, j, k) + neighbour_local_offset;
+									const ivec3 neighbour_absolute_kernel_offset {std::abs(i1), std::abs(j1), std::abs(k1)};
+									const ivec3 neighbour_absolute_local_offset = neighbour_local_offset + ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));
 									
-									const int column = neighbour_offset_local_id[0] * ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1)) + neighbour_offset_local_id[1] * (2 * INTERPOLATION_DEGREE_MAX + 1) + neighbour_offset_local_id[2];
+									const int column = neighbour_absolute_local_offset[0] * ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1)) + neighbour_absolute_local_offset[1] * (2 * INTERPOLATION_DEGREE_MAX + 1) + neighbour_absolute_local_offset[2];
 									//Only handle for neighbours of neighbour
 									if(
-										   column_start >= column_start && column < column_end
+										   (column >= column_start && column < column_end)
+										&& (neighbour_absolute_kernel_offset[0] < INTERPOLATION_DEGREE_MAX)
+										&& (neighbour_absolute_kernel_offset[1] < INTERPOLATION_DEGREE_MAX)
+										&& (neighbour_absolute_kernel_offset[2] < INTERPOLATION_DEGREE_MAX)
 									){
-										const float W1_0 = weight_solid_0(0, i1) * weight_solid_0(1, j1) * weight_solid_0(2, k1);
+										const int local_column = column - column_start;
 										
-										float* current_gradient_solid = (gradient_solid == nullptr ? nullptr : &(gradient_solid[(3 * 3 * 3 * column_range) * local_id[0] + (3 * 3 * column_range) * local_id[1] + (3 * column_range) * local_id[2] + 3 * column + alpha]));
+										const float W1_0 = weight_solid_0(0, neighbour_absolute_kernel_offset[0]) * weight_solid_0(1, neighbour_absolute_kernel_offset[1]) * weight_solid_0(2, neighbour_absolute_kernel_offset[2]);
 										
+										float* current_gradient_solid = (gradient_solid == nullptr ? nullptr : &(gradient_solid[(3 * config::G_BLOCKSIZE * config::G_BLOCKSIZE * column_range) * local_id[0] + (3 * config::G_BLOCKSIZE * column_range) * local_id[1] + (3 * column_range) * local_id[2] + 3 * local_column + alpha]));
+
 										store_data_neigbours_solid(particle_buffer_solid, current_gradient_solid, W1_0, delta_w_2, fetch_particle_buffer_tmp);
 									}
 								}
@@ -470,13 +464,14 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 	//float J	 = fetch_particle_buffer_tmp.J;
 	
 	//Get position of grid cell
-	const ivec3 global_base_index_solid = get_cell_id(pos.data_arr(), grid_solid.get_offset()) - 1;
-	const ivec3 global_base_index_fluid = get_cell_id(pos.data_arr(), grid_fluid.get_offset()) - 1;
+	const ivec3 global_base_index_solid_0 = get_cell_id<0>(pos.data_arr(), grid_solid.get_offset());
+	const ivec3 global_base_index_fluid_0 = get_cell_id<0>(pos.data_arr(), grid_fluid.get_offset());
+	const ivec3 global_base_index_fluid_1 = get_cell_id<1>(pos.data_arr(), grid_fluid.get_offset());
+	const ivec3 global_base_index_fluid_2 = get_cell_id<2>(pos.data_arr(), grid_fluid.get_offset());
 
 	//Get position relative to grid cell
-	const vec3 local_pos_solid = pos - (global_base_index_solid + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
-	const vec3 local_pos_fluid = pos - (global_base_index_fluid + vec3(grid_fluid.get_offset()[0], grid_fluid.get_offset()[1], grid_fluid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
-	
+	const vec3 local_pos_solid_0 = pos - (global_base_index_solid_0 + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
+	const vec3 local_pos_fluid_1 = pos - (global_base_index_fluid_1 + vec3(grid_fluid.get_offset()[0], grid_fluid.get_offset()[1], grid_fluid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
 
 	//Calculate weights
 	vec3x3 weight_solid_0;
@@ -485,7 +480,7 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 	
 	#pragma unroll 3
 	for(int dd = 0; dd < 3; ++dd) {
-		const vec<float, INTERPOLATION_DEGREE_FLUID_PRESSURE + 1> current_weight_solid_0 = bspline_weight<float, INTERPOLATION_DEGREE_FLUID_PRESSURE>(local_pos_solid[dd]);
+		const std::array<float, INTERPOLATION_DEGREE_FLUID_PRESSURE + 1> current_weight_solid_0 = bspline_weight<float, INTERPOLATION_DEGREE_FLUID_PRESSURE>(local_pos_solid_0[dd]);
 		for(int i = 0; i < INTERPOLATION_DEGREE_FLUID_PRESSURE + 1; ++i){
 			weight_solid_0(dd, i)		  = current_weight_solid_0[i];
 		}
@@ -493,7 +488,7 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 			weight_solid_0(dd, i)		  = 0.0f;
 		}
 		
-		const vec<float, INTERPOLATION_DEGREE_FLUID_VELOCITY + 1> current_weight_fluid_1 = bspline_weight<float, INTERPOLATION_DEGREE_FLUID_VELOCITY>(local_pos_fluid[dd]);
+		const std::array<float, INTERPOLATION_DEGREE_FLUID_VELOCITY + 1> current_weight_fluid_1 = bspline_weight<float, INTERPOLATION_DEGREE_FLUID_VELOCITY>(local_pos_fluid_1[dd]);
 		for(int i = 0; i < INTERPOLATION_DEGREE_FLUID_VELOCITY + 1; ++i){
 			weight_fluid_1(dd, i)		  = current_weight_fluid_1[i];
 		}
@@ -501,7 +496,7 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 			weight_fluid_1(dd, i)		  = 0.0f;
 		}
 		
-		const vec<float, INTERPOLATION_DEGREE_FLUID_VELOCITY + 1> current_gradient_weight_fluid_1 = bspline_gradient_weight<float, INTERPOLATION_DEGREE_FLUID_VELOCITY>(local_pos_fluid[dd]);
+		const std::array<float, INTERPOLATION_DEGREE_FLUID_VELOCITY + 1> current_gradient_weight_fluid_1 = bspline_gradient_weight<float, INTERPOLATION_DEGREE_FLUID_VELOCITY>(local_pos_fluid_1[dd]);
 		for(int i = 0; i < INTERPOLATION_DEGREE_FLUID_VELOCITY + 1; ++i){
 			gradient_weight_fluid_1(dd, i)		  = current_gradient_weight_fluid_1[i];
 		}
@@ -516,7 +511,7 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 	for(char i = -static_cast<char>(INTERPOLATION_DEGREE_MAX); i < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; i++) {
 		for(char j = -static_cast<char>(INTERPOLATION_DEGREE_MAX); j < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; j++) {
 			for(char k = -static_cast<char>(INTERPOLATION_DEGREE_MAX); k < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; k++) {
-				const ivec3 local_id = (global_base_index_solid - block_cellid) + ivec3(i, j, k);
+				const ivec3 local_id = (global_base_index_fluid_2 - block_cellid) + ivec3(i, j, k);
 				//Only handle for nodes in current block
 				if(
 					   (local_id[0] >= 0 && local_id[0] < config::G_BLOCKSIZE)
@@ -524,34 +519,40 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 					&& (local_id[2] >= 0 && local_id[2] < config::G_BLOCKSIZE)
 				){
 					//Weight
-					const float W_1 = weight_fluid_1(0, i) * weight_fluid_1(1, j) * weight_fluid_1(2, k);
+					const float W_1 = weight_fluid_1(0, std::abs(i)) * weight_fluid_1(1, std::abs(j)) * weight_fluid_1(2, std::abs(k));
 					
 					store_data_fluid(particle_buffer_fluid, fetch_particle_buffer_tmp);
 						
 					for(size_t alpha = 0; alpha < 3; ++alpha){
-						const float delta_w_1 = ((alpha == 0 ? gradient_weight_fluid_1(0, i) : weight_fluid_1(0, i)) * (alpha == 1 ? gradient_weight_fluid_1(1, j) : weight_fluid_1(1, j)) * (alpha == 2 ? gradient_weight_fluid_1(2, k) : weight_fluid_1(2, k))) * config::G_DX_INV;
-					
+						const float delta_w_1 = ((alpha == 0 ? gradient_weight_fluid_1(0, std::abs(i)) : weight_fluid_1(0, std::abs(i))) * (alpha == 1 ? gradient_weight_fluid_1(1, std::abs(j)) : weight_fluid_1(1, std::abs(j))) * (alpha == 2 ? gradient_weight_fluid_1(2, std::abs(k)) : weight_fluid_1(2, std::abs(k)))) * config::G_DX_INV;
+
 						if(mass_fluid != nullptr){
-							atomicAdd(&(mass_fluid[27 * local_id[0] + 9 * local_id[1] + 3 * local_id[2] + alpha]), mass * W_1);
+							atomicAdd(&(mass_fluid[(3 * config::G_BLOCKSIZE * config::G_BLOCKSIZE) * local_id[0] + (3 * config::G_BLOCKSIZE) * local_id[1] + 3 * local_id[2] + alpha]), mass * W_1);
 						}
 						
 						//Handle all neighbours
 						for(char i1 = -static_cast<char>(INTERPOLATION_DEGREE_MAX); i1 < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; i1++) {
 							for(char j1 = -static_cast<char>(INTERPOLATION_DEGREE_MAX); j1 < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; j1++) {
 								for(char k1 = -static_cast<char>(INTERPOLATION_DEGREE_MAX); k1 < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; k1++) {
-									const ivec3 neighbour_local_id = (global_base_index_solid - block_cellid) + ivec3(i1, j1, k1);
-									const ivec3 neighbour_relative_local_id = (neighbour_local_id - local_id);
-									const ivec3 neighbour_offset_local_id = neighbour_relative_local_id + ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));
+									const ivec3 neighbour_local_offset {i1, j1, k1};
+									const ivec3 neighbour_kernel_offset = ivec3(i, j, k) + neighbour_local_offset;
+									const ivec3 neighbour_absolute_kernel_offset {std::abs(i1), std::abs(j1), std::abs(k1)};
+									const ivec3 neighbour_absolute_local_offset = neighbour_local_offset + ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));
 									
-									const int column = neighbour_offset_local_id[0] * ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1)) + neighbour_offset_local_id[1] * (2 * INTERPOLATION_DEGREE_MAX + 1) + neighbour_offset_local_id[2];
+									const int column = neighbour_absolute_local_offset[0] * ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1)) + neighbour_absolute_local_offset[1] * (2 * INTERPOLATION_DEGREE_MAX + 1) + neighbour_absolute_local_offset[2];
 									//Only handle for neighbours of neighbour
 									if(
-										    column_start >= column_start && column < column_end
+										   (column >= column_start && column < column_end)
+										&& (neighbour_absolute_kernel_offset[0] < INTERPOLATION_DEGREE_MAX)
+										&& (neighbour_absolute_kernel_offset[1] < INTERPOLATION_DEGREE_MAX)
+										&& (neighbour_absolute_kernel_offset[2] < INTERPOLATION_DEGREE_MAX)
 									){
-										const float W1_0 = weight_solid_0(0, i1) * weight_solid_0(1, j1) * weight_solid_0(2, k1);
+										const int local_column = column - column_start;
 										
-										float* current_gradient_fluid = (gradient_fluid == nullptr ? nullptr : &(gradient_fluid[(3 * 3 * 3 * column_range) * local_id[0] + (3 * 3 * column_range) * local_id[1] + (3 * column_range) * local_id[2] + 3 * column + alpha]));
-										float* current_boundary_fluid = (boundary_fluid == nullptr ? nullptr : &(boundary_fluid[(3 * 3 * 3 * column_range) * local_id[0] + (3 * 3 * column_range) * local_id[1] + (3 * column_range) * local_id[2] + 3 * column + alpha]));
+										const float W1_0 = weight_solid_0(0, neighbour_absolute_kernel_offset[0]) * weight_solid_0(1, neighbour_absolute_kernel_offset[1]) * weight_solid_0(2, neighbour_absolute_kernel_offset[2]);
+										
+										float* current_gradient_fluid = (gradient_fluid == nullptr ? nullptr : &(gradient_fluid[(3 * config::G_BLOCKSIZE * config::G_BLOCKSIZE * column_range) * local_id[0] + (3 * config::G_BLOCKSIZE * column_range) * local_id[1] + (3 * column_range) * local_id[2] + 3 * local_column + alpha]));
+										float* current_boundary_fluid = (boundary_fluid == nullptr ? nullptr : &(boundary_fluid[(3 * config::G_BLOCKSIZE * config::G_BLOCKSIZE * column_range) * local_id[0] + (3 * config::G_BLOCKSIZE * column_range) * local_id[1] + (3 * column_range) * local_id[2] + 3 * local_column + alpha]));
 										
 										store_data_neigbours_fluid(particle_buffer_fluid, current_gradient_fluid, current_boundary_fluid, W_1, W1_0, delta_w_1, fetch_particle_buffer_tmp);
 									}
@@ -566,10 +567,10 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 }
 
 template<typename Partition, typename Grid, MaterialE MaterialTypeSolid, MaterialE MaterialTypeFluid>
-__global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition partition, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, const int* iq_lhs_rows, const int* iq_lhs_columns, float* iq_lhs_values, float* iq_rhs) {
+__global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition partition, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, const int* iq_lhs_rows, const int* iq_lhs_columns, float* iq_lhs_values, float* iq_rhs, const int* iq_solve_velocity_rows, const int* iq_solve_velocity_columns, float* iq_solve_velocity_values) {
 	constexpr size_t KERNEL_SIZE = INTERPOLATION_DEGREE_MAX / config::G_BLOCKSIZE;
 	
-	const size_t base_row = NUM_ROWS_PER_BLOCK * blockIdx.x;
+	const size_t base_row = LHS_NUM_ROWS_PER_BLOCK * blockIdx.x;
 	const int boundary_condition   = static_cast<int>(std::floor(config::G_BOUNDARY_CONDITION));
 
 	float mass_solid_local[(3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE];
@@ -590,8 +591,8 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 	const int src_blockno		   = static_cast<int>(blockIdx.x);
 	const auto blockid			   = partition.active_keys[blockIdx.x];
 	const ivec3 block_cellid = blockid * static_cast<int>(config::G_BLOCKSIZE);
-	const int particle_bucket_size_solid = next_particle_buffer_solid.particle_bucket_sizes[src_blockno];
-	const int particle_bucket_size_fluid = next_particle_buffer_fluid.particle_bucket_sizes[src_blockno];
+	//const int particle_bucket_size_solid = next_particle_buffer_solid.particle_bucket_sizes[src_blockno];
+	//const int particle_bucket_size_fluid = next_particle_buffer_fluid.particle_bucket_sizes[src_blockno];
 	
 	//Check if the block is outside of grid bounds
 	vec3 boundary_normal;
@@ -600,9 +601,10 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 	boundary_normal[2] = (blockid[2] < boundary_condition) ? 1.0f : ((blockid[2] >= config::G_GRID_SIZE - boundary_condition) ? -1.0f : 0.0f);
 	
 	//If we have no particles in the bucket return
-	if(particle_bucket_size_solid == 0 && particle_bucket_size_fluid == 0) {
-		return;
-	}
+	//TODO: If both are zero then all mass will be zero and our equations are all 0; But maybe we have equations without mass?
+	//if(particle_bucket_size_solid == 0 && particle_bucket_size_fluid == 0) {
+	//	return;
+	//}
 	
 	//Init memory/Load velocity
 	const auto grid_block_solid	  = grid_solid.ch(_0, src_blockno);
@@ -687,10 +689,10 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 							, particle_id_in_block
 							, 0
 							, 0 //No gradient data stored, so we can skip the inner loop
-							, scaling_solid
-							, pressure_solid_nominator
-							, pressure_solid_denominator
-							, mass_solid
+							, &(scaling_solid[0])
+							, &(pressure_solid_nominator[0])
+							, &(pressure_solid_denominator[0])
+							, &(mass_solid[0])
 							, nullptr
 						);
 					}
@@ -708,7 +710,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 							, particle_id_in_block
 							, 0
 							, 0 //No gradient data stored, so we can skip the inner loop
-							, mass_fluid
+							, &(mass_fluid[0])
 							, nullptr
 							, nullptr
 						);
@@ -781,7 +783,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 							, nullptr
 							, nullptr
 							, nullptr
-							, gradient_solid
+							, &(gradient_solid[0])
 						);
 					}
 		
@@ -799,8 +801,8 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 							, column
 							, column + 1
 							, nullptr
-							, gradient_fluid
-							, boundary_fluid
+							, &(gradient_fluid[0])
+							, &(boundary_fluid[0])
 						);
 					}
 				}
@@ -820,8 +822,14 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 		}
 	}
 	
+	for(int i = 0; i < (3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE; ++i){
+		if(mass_solid_local[i] > 0.0f && mass_fluid_local[i] > 0.0f){
+			printf("ABC3 %d %d # %.28f %.28f\n", static_cast<int>(threadIdx.x), i, mass_solid_local[i], mass_fluid_local[i]);
+		}
+	}
+	
 	//Store data in matrix
-	for(int row = 0; row < NUM_ROWS_PER_BLOCK; ++row) {
+	for(int row = 0; row < LHS_NUM_ROWS_PER_BLOCK; ++row) {
 		const ivec3 local_id {static_cast<int>((row / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE), static_cast<int>((row / config::G_BLOCKSIZE) % config::G_BLOCKSIZE), static_cast<int>(row % config::G_BLOCKSIZE)};
 		
 		__shared__ float current_mass_solid[3];
@@ -881,62 +889,158 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 			
 			__syncthreads();
 			
-			const float gradient_by_mass_solid = (current_gradient_solid_row[0] * current_gradient_solid_column[0] / current_mass_solid[0] + current_gradient_solid_row[1] * current_gradient_solid_column[1] / current_mass_solid[1] + current_gradient_solid_row[2] * current_gradient_solid_column[2] / current_mass_solid[2]);
-			const float gradient_by_mass_fluid = (current_gradient_fluid_row[0] * current_gradient_fluid_column[0] / current_mass_fluid[0] + current_gradient_fluid_row[1] * current_gradient_fluid_column[1] / current_mass_fluid[1] + current_gradient_fluid_row[2] * current_gradient_fluid_column[2] / current_mass_fluid[2]);
-			
-			const float boundary_by_mass = (current_boundary_fluid_row[0] * current_boundary_fluid_column[0] / current_mass_fluid[0] + current_boundary_fluid_row[1] * current_boundary_fluid_column[1] / current_mass_fluid[1] + current_boundary_fluid_row[2] * current_boundary_fluid_column[2] / current_mass_fluid[2]);
-			const float gradient_and_boundary_by_mass = (current_gradient_fluid_row[0] * current_boundary_fluid_column[0] / current_mass_fluid[0] + current_gradient_fluid_row[1] * current_boundary_fluid_column[1] / current_mass_fluid[1] + current_gradient_fluid_row[2] * current_boundary_fluid_column[2] / current_mass_fluid[2]);
-			
-			const float gradient_and_coupling_by_mass_solid = (current_gradient_solid_row[0] * current_coupling_solid_column[0] / current_mass_solid[0] + current_gradient_solid_row[1] * current_coupling_solid_column[1] / current_mass_solid[1] + current_gradient_solid_row[2] * current_coupling_solid_column[2] / current_mass_solid[2]);
-			const float gradient_and_coupling_by_mass_fluid = (current_gradient_fluid_row[0] * current_coupling_fluid_column[0] / current_mass_fluid[0] + current_gradient_fluid_row[1] * current_coupling_fluid_column[1] / current_mass_fluid[1] + current_gradient_fluid_row[2] * current_coupling_fluid_column[2] / current_mass_fluid[2]);
-			const float boundary_and_coupling_by_mass_fluid = (current_boundary_fluid_row[0] * current_coupling_fluid_column[0] / current_mass_fluid[0] + current_boundary_fluid_row[1] * current_coupling_fluid_column[1] / current_mass_fluid[1] + current_boundary_fluid_row[2] * current_coupling_fluid_column[2] / current_mass_fluid[2]);
-			
-			const float coupling_by_mass_solid = (current_coupling_solid_row[0] * current_coupling_solid_column[0] / current_mass_solid[0] + current_coupling_solid_row[1] * current_coupling_solid_column[1] / current_mass_solid[1] + current_coupling_solid_row[2] * current_coupling_solid_column[2] / current_mass_solid[2]);
-			const float coupling_by_mass_fluid = (current_coupling_fluid_row[0] * current_coupling_fluid_column[0] / current_mass_fluid[0] + current_coupling_fluid_row[1] * current_coupling_fluid_column[1] / current_mass_fluid[1] + current_coupling_fluid_row[2] * current_coupling_fluid_column[2] / current_mass_fluid[2]);
-			
-			std::array<std::array<float, MATRIX_SIZE_X>, MATRIX_SIZE_Y> a;
-			a[0][0] = current_scaling_solid / dt.count() + dt.count() * gradient_by_mass_solid;
-			a[0][3] = -dt.count() * gradient_and_coupling_by_mass_solid;
-			a[1][1] = dt.count() * gradient_by_mass_fluid;
-			a[1][2] = dt.count() * gradient_and_boundary_by_mass;
-			a[1][3] = dt.count() * gradient_and_coupling_by_mass_fluid;
-			a[2][2] = dt.count() * boundary_by_mass;
-			a[2][3] = dt.count() * boundary_and_coupling_by_mass_fluid;
-			a[3][3] = dt.count() * (coupling_by_mass_solid + coupling_by_mass_fluid);
-			
-			//Fill symmetric
-			a[3][0] = a[0][3];
-			a[2][1] = a[1][2];
-			a[3][1] = a[1][3];
-			a[3][2] = a[2][3];
-			
-			//Store at index (blockid + row, blockid + column), adding it to existing value
-			for(size_t i = 0; i < MATRIX_SIZE_Y; ++i){
-				const int row_index = i * NUM_ROWS_PER_BLOCK * num_blocks + base_row + row;
-				for(size_t j = 0; j < num_blocks_per_row[i]; ++j){
+			if(get_thread_index<BLOCK_SIZE, (LHS_NUM_ROWS_PER_BLOCK * NUM_COLUMNS_PER_BLOCK + BLOCK_SIZE - 1) / BLOCK_SIZE>(row * NUM_COLUMNS_PER_BLOCK + column) == threadIdx.x){
+				const float gradient_by_mass_solid = (current_gradient_solid_row[0] * current_gradient_solid_column[0] / current_mass_solid[0] + current_gradient_solid_row[1] * current_gradient_solid_column[1] / current_mass_solid[1] + current_gradient_solid_row[2] * current_gradient_solid_column[2] / current_mass_solid[2]);
+				const float gradient_by_mass_fluid = (current_gradient_fluid_row[0] * current_gradient_fluid_column[0] / current_mass_fluid[0] + current_gradient_fluid_row[1] * current_gradient_fluid_column[1] / current_mass_fluid[1] + current_gradient_fluid_row[2] * current_gradient_fluid_column[2] / current_mass_fluid[2]);
+				
+				const float boundary_by_mass = (current_boundary_fluid_row[0] * current_boundary_fluid_column[0] / current_mass_fluid[0] + current_boundary_fluid_row[1] * current_boundary_fluid_column[1] / current_mass_fluid[1] + current_boundary_fluid_row[2] * current_boundary_fluid_column[2] / current_mass_fluid[2]);
+				const float gradient_and_boundary_by_mass = (current_gradient_fluid_row[0] * current_boundary_fluid_column[0] / current_mass_fluid[0] + current_gradient_fluid_row[1] * current_boundary_fluid_column[1] / current_mass_fluid[1] + current_gradient_fluid_row[2] * current_boundary_fluid_column[2] / current_mass_fluid[2]);
+				
+				const float gradient_and_coupling_by_mass_solid = (current_gradient_solid_row[0] * current_coupling_solid_column[0] / current_mass_solid[0] + current_gradient_solid_row[1] * current_coupling_solid_column[1] / current_mass_solid[1] + current_gradient_solid_row[2] * current_coupling_solid_column[2] / current_mass_solid[2]);
+				const float gradient_and_coupling_by_mass_fluid = (current_gradient_fluid_row[0] * current_coupling_fluid_column[0] / current_mass_fluid[0] + current_gradient_fluid_row[1] * current_coupling_fluid_column[1] / current_mass_fluid[1] + current_gradient_fluid_row[2] * current_coupling_fluid_column[2] / current_mass_fluid[2]);
+				const float boundary_and_coupling_by_mass_fluid = (current_boundary_fluid_row[0] * current_coupling_fluid_column[0] / current_mass_fluid[0] + current_boundary_fluid_row[1] * current_coupling_fluid_column[1] / current_mass_fluid[1] + current_boundary_fluid_row[2] * current_coupling_fluid_column[2] / current_mass_fluid[2]);
+				
+				const float coupling_by_mass_solid = (current_coupling_solid_row[0] * current_coupling_solid_column[0] / current_mass_solid[0] + current_coupling_solid_row[1] * current_coupling_solid_column[1] / current_mass_solid[1] + current_coupling_solid_row[2] * current_coupling_solid_column[2] / current_mass_solid[2]);
+				const float coupling_by_mass_fluid = (current_coupling_fluid_row[0] * current_coupling_fluid_column[0] / current_mass_fluid[0] + current_coupling_fluid_row[1] * current_coupling_fluid_column[1] / current_mass_fluid[1] + current_coupling_fluid_row[2] * current_coupling_fluid_column[2] / current_mass_fluid[2]);
+				
+				std::array<std::array<float, LHS_MATRIX_SIZE_X>, LHS_MATRIX_SIZE_Y> a;
+				
+				//Clear empty values
+				a[0][1] = 0.0f;
+				a[0][2] = 0.0f;
+				a[1][0] = 0.0f;
+				a[2][0] = 0.0f;
+				
+				//Only calculate for particles with mass bigger than 0 (otherwise we will divide by 0)
+				if(
+					   current_mass_solid[0] > 0.0f
+					&& current_mass_solid[1] > 0.0f
+					&& current_mass_solid[2] > 0.0f
+				){
+					a[0][0] = current_scaling_solid / dt.count() + dt.count() * gradient_by_mass_solid;
+					a[0][3] = -dt.count() * gradient_and_coupling_by_mass_solid;
+				}else{
+					a[0][0] = 0.0f;
+					a[0][3] = 0.0f;
+				}
+				
+				if(
+					   current_mass_fluid[0] > 0.0f
+					&& current_mass_fluid[1] > 0.0f
+					&& current_mass_fluid[2] > 0.0f
+				){
+					a[1][1] = dt.count() * gradient_by_mass_fluid;
+					a[1][2] = dt.count() * gradient_and_boundary_by_mass;
+					a[1][3] = dt.count() * gradient_and_coupling_by_mass_fluid;
+					a[2][2] = dt.count() * boundary_by_mass;
+					a[2][3] = dt.count() * boundary_and_coupling_by_mass_fluid;
+				}else{
+					a[1][1] = 0.0f;
+					a[1][2] = 0.0f;
+					a[1][3] = 0.0f;
+					a[2][2] = 0.0f;
+					a[2][3] = 0.0f;
+				}
+				
+				if(
+					   current_mass_solid[0] > 0.0f
+					&& current_mass_solid[1] > 0.0f
+					&& current_mass_solid[2] > 0.0f
+					&& current_mass_fluid[0] > 0.0f
+					&& current_mass_fluid[1] > 0.0f
+					&& current_mass_fluid[2] > 0.0f
+				){
+					a[3][3] += dt.count() * (coupling_by_mass_solid + coupling_by_mass_fluid);
+				}else{
+					a[3][3] = 0.0f;
+				}
+				
+				//Fill symmetric
+				a[3][0] = a[0][3];
+				a[2][1] = a[1][2];
+				a[3][1] = a[1][3];
+				a[3][2] = a[2][3];
+				
+				std::array<std::array<std::array<float, SOLVE_VELOCITY_MATRIX_SIZE_X>, SOLVE_VELOCITY_MATRIX_SIZE_Y>, 3> solve_velocity;
+
+				for(int k = 0; k < 3; ++k){
+					//Clear empty values
+					solve_velocity[k][0][1] = 0.0f;
+					solve_velocity[k][0][2] = 0.0f;
+					solve_velocity[k][1][0] = 0.0f;
 					
-					const int column_index = iq_lhs_rows[row_index] + j * NUM_COLUMNS_PER_BLOCK + column;
+					//Only calculate for particles with mass bigger than 0 (otherwise we will divide by 0)
+					if(
+						   current_mass_solid[k] > 0.0f
+					){
+						solve_velocity[k][0][0] = dt.count() * current_gradient_solid_column[k] / current_mass_solid[k];
+						solve_velocity[k][0][2] = dt.count() * current_coupling_solid_column[k] / current_mass_solid[k];
+					}else{
+						solve_velocity[k][0][0] = 0.0f;
+						solve_velocity[k][0][2] = 0.0f;
+					}
 					
-					atomicAdd(&(iq_lhs_values[column_index]), a[i][block_offsets_per_row[i][j]]);
+					if(
+						   current_mass_fluid[k] > 0.0f
+					){
+						solve_velocity[k][1][1] = dt.count() * current_gradient_fluid_column[k] / current_mass_fluid[k];
+						solve_velocity[k][1][2] = dt.count() * current_boundary_fluid_row[k] / current_mass_fluid[k];
+						solve_velocity[k][1][3] = dt.count() * current_coupling_fluid_column[k] / current_mass_fluid[k];
+					}else{
+						solve_velocity[k][1][1] = 0.0f;
+						solve_velocity[k][1][2] = 0.0f;
+						solve_velocity[k][1][3] = 0.0f;
+					}
+				}
+				
+				//Store at index (blockid + row, blockid + column), adding it to existing value
+				for(size_t i = 0; i < LHS_MATRIX_SIZE_Y; ++i){
+					const int row_index = i * LHS_NUM_ROWS_PER_BLOCK * num_blocks + base_row + row;
+					for(size_t j = 0; j < lhs_num_blocks_per_row[i]; ++j){
+						
+						const int column_index = iq_lhs_rows[row_index] + j * NUM_COLUMNS_PER_BLOCK + column;
+						
+						atomicAdd(&(iq_lhs_values[column_index]), a[i][lhs_block_offsets_per_row[i][j]]);
+					}
+				}
+				
+				for(int k = 0; k < 3; ++k){
+					for(size_t i = 0; i < SOLVE_VELOCITY_MATRIX_SIZE_Y; ++i){
+						const int row_index = i * SOLVE_VELOCITY_NUM_ROWS_PER_BLOCK * num_blocks + base_row + row;
+						for(size_t j = 0; j < solve_velocity_num_blocks_per_row[i]; ++j){
+							
+							const int column_index = iq_solve_velocity_rows[row_index] + j * NUM_COLUMNS_PER_BLOCK + column;
+							
+							atomicAdd(&(iq_solve_velocity_values[column_index]), solve_velocity[k][i][solve_velocity_block_offsets_per_row[i][j]]);
+						}
+					}
 				}
 			}
 		}
 		
-		const float gradient_and_velocity_solid = (current_gradient_solid_row[0] * current_velocity_solid[0] + current_gradient_solid_row[1] * current_velocity_solid[1] + current_gradient_solid_row[2] * current_velocity_solid[2]);
-		const float gradient_and_velocity_fluid = (current_gradient_fluid_row[0] * current_velocity_fluid[0] + current_gradient_fluid_row[1] * current_velocity_fluid[1] + current_gradient_fluid_row[2] * current_velocity_fluid[2]);
-		const float boundary_and_velocity_fluid = (current_boundary_fluid_row[0] * current_velocity_fluid[0] + current_boundary_fluid_row[1] * current_velocity_fluid[1] + current_boundary_fluid_row[2] * current_velocity_fluid[2]);
-		const float coupling_and_velocity_solid = (current_coupling_solid_row[0] * current_velocity_solid[0] + current_coupling_solid_row[1] * current_velocity_solid[1] + current_coupling_solid_row[2] * current_velocity_solid[2]);
-		const float coupling_and_velocity_fluid = (current_coupling_fluid_row[0] * current_velocity_fluid[0] + current_coupling_fluid_row[1] * current_velocity_fluid[1] + current_coupling_fluid_row[2] * current_velocity_fluid[2]);
-		
-		std::array<float, MATRIX_SIZE_Y> b;
-		b[0] = (current_scaling_solid * current_pressure_solid_nominator) / (current_pressure_solid_denominator * dt.count()) - gradient_and_velocity_solid;
-		b[1] = gradient_and_velocity_fluid;
-		b[2] = boundary_and_velocity_fluid - 0.0f;//FIXME: Correct external force from air interface or something with surface tension
-		b[3] = coupling_and_velocity_solid - coupling_and_velocity_fluid;
-		
-		for(size_t i = 0; i < MATRIX_SIZE_Y; ++i){
-			const int row_index = i * NUM_ROWS_PER_BLOCK * num_blocks + base_row + row;
-			atomicAdd(&(iq_rhs[row_index]), b[i]);
+		if(get_thread_index<BLOCK_SIZE, (LHS_NUM_ROWS_PER_BLOCK + BLOCK_SIZE - 1) / BLOCK_SIZE>(row) == threadIdx.x){
+			const float gradient_and_velocity_solid = (current_gradient_solid_row[0] * current_velocity_solid[0] + current_gradient_solid_row[1] * current_velocity_solid[1] + current_gradient_solid_row[2] * current_velocity_solid[2]);
+			const float gradient_and_velocity_fluid = (current_gradient_fluid_row[0] * current_velocity_fluid[0] + current_gradient_fluid_row[1] * current_velocity_fluid[1] + current_gradient_fluid_row[2] * current_velocity_fluid[2]);
+			const float boundary_and_velocity_fluid = (current_boundary_fluid_row[0] * current_velocity_fluid[0] + current_boundary_fluid_row[1] * current_velocity_fluid[1] + current_boundary_fluid_row[2] * current_velocity_fluid[2]);
+			const float coupling_and_velocity_solid = (current_coupling_solid_row[0] * current_velocity_solid[0] + current_coupling_solid_row[1] * current_velocity_solid[1] + current_coupling_solid_row[2] * current_velocity_solid[2]);
+			const float coupling_and_velocity_fluid = (current_coupling_fluid_row[0] * current_velocity_fluid[0] + current_coupling_fluid_row[1] * current_velocity_fluid[1] + current_coupling_fluid_row[2] * current_velocity_fluid[2]);
+			
+			std::array<float, LHS_MATRIX_SIZE_Y> b;
+			//Only calculate for particles with pressure_denominator bigger than 0 (otherwise we will divide by 0)
+			if(current_pressure_solid_denominator > 0.0f){
+				b[0] = (current_scaling_solid * current_pressure_solid_nominator) / (current_pressure_solid_denominator * dt.count()) - gradient_and_velocity_solid;
+			}else{
+				b[0] = -gradient_and_velocity_solid;
+			}
+			b[1] = gradient_and_velocity_fluid;
+			b[2] = boundary_and_velocity_fluid - 0.0f;//FIXME: Correct external force from air interface or something with surface tension
+			b[3] = coupling_and_velocity_solid - coupling_and_velocity_fluid;
+			
+			
+			for(size_t i = 0; i < LHS_MATRIX_SIZE_Y; ++i){
+				const int row_index = i * LHS_NUM_ROWS_PER_BLOCK * num_blocks + base_row + row;
+				atomicAdd(&(iq_rhs[row_index]), b[i]);
+			}
 		}
 	}
 }
