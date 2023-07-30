@@ -25,7 +25,7 @@ constexpr size_t INTERPOLATION_DEGREE_INTERFACE_PRESSURE = 0;
 constexpr size_t INTERPOLATION_DEGREE_MAX = std::max(std::max(std::max(INTERPOLATION_DEGREE_SOLID_VELOCITY, INTERPOLATION_DEGREE_SOLID_PRESSURE), std::max(INTERPOLATION_DEGREE_FLUID_VELOCITY, INTERPOLATION_DEGREE_FLUID_PRESSURE)), INTERPOLATION_DEGREE_INTERFACE_PRESSURE);
 
 //Matrix layout
-constexpr size_t LHS_NUM_ROWS_PER_BLOCK = config::G_BLOCKVOLUME;
+constexpr size_t NUM_ROWS_PER_BLOCK = config::G_BLOCKVOLUME;
 constexpr size_t NUM_COLUMNS_PER_BLOCK = (2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1);
 constexpr size_t LHS_MATRIX_SIZE_Y = 4;
 constexpr size_t LHS_MATRIX_SIZE_X = 4;
@@ -43,8 +43,6 @@ __device__ const std::array<std::array<size_t, LHS_MATRIX_SIZE_X>, LHS_MATRIX_SI
 	, {1, 2, 3, std::numeric_limits<size_t>::max()}
 	, {0, 1, 2, 3}
 }};
-
-constexpr size_t SOLVE_VELOCITY_NUM_ROWS_PER_BLOCK = 3 * config::G_BLOCKVOLUME;
 
 constexpr size_t SOLVE_VELOCITY_MATRIX_SIZE_Y = 2;
 constexpr size_t SOLVE_VELOCITY_MATRIX_SIZE_X = 4;
@@ -84,8 +82,8 @@ constexpr size_t get_global_index(const size_t thread_id, const size_t offset){
 }
 
 //TODO: Maybe activate on cell level (but data is on block level); Maybe recheck that blocks are not empty
-template<size_t MatrixSizeX, size_t MatrixSizeY, size_t NumRowsPerBlock, typename Partition>
-__global__ void clear_iq_system(const size_t* lhs_num_blocks_per_row, const std::array<size_t, MatrixSizeX>* lhs_block_offsets_per_row, const uint32_t num_active_blocks, const uint32_t num_blocks, const Partition partition, int* iq_lhs_rows, int* iq_lhs_columns, float* iq_lhs_values) {
+template<size_t MatrixSizeX, size_t MatrixSizeY, size_t NumRowsPerBlock, size_t NumColumnsPerBlock, size_t NumDimensionsPerRow, typename Partition>
+__global__ void clear_iq_system(const size_t* num_blocks_per_row, const std::array<size_t, MatrixSizeX>* block_offsets_per_row, const uint32_t num_active_blocks, const uint32_t num_blocks, const Partition partition, int* iq_lhs_rows, int* iq_lhs_columns, float* iq_lhs_values) {
 	//const int src_blockno		   = static_cast<int>(blockIdx.x);
 	const auto blockid			   = partition.active_keys[blockIdx.x];
 	
@@ -97,19 +95,22 @@ __global__ void clear_iq_system(const size_t* lhs_num_blocks_per_row, const std:
 	std::array<size_t, MatrixSizeY> accumulated_blocks_per_row;
 	accumulated_blocks_per_row[0] = 0;
 	for(size_t i = 1; i < MatrixSizeY; ++i){
-		accumulated_blocks_per_row[i] = accumulated_blocks_per_row[i - 1] + lhs_num_blocks_per_row[i - 1];
+		accumulated_blocks_per_row[i] = accumulated_blocks_per_row[i - 1] + num_blocks_per_row[i - 1];
 	}
 	
 	//Fill matrix
 	for(size_t row = static_cast<int>(threadIdx.x); row < NumRowsPerBlock; row += static_cast<int>(blockDim.x)){
 		const ivec3 cellid = blockid * static_cast<int>(config::G_BLOCKSIZE) + ivec3((static_cast<int>(row) / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE, (static_cast<int>(row) / config::G_BLOCKSIZE) % config::G_BLOCKSIZE, static_cast<int>(row) % config::G_BLOCKSIZE);
 		
+		
 		for(size_t row_offset = 0; row_offset < MatrixSizeY; ++row_offset){
-			iq_lhs_rows[row_offset * NumRowsPerBlock * num_blocks + base_row + row] = accumulated_blocks_per_row[row_offset] * NumRowsPerBlock * num_active_blocks * NUM_COLUMNS_PER_BLOCK + lhs_num_blocks_per_row[row_offset] * (base_row + row) * NUM_COLUMNS_PER_BLOCK;
+			for(size_t dimension = 0; dimension < NumDimensionsPerRow; ++dimension){
+				iq_lhs_rows[row_offset * NumDimensionsPerRow * NumRowsPerBlock * num_blocks + NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension] = accumulated_blocks_per_row[row_offset] * NumDimensionsPerRow * NumRowsPerBlock * num_active_blocks * NumColumnsPerBlock + num_blocks_per_row[row_offset] * (NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension) * NumColumnsPerBlock;
+			}
 		}
 		
-		int neighbour_cellnos[NUM_COLUMNS_PER_BLOCK];
-		for(size_t column = 0; column < NUM_COLUMNS_PER_BLOCK; ++column){
+		int neighbour_cellnos[NumColumnsPerBlock];
+		for(size_t column = 0; column < NumColumnsPerBlock; ++column){
 			const ivec3 neighbour_local_id = ivec3(static_cast<int>((column / ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1))) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>((column / (2 * INTERPOLATION_DEGREE_MAX + 1)) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>(column % (2 * INTERPOLATION_DEGREE_MAX + 1))) - ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));
 			const ivec3 neighbour_cellid = cellid + neighbour_local_id;
 			const ivec3 neighbour_blockid = neighbour_cellid / static_cast<int>(config::G_BLOCKSIZE);
@@ -124,20 +125,22 @@ __global__ void clear_iq_system(const size_t* lhs_num_blocks_per_row, const std:
 		}
 		
 		//Sort columns
-		thrust::sort(thrust::seq, neighbour_cellnos, neighbour_cellnos + NUM_COLUMNS_PER_BLOCK);
+		thrust::sort(thrust::seq, neighbour_cellnos, neighbour_cellnos + NumColumnsPerBlock);
 		
-		for(size_t column = 0; column < NUM_COLUMNS_PER_BLOCK; ++column){
+		for(size_t column = 0; column < NumColumnsPerBlock; ++column){
 			for(size_t row_offset = 0; row_offset < MatrixSizeY; ++row_offset){
-				for(size_t column_offset_index = 0; column_offset_index < lhs_num_blocks_per_row[row_offset]; ++column_offset_index){
-					iq_lhs_columns[iq_lhs_rows[row_offset * NumRowsPerBlock * num_blocks + base_row + row] + column_offset_index * NUM_COLUMNS_PER_BLOCK + column] = lhs_block_offsets_per_row[row_offset][column_offset_index] * num_blocks * NumRowsPerBlock + neighbour_cellnos[column];
-					iq_lhs_values[iq_lhs_rows[row_offset * NumRowsPerBlock * num_blocks + base_row + row] + column_offset_index * NUM_COLUMNS_PER_BLOCK + column] = 0.0f;
+				for(size_t column_offset_index = 0; column_offset_index < num_blocks_per_row[row_offset]; ++column_offset_index){
+					for(size_t dimension = 0; dimension < NumDimensionsPerRow; ++dimension){
+						iq_lhs_columns[iq_lhs_rows[row_offset * NumDimensionsPerRow * NumRowsPerBlock * num_blocks + NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension] + column_offset_index * NumColumnsPerBlock + column] = block_offsets_per_row[row_offset][column_offset_index] * num_blocks * NumRowsPerBlock + neighbour_cellnos[column];
+						iq_lhs_values[iq_lhs_rows[row_offset * NumDimensionsPerRow * NumRowsPerBlock * num_blocks + NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension] + column_offset_index * NumColumnsPerBlock + column] = 0.0f;
+					}
 				}
 			}
 		}
 	}
 }
 
-template<size_t NumRowsPerBlock, typename Partition>
+template<size_t MatrixSizeY, size_t NumRowsPerBlock, size_t NumDimensionsPerRow, typename Partition>
 __global__ void fill_empty_rows(const uint32_t num_blocks, const Partition partition, int* iq_lhs_rows) {
 	//const int src_blockno		   = static_cast<int>(blockIdx.x);
 	const auto blockid			   = partition.active_keys[blockIdx.x];
@@ -150,18 +153,37 @@ __global__ void fill_empty_rows(const uint32_t num_blocks, const Partition parti
 	for(size_t row = static_cast<int>(threadIdx.x); row < NumRowsPerBlock; row += static_cast<int>(blockDim.x)){
 		const ivec3 cellid = blockid * static_cast<int>(config::G_BLOCKSIZE) + ivec3((static_cast<int>(row) / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE, (static_cast<int>(row) / config::G_BLOCKSIZE) % config::G_BLOCKSIZE, static_cast<int>(row) % config::G_BLOCKSIZE);
 
-		//TODO: Use more efficient way, like maybe binary search
-		int next_active_base_row;
-		int next_active_row;
-		for(int next_row_offset = 0; (base_row + row + next_row_offset) < (NumRowsPerBlock * num_blocks + 1); ++next_row_offset){
-			if(iq_lhs_rows[base_row + row + next_row_offset] != 0){
-				next_active_base_row = (base_row + row + next_row_offset) / NumRowsPerBlock;
-				next_active_row = (base_row + row + next_row_offset) % NumRowsPerBlock;
+		for(size_t dimension = 0; dimension < NumDimensionsPerRow; ++dimension){
+			for(size_t row_offset = 0; row_offset < MatrixSizeY; ++row_offset){
+				const int own_value = atomicAdd(&(iq_lhs_rows[row_offset * NumDimensionsPerRow * NumRowsPerBlock * num_blocks + NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension]), 0);
+				
+				if(own_value == 0){
+					//TODO: Use more efficient way, like maybe binary search
+					//NOTE: We are using atomic load/store to ensure operations are atomic. It does not matter wheter they are correctly ordered as if we don't see the single write that might occure we are heading to the next memory locations till we either find a write or a original value
+					int value;
+					for(int next_row_offset = 0; next_row_offset <= (row_offset * NumDimensionsPerRow * NumRowsPerBlock * num_blocks + NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension); ++next_row_offset){
+						//Atomic load
+						value = atomicAdd(&(iq_lhs_rows[row_offset * NumDimensionsPerRow * NumRowsPerBlock * num_blocks + NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension - next_row_offset]), 0);
+						if(value != 0){
+							break;
+						}
+					}
+				
+					/*
+					printf("ABC0 %d %d %d %d # %d # %d %d\n"
+						, static_cast<int>(base_row)
+						, static_cast<int>(row)
+						, static_cast<int>(row_offset)
+						, static_cast<int>(dimension)
+						, static_cast<int>(row_offset * NumDimensionsPerRow * NumRowsPerBlock * num_blocks + NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension)
+						, own_value
+						, value
+					);*/
+					
+					//Atomic store, including non-atomic load of own value. This is okay, cause only this thread may modify this value
+					atomicAdd(&(iq_lhs_rows[row_offset * NumDimensionsPerRow * NumRowsPerBlock * num_blocks + NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension]), (value - own_value));
+				}
 			}
-		}
-
-		for(size_t row_offset = 0; row_offset < LHS_MATRIX_SIZE_Y; ++row_offset){
-			iq_lhs_rows[row_offset * NumRowsPerBlock * num_blocks + base_row + row] = iq_lhs_rows[row_offset * NumRowsPerBlock * num_blocks + next_active_base_row + next_active_row];
 		}
 	}
 }
@@ -570,7 +592,7 @@ template<typename Partition, typename Grid, MaterialE MaterialTypeSolid, Materia
 __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition partition, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, const int* iq_lhs_rows, const int* iq_lhs_columns, float* iq_lhs_values, float* iq_rhs, const int* iq_solve_velocity_rows, const int* iq_solve_velocity_columns, float* iq_solve_velocity_values) {
 	constexpr size_t KERNEL_SIZE = INTERPOLATION_DEGREE_MAX / config::G_BLOCKSIZE;
 	
-	const size_t base_row = LHS_NUM_ROWS_PER_BLOCK * blockIdx.x;
+	const size_t base_row = NUM_ROWS_PER_BLOCK * blockIdx.x;
 	const int boundary_condition   = static_cast<int>(std::floor(config::G_BOUNDARY_CONDITION));
 
 	float mass_solid_local[(3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE];
@@ -829,7 +851,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 	}
 	
 	//Store data in matrix
-	for(int row = 0; row < LHS_NUM_ROWS_PER_BLOCK; ++row) {
+	for(int row = 0; row < NUM_ROWS_PER_BLOCK; ++row) {
 		const ivec3 local_id {static_cast<int>((row / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE), static_cast<int>((row / config::G_BLOCKSIZE) % config::G_BLOCKSIZE), static_cast<int>(row % config::G_BLOCKSIZE)};
 		
 		__shared__ float current_mass_solid[3];
@@ -889,7 +911,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 			
 			__syncthreads();
 			
-			if(get_thread_index<BLOCK_SIZE, (LHS_NUM_ROWS_PER_BLOCK * NUM_COLUMNS_PER_BLOCK + BLOCK_SIZE - 1) / BLOCK_SIZE>(row * NUM_COLUMNS_PER_BLOCK + column) == threadIdx.x){
+			if(get_thread_index<BLOCK_SIZE, (NUM_ROWS_PER_BLOCK * NUM_COLUMNS_PER_BLOCK + BLOCK_SIZE - 1) / BLOCK_SIZE>(row * NUM_COLUMNS_PER_BLOCK + column) == threadIdx.x){
 				const float gradient_by_mass_solid = (current_gradient_solid_row[0] * current_gradient_solid_column[0] / current_mass_solid[0] + current_gradient_solid_row[1] * current_gradient_solid_column[1] / current_mass_solid[1] + current_gradient_solid_row[2] * current_gradient_solid_column[2] / current_mass_solid[2]);
 				const float gradient_by_mass_fluid = (current_gradient_fluid_row[0] * current_gradient_fluid_column[0] / current_mass_fluid[0] + current_gradient_fluid_row[1] * current_gradient_fluid_column[1] / current_mass_fluid[1] + current_gradient_fluid_row[2] * current_gradient_fluid_column[2] / current_mass_fluid[2]);
 				
@@ -911,6 +933,9 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 				a[1][0] = 0.0f;
 				a[2][0] = 0.0f;
 				
+				//Clear other values
+				a[3][3] = 0.0f;
+				
 				//Only calculate for particles with mass bigger than 0 (otherwise we will divide by 0)
 				if(
 					   current_mass_solid[0] > 0.0f
@@ -919,8 +944,9 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 				){
 					a[0][0] = current_scaling_solid / dt.count() + dt.count() * gradient_by_mass_solid;
 					a[0][3] = -dt.count() * gradient_and_coupling_by_mass_solid;
+					a[3][3] += dt.count() * coupling_by_mass_solid;
 				}else{
-					a[0][0] = 0.0f;
+					a[0][0] = current_scaling_solid / dt.count();
 					a[0][3] = 0.0f;
 				}
 				
@@ -934,25 +960,13 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 					a[1][3] = dt.count() * gradient_and_coupling_by_mass_fluid;
 					a[2][2] = dt.count() * boundary_by_mass;
 					a[2][3] = dt.count() * boundary_and_coupling_by_mass_fluid;
+					a[3][3] += dt.count() * coupling_by_mass_fluid;
 				}else{
 					a[1][1] = 0.0f;
 					a[1][2] = 0.0f;
 					a[1][3] = 0.0f;
 					a[2][2] = 0.0f;
 					a[2][3] = 0.0f;
-				}
-				
-				if(
-					   current_mass_solid[0] > 0.0f
-					&& current_mass_solid[1] > 0.0f
-					&& current_mass_solid[2] > 0.0f
-					&& current_mass_fluid[0] > 0.0f
-					&& current_mass_fluid[1] > 0.0f
-					&& current_mass_fluid[2] > 0.0f
-				){
-					a[3][3] += dt.count() * (coupling_by_mass_solid + coupling_by_mass_fluid);
-				}else{
-					a[3][3] = 0.0f;
 				}
 				
 				//Fill symmetric
@@ -973,19 +987,19 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 					if(
 						   current_mass_solid[k] > 0.0f
 					){
-						solve_velocity[k][0][0] = dt.count() * current_gradient_solid_column[k] / current_mass_solid[k];
-						solve_velocity[k][0][2] = dt.count() * current_coupling_solid_column[k] / current_mass_solid[k];
+						solve_velocity[k][0][0] = -dt.count() * current_gradient_solid_column[k] / current_mass_solid[k];
+						solve_velocity[k][0][3] = dt.count() * current_coupling_solid_column[k] / current_mass_solid[k];
 					}else{
 						solve_velocity[k][0][0] = 0.0f;
-						solve_velocity[k][0][2] = 0.0f;
+						solve_velocity[k][0][3] = 0.0f;
 					}
 					
 					if(
 						   current_mass_fluid[k] > 0.0f
 					){
-						solve_velocity[k][1][1] = dt.count() * current_gradient_fluid_column[k] / current_mass_fluid[k];
-						solve_velocity[k][1][2] = dt.count() * current_boundary_fluid_row[k] / current_mass_fluid[k];
-						solve_velocity[k][1][3] = dt.count() * current_coupling_fluid_column[k] / current_mass_fluid[k];
+						solve_velocity[k][1][1] = -dt.count() * current_gradient_fluid_column[k] / current_mass_fluid[k];
+						solve_velocity[k][1][2] = -dt.count() * current_boundary_fluid_row[k] / current_mass_fluid[k];
+						solve_velocity[k][1][3] = -dt.count() * current_coupling_fluid_column[k] / current_mass_fluid[k];
 					}else{
 						solve_velocity[k][1][1] = 0.0f;
 						solve_velocity[k][1][2] = 0.0f;
@@ -995,10 +1009,14 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 				
 				//Store at index (blockid + row, blockid + column), adding it to existing value
 				for(size_t i = 0; i < LHS_MATRIX_SIZE_Y; ++i){
-					const int row_index = i * LHS_NUM_ROWS_PER_BLOCK * num_blocks + base_row + row;
+					const int row_index = i * NUM_ROWS_PER_BLOCK * num_blocks + base_row + row;
 					for(size_t j = 0; j < lhs_num_blocks_per_row[i]; ++j){
 						
 						const int column_index = iq_lhs_rows[row_index] + j * NUM_COLUMNS_PER_BLOCK + column;
+						
+						if(a[i][lhs_block_offsets_per_row[i][j]] != 0.0f){
+							//printf("ABC0 %d %d %d # %d %d\n", static_cast<int>(i), static_cast<int>(j), static_cast<int>(lhs_block_offsets_per_row[i][j]), row_index, column_index);
+						}
 						
 						atomicAdd(&(iq_lhs_values[column_index]), a[i][lhs_block_offsets_per_row[i][j]]);
 					}
@@ -1006,10 +1024,14 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 				
 				for(int k = 0; k < 3; ++k){
 					for(size_t i = 0; i < SOLVE_VELOCITY_MATRIX_SIZE_Y; ++i){
-						const int row_index = i * SOLVE_VELOCITY_NUM_ROWS_PER_BLOCK * num_blocks + base_row + row;
+						const int row_index = i * 3 * NUM_ROWS_PER_BLOCK * num_blocks + 3 * base_row + 3 * row + k;
 						for(size_t j = 0; j < solve_velocity_num_blocks_per_row[i]; ++j){
 							
 							const int column_index = iq_solve_velocity_rows[row_index] + j * NUM_COLUMNS_PER_BLOCK + column;
+							
+							if(solve_velocity[k][i][solve_velocity_block_offsets_per_row[i][j]] != 0.0f){
+								//printf("ABC0 %d %d %d %d # %d %d\n", static_cast<int>(i), static_cast<int>(j), static_cast<int>(solve_velocity_block_offsets_per_row[i][j]), k, row_index, column_index);
+							}
 							
 							atomicAdd(&(iq_solve_velocity_values[column_index]), solve_velocity[k][i][solve_velocity_block_offsets_per_row[i][j]]);
 						}
@@ -1018,7 +1040,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 			}
 		}
 		
-		if(get_thread_index<BLOCK_SIZE, (LHS_NUM_ROWS_PER_BLOCK + BLOCK_SIZE - 1) / BLOCK_SIZE>(row) == threadIdx.x){
+		if(get_thread_index<BLOCK_SIZE, (NUM_ROWS_PER_BLOCK + BLOCK_SIZE - 1) / BLOCK_SIZE>(row) == threadIdx.x){
 			const float gradient_and_velocity_solid = (current_gradient_solid_row[0] * current_velocity_solid[0] + current_gradient_solid_row[1] * current_velocity_solid[1] + current_gradient_solid_row[2] * current_velocity_solid[2]);
 			const float gradient_and_velocity_fluid = (current_gradient_fluid_row[0] * current_velocity_fluid[0] + current_gradient_fluid_row[1] * current_velocity_fluid[1] + current_gradient_fluid_row[2] * current_velocity_fluid[2]);
 			const float boundary_and_velocity_fluid = (current_boundary_fluid_row[0] * current_velocity_fluid[0] + current_boundary_fluid_row[1] * current_velocity_fluid[1] + current_boundary_fluid_row[2] * current_velocity_fluid[2]);
@@ -1038,7 +1060,12 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 			
 			
 			for(size_t i = 0; i < LHS_MATRIX_SIZE_Y; ++i){
-				const int row_index = i * LHS_NUM_ROWS_PER_BLOCK * num_blocks + base_row + row;
+				const int row_index = i * NUM_ROWS_PER_BLOCK * num_blocks + base_row + row;
+				
+				if(b[i] != 0.0f){
+					//printf("ABC1 %d %d\n", static_cast<int>(i), row_index);
+				}
+				
 				atomicAdd(&(iq_rhs[row_index]), b[i]);
 			}
 		}
