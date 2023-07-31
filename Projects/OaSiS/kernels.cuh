@@ -1074,7 +1074,7 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 		dws.val(d) = A[d] * dt.count() * config::G_D_INV + ((d & 0x3) != 0 ? 0.f : 1.f);
 	}
 	
-	//FIXME: Only do this if we have the correct kernel
+#if (FIXED_COROTATED_GHOST_ENABLE_STRAIN_UPDATE == 1)
 	
 	//Update determinante of deformation gradiant
 	//Divergence of velocity multiplied with time and transfered to global space
@@ -1085,6 +1085,8 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 	if(data.J < 0.1) {
 		data.J = 0.1;
 	}
+	
+#endif
 
 	{
 		vec9 F;
@@ -2102,7 +2104,7 @@ __forceinline__ __device__ void calculate_contribution<MaterialE::FIXED_COROTATE
 		dws.val(d) = A[d] * dt.count() * config::G_D_INV + ((d & 0x3) != 0 ? 0.f : 1.f);
 	}
 	
-	//FIXME: Only do this if we have the correct kernel
+#if (FIXED_COROTATED_GHOST_ENABLE_STRAIN_UPDATE == 1)
 	
 	//Update determinante of deformation gradiant
 	//Divergence of velocity multiplied with time and transfered to global space
@@ -2113,6 +2115,8 @@ __forceinline__ __device__ void calculate_contribution<MaterialE::FIXED_COROTATE
 	if(data.J < 0.1) {
 		data.J = 0.1;
 	}
+	
+#endif
 
 	{
 		vec9 F;

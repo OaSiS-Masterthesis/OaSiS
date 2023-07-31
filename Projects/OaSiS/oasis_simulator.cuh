@@ -854,6 +854,7 @@ struct OasisSimulator {
 						*/
 						
 						
+						/*
 						std::vector<int> printout_tmp0(3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1);
 						std::vector<int> printout_tmp1(3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
 						std::vector<float> printout_tmp2(3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
@@ -895,6 +896,7 @@ struct OasisSimulator {
 							}
 						}
 						std::cout << std::endl;
+						*/
 						
 						
 						//IQ-System solve
@@ -915,6 +917,37 @@ struct OasisSimulator {
 						iq_solve_velocity->apply(iq_result, iq_solve_velocity_result);
 						
 						ginkgo_executor->synchronize();
+						
+						//Update velocity and strain
+						match(particle_bins[rollid][solid_id])([this, &cu_dev, &solid_id, &fluid_id, &iq_solve_velocity_result, &iq_result](const auto& particle_buffer_solid) {
+							cu_dev.compute_launch({partition_block_count, iq::BLOCK_SIZE}, iq::update_velocity_and_strain, particle_buffer_solid, get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_solve_velocity_result->get_const_values(), iq_solve_velocity_result->get_const_values() + 3 * exterior_block_count * config::G_BLOCKVOLUME, iq_result->get_const_values());
+						});
+						
+						cu_dev.syncStream<streamIdx::COMPUTE>();
+						
+						/*
+						std::vector<float> printout_tmp4(3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						std::vector<float> printout_tmp5(iq::LHS_MATRIX_SIZE_Y * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						
+						cudaMemcpyAsync(printout_tmp4.data(), iq_solve_velocity_result->get_const_values(), sizeof(float) * 3 * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp5.data(), iq_result->get_const_values(), sizeof(float) * iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
+						
+						cudaDeviceSynchronize();
+						
+						std::cout << std::endl;
+						for(size_t j = 0; j < 3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME; ++j){
+							std::cout << printout_tmp4[j] << " ";
+						}
+						std::cout << std::endl;
+						for(size_t k = 0; k < iq::LHS_MATRIX_SIZE_Y; ++k){
+							for(size_t j = 0; j < iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME; ++j){
+								std::cout << printout_tmp5[k * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + j] << " ";
+							}
+							std::cout << std::endl;
+						}
+						*/
+						
+						
 					}
 					
 					timer.tock(fmt::format("GPU[{}] frame {} step {} IQ solve", gpuid, cur_frame, cur_step));
