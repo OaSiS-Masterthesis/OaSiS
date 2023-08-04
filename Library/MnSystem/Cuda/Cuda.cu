@@ -108,11 +108,11 @@ Cuda::Cuda()
 		cudaDeviceSynchronize();
 		printf(
 			"\t[InitInfo -- memory] device %d\n\t\tfree bytes/total bytes: "
-			"%lu/%lu,\n\t\tpre-allocated size: %lu bytes\n\n",
+			"%llu/%llu,\n\t\tpre-allocated size: %llu bytes\n\n",
 			i,
-			static_cast<long unsigned>(free_byte),
-			static_cast<long unsigned>(total_byte),
-			static_cast<long unsigned>(free_byte >> MEM_POOL_CTRL)
+			static_cast<long long unsigned>(free_byte),
+			static_cast<long long unsigned>(total_byte),
+			static_cast<long long unsigned>(free_byte >> MEM_POOL_CTRL)
 		);
 	}
 

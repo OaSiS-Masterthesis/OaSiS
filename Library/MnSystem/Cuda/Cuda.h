@@ -261,6 +261,12 @@ class Cuda : public ManagedSingleton<Cuda> {
 			// setContext();
 			check_cuda_errors(cudaMemsetAsync(addr, value, sizeof(Type) * size, stream((unsigned) sid)));
 		}
+		
+		bool supportsConcurrentManagedAccess() {
+			int concurrentManagedAccess;
+			check_cuda_errors(cudaDeviceGetAttribute(&concurrentManagedAccess, cudaDevAttrConcurrentManagedAccess, dev_id));
+			return (concurrentManagedAccess != 0);
+		}
 	};//< [end] struct CudaContext
 
    private:

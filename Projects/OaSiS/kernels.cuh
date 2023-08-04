@@ -2914,7 +2914,7 @@ __global__ void check_partition_domain(uint32_t block_count, int did, Domain con
 }
 
 template<typename Partition, typename ParticleBuffer, typename AlphaShapesParticleBuffer, typename ParticleArray>
-__global__ void retrieve_particle_buffer(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, const AlphaShapesParticleBuffer alpha_shapes_particle_buffer, ParticleArray particle_array, int* alpha_shapes_point_type_transfer_device_buffer, float* alpha_shapes_normal_transfer_device_buffer, float* alpha_shapes_mean_curvature_transfer_device_buffer, float* alpha_shapes_gauss_curvature_transfer_device_buffer, int* parcount) {
+__global__ void retrieve_particle_buffer(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, const AlphaShapesParticleBuffer alpha_shapes_particle_buffer, ParticleArray particle_array, unsigned int* particle_id_mapping_buffer, int* alpha_shapes_point_type_transfer_device_buffer, float* alpha_shapes_normal_transfer_device_buffer, float* alpha_shapes_mean_curvature_transfer_device_buffer, float* alpha_shapes_gauss_curvature_transfer_device_buffer, int* parcount) {
 	const int particle_counts	= next_particle_buffer.particle_bucket_sizes[blockIdx.x];
 	const ivec3 blockid			= partition.active_keys[blockIdx.x];
 	const auto advection_bucket = next_particle_buffer.blockbuckets + blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK;
@@ -2943,6 +2943,9 @@ __global__ void retrieve_particle_buffer(Partition partition, Partition prev_par
 
 		//Calculate particle id in destination buffer
 		const auto particle_id = atomicAdd(parcount, 1);
+		
+		//Store id in mapping
+		particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib] = particle_id;
 
 		//Copy position to destination buffer
 		particle_array.val(_0, particle_id) = source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
