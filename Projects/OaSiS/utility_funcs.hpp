@@ -138,13 +138,16 @@ constexpr ivec3 get_cell_id(const std::array<float, 3>& position, const std::arr
 	return ivec3(static_cast<int>(std::floor(position[0] * config::G_DX_INV - relative_offset[0] * config::G_BLOCKSIZE - 0.5f * (Degree - 1))), static_cast<int>(std::floor(position[1] * config::G_DX_INV - relative_offset[1] * config::G_BLOCKSIZE - 0.5f * (Degree - 1))), static_cast<int>(std::floor(position[2] * config::G_DX_INV - relative_offset[2] * config::G_BLOCKSIZE - 0.5f * (Degree - 1))));
 }
 
+template<size_t SideLength>
 constexpr int dir_offset(const std::array<int, 3>& d) {
-	return (d[0] + 1) * 9 + (d[1] + 1) * 3 + d[2] + 1;
+	return (d[0] + (SideLength / 2)) * SideLength * SideLength + (d[1] + (SideLength / 2)) * SideLength + d[2] + (SideLength / 2);
 }
+
+template<size_t SideLength>
 constexpr void dir_components(int dir, std::array<int, 3>& d) {
-	d[2] = (dir % 3) - 1;
-	d[1] = ((dir / 3) % 3) - 1;
-	d[0] = ((dir / 9) % 3) - 1;
+	d[2] = (dir % SideLength) - (SideLength / 2);
+	d[1] = ((dir / SideLength) % SideLength) - (SideLength / 2);
+	d[0] = ((dir / (SideLength * SideLength)) % SideLength) - (SideLength / 2);
 }
 //NOLINTEND(readability-magic-numbers) Magic numbers are formula-specific
 

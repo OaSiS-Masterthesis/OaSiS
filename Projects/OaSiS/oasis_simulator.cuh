@@ -623,8 +623,8 @@ struct OasisSimulator {
 		cur_time = Duration::zero();
 		for(cur_frame = 1; cur_frame <= nframes; ++cur_frame) {
 			const Duration next_time = cur_time + seconds_per_frame;
-			for(Duration current_step_time = Duration::zero(); current_step_time < seconds_per_frame; current_step_time += dt, cur_time += dt, cur_step++) {
-			//for(Duration current_step_time = Duration::zero(); current_step_time < Duration::zero(); current_step_time += dt, cur_time += dt, cur_step++) {
+			//FIXME:for(Duration current_step_time = Duration::zero(); current_step_time < seconds_per_frame; current_step_time += dt, cur_time += dt, cur_step++) {
+			for(Duration current_step_time = Duration::zero(); current_step_time < Duration::zero(); current_step_time += dt, cur_time += dt, cur_step++) {
 				//Calculate maximum grid velocity and update the grid velocity
 				{
 					auto& cu_dev = Cuda::ref_cuda_context(gpuid);
@@ -690,10 +690,12 @@ struct OasisSimulator {
 								alpha_shapes_launch_config.db = dim3(ALPHA_SHAPES_BLOCK_SIZE, 1, 1);
 								
 								//partition_block_count; {config::G_BLOCKSIZE, config::G_BLOCKSIZE, config::G_BLOCKSIZE}
-								cu_dev.compute_launch(std::move(alpha_shapes_launch_config), alpha_shapes, particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], alpha_shapes_particle_buffers[i], static_cast<int*>(nullptr), static_cast<int*>(nullptr), start_index, static_cast<int>(cur_frame));
+								cu_dev.compute_launch(std::move(alpha_shapes_launch_config), alpha_shapes, particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], alpha_shapes_particle_buffers[i], static_cast<int*>(nullptr), static_cast<int*>(nullptr), static_cast<unsigned int*>(nullptr), start_index, static_cast<int>(cur_frame));
 							}
 						});
 					}
+					
+					cu_dev.syncStream<streamIdx::COMPUTE>();
 					
 					timer.tock(fmt::format("GPU[{}] frame {} step {} alpha_shapes", gpuid, cur_frame, cur_step));
 					
@@ -1405,6 +1407,16 @@ struct OasisSimulator {
 			
 			fmt::print(fg(fmt::color::red), "total number of particles {}\n", particle_count);
 			
+			//Generate particle_id_mapping
+			unsigned int* particle_id_mapping_buffer = tmps.particle_id_mapping_buffer;
+			match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count, &particle_id_mapping_buffer](const auto& particle_buffer) {
+				//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+				cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, generate_particle_id_mapping, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), particle_id_mapping_buffer, d_particle_count);
+			});
+			
+			cu_dev.syncStream<streamIdx::COMPUTE>();
+			
+			std::cout << std::endl << "TEST0" << std::endl;
 			#ifdef UPDATE_ALPHA_SHAPES_BEFORE_OUTPUT
 			//Recalculate alpha shapes for current buffer state
 			{
@@ -1417,7 +1429,7 @@ struct OasisSimulator {
 				//Initialize finalized_triangle_count with 0
 				check_cuda_errors(cudaMemsetAsync(finalized_triangle_count, 0, sizeof(int), cu_dev.stream_compute()));
 
-				match(particle_bins[rollid][i])([this, &cu_dev, &i](const auto& particle_buffer) {
+				match(particle_bins[rollid][i])([this, &cu_dev, &i, &particle_id_mapping_buffer](const auto& particle_buffer) {
 					//Clear buffer before use
 					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, clear_alpha_shapes_particle_buffer, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), partitions[(rollid + 1) % BIN_COUNT], alpha_shapes_particle_buffers[i]);
 					check_cuda_errors(cudaMemset(alpha_shapes_triangle_buffer, 0, sizeof(int) * MAX_ALPHA_SHAPE_TRIANGLES_PER_MODEL));
@@ -1429,25 +1441,25 @@ struct OasisSimulator {
 						alpha_shapes_launch_config.db = dim3(ALPHA_SHAPES_BLOCK_SIZE, 1, 1);
 						
 						//partition_block_count; {config::G_BLOCKSIZE, config::G_BLOCKSIZE, config::G_BLOCKSIZE}
-						cu_dev.compute_launch(std::move(alpha_shapes_launch_config), alpha_shapes, particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], alpha_shapes_particle_buffers[i], alpha_shapes_triangle_buffer, finalized_triangle_count, start_index, static_cast<int>(cur_frame));
+						cu_dev.compute_launch(std::move(alpha_shapes_launch_config), alpha_shapes, particle_buffer, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], alpha_shapes_particle_buffers[i], alpha_shapes_triangle_buffer, finalized_triangle_count, particle_id_mapping_buffer, start_index, static_cast<int>(cur_frame));
 					}
 				});
 			}
+			
+			cu_dev.syncStream<streamIdx::COMPUTE>();
+			
+			std::cout << std::endl << "TEST1" << std::endl;
 
 			int finalized_triangle_count_host;
 			check_cuda_errors(cudaMemcpyAsync(&finalized_triangle_count_host, finalized_triangle_count, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute()));
 			cu_dev.syncStream<streamIdx::COMPUTE>();
-			alpha_shapes_triangle_transfer_host_buffer.resize(3 * finalized_triangle_count_host);
+			alpha_shapes_triangle_transfer_host_buffer.resize(finalized_triangle_count_host);
 			#endif
 
 			//Copy particle data to output buffer
-			unsigned int* particle_id_mapping_buffer = tmps.particle_id_mapping_buffer;
 			match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count, &particle_id_mapping_buffer](const auto& particle_buffer) {
 				//partition_block_count; G_PARTICLE_BATCH_CAPACITY
-				cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), alpha_shapes_particle_buffers[i], particles[i], particle_id_mapping_buffer, static_cast<int*>(alpha_shapes_point_type_transfer_device_buffers[i]), static_cast<float*>(alpha_shapes_normal_transfer_device_buffers[i]), static_cast<float*>(alpha_shapes_mean_curvature_transfer_device_buffers[i]), static_cast<float*>(alpha_shapes_gauss_curvature_transfer_device_buffers[i]), d_particle_count);
-				#ifdef UPDATE_ALPHA_SHAPES_BEFORE_OUTPUT			
-				cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, alpha_shapes_resolve_triangle_mapping, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], alpha_shapes_triangle_buffer, particle_id_mapping_buffer, finalized_triangle_count);
-				#endif
+				cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), alpha_shapes_particle_buffers[i], particles[i], particle_id_mapping_buffer, static_cast<int*>(alpha_shapes_point_type_transfer_device_buffers[i]), static_cast<float*>(alpha_shapes_normal_transfer_device_buffers[i]), static_cast<float*>(alpha_shapes_mean_curvature_transfer_device_buffers[i]), static_cast<float*>(alpha_shapes_gauss_curvature_transfer_device_buffers[i]));
 			});
 
 			cu_dev.syncStream<streamIdx::COMPUTE>();

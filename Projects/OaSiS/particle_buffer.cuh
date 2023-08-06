@@ -107,7 +107,7 @@ struct ParticleBufferImpl : Instance<particle_buffer_<particle_bin_<Mt>>> {
 		if(blockno == -1) {
 #if PRINT_NEGATIVE_BLOGNOS
 			std::array<int, config::NUM_DIMENSIONS> offset {};
-			dir_components(dirtag, offset);
+			dir_components<3>(dirtag, offset);
 			//NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg, readability-magic-numbers) Cuda has no other way to print; Numbers are array indices to be printed
 			printf("loc(%d, %d, %d) dir(%d, %d, %d) particle_id_in_block(%d)\n", cellid[0], cellid[1], cellid[2], offset[0], offset[1], offset[2], particle_id_in_block);
 #endif

@@ -123,7 +123,7 @@ __global__ void initial_cell_bucket_to_block(const int* cell_particle_counts, in
 			buckets[blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK + particle_id_in_block] = cellbuckets[blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK + cellno * config::G_MAX_PARTICLES_IN_CELL + particle_id_in_cell];
 			
 			//Update cellbucket value
-			cellbuckets[blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK + cellno * config::G_MAX_PARTICLES_IN_CELL + particle_id_in_cell] = (dir_offset({0, 0, 0}) * config::G_PARTICLE_NUM_PER_BLOCK) | particle_id_in_block;
+			cellbuckets[blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK + cellno * config::G_MAX_PARTICLES_IN_CELL + particle_id_in_cell] = (dir_offset<3>({0, 0, 0}) * config::G_PARTICLE_NUM_PER_BLOCK) | particle_id_in_block;
 		}
 		__syncthreads();
 	}
@@ -354,7 +354,7 @@ __global__ void init_adv_bucket(const int* particle_bucket_sizes, int* buckets) 
 
 	for(int particle_id_in_block = static_cast<int>(threadIdx.x); particle_id_in_block < particle_counts; particle_id_in_block += static_cast<int>(blockDim.x)) {
 		//Combine offset of 0 with local index in block
-		bucket[particle_id_in_block] = (dir_offset({0, 0, 0}) * config::G_PARTICLE_NUM_PER_BLOCK) | particle_id_in_block;
+		bucket[particle_id_in_block] = (dir_offset<3>({0, 0, 0}) * config::G_PARTICLE_NUM_PER_BLOCK) | particle_id_in_block;
 	}
 }
 
@@ -1205,7 +1205,7 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 
 			//Retrieve the direction (first stripping the particle id by division)
 			ivec3 offset;
-			dir_components(advect / config::G_PARTICLE_NUM_PER_BLOCK, offset.data_arr());
+			dir_components<3>(advect / config::G_PARTICLE_NUM_PER_BLOCK, offset.data_arr());
 
 			//Retrieve the particle id by AND for lower bits
 			source_pidib = advect & (config::G_PARTICLE_NUM_PER_BLOCK - 1);
@@ -1312,7 +1312,7 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 			//Store index and movement direction
 			{
 				//Calculate direction offset
-				const int dirtag = dir_offset(((base_index - 1) / static_cast<int>(config::G_BLOCKSIZE) - (new_global_base_index - 1) / static_cast<int>(config::G_BLOCKSIZE)).data_arr());
+				const int dirtag = dir_offset<3>(((base_index - 1) / static_cast<int>(config::G_BLOCKSIZE) - (new_global_base_index - 1) / static_cast<int>(config::G_BLOCKSIZE)).data_arr());
 
 				//Store particle in new block
 				next_particle_buffer.add_advection(partition, new_global_base_index - 1, dirtag, particle_id_in_block);
@@ -1460,7 +1460,7 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 
 			//Retrieve the direction (first stripping the particle id by division)
 			ivec3 offset;
-			dir_components(advect / config::G_PARTICLE_NUM_PER_BLOCK, offset.data_arr());
+			dir_components<3>(advect / config::G_PARTICLE_NUM_PER_BLOCK, offset.data_arr());
 
 			//Retrieve the particle id by AND for lower bits
 			source_pidib = advect & (config::G_PARTICLE_NUM_PER_BLOCK - 1);
@@ -2418,7 +2418,7 @@ __forceinline__ __device__ float spawn_new_particles(ParticleBuffer<MaterialType
 		//Store index and movement direction
 		{
 			//Calculate direction offset
-			const int dirtag = dir_offset(((global_base_index - 1) / static_cast<int>(config::G_BLOCKSIZE) - (new_global_base_index - 1) / static_cast<int>(config::G_BLOCKSIZE)).data_arr());
+			const int dirtag = dir_offset<3>(((global_base_index - 1) / static_cast<int>(config::G_BLOCKSIZE) - (new_global_base_index - 1) / static_cast<int>(config::G_BLOCKSIZE)).data_arr());
 			
 			//Store particle in new block
 			next_particle_buffer.add_advection(partition, cellid, dirtag, particle_id_in_block);
@@ -2913,8 +2913,8 @@ __global__ void check_partition_domain(uint32_t block_count, int did, Domain con
 	}
 }
 
-template<typename Partition, typename ParticleBuffer, typename AlphaShapesParticleBuffer, typename ParticleArray>
-__global__ void retrieve_particle_buffer(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, const AlphaShapesParticleBuffer alpha_shapes_particle_buffer, ParticleArray particle_array, unsigned int* particle_id_mapping_buffer, int* alpha_shapes_point_type_transfer_device_buffer, float* alpha_shapes_normal_transfer_device_buffer, float* alpha_shapes_mean_curvature_transfer_device_buffer, float* alpha_shapes_gauss_curvature_transfer_device_buffer, int* parcount) {
+template<typename Partition, typename ParticleBuffer>
+__global__ void generate_particle_id_mapping(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, unsigned int* particle_id_mapping_buffer, int* parcount) {
 	const int particle_counts	= next_particle_buffer.particle_bucket_sizes[blockIdx.x];
 	const ivec3 blockid			= partition.active_keys[blockIdx.x];
 	const auto advection_bucket = next_particle_buffer.blockbuckets + blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK;
@@ -2926,7 +2926,41 @@ __global__ void retrieve_particle_buffer(Partition partition, Partition prev_par
 
 		//Retrieve the direction (first stripping the particle id by division)
 		ivec3 source_blockid;
-		dir_components(advect / config::G_PARTICLE_NUM_PER_BLOCK, source_blockid.data_arr());
+		dir_components<3>(advect / config::G_PARTICLE_NUM_PER_BLOCK, source_blockid.data_arr());
+
+		//Retrieve the particle id by AND for lower bits
+		const auto source_pidib = advect % config::G_PARTICLE_NUM_PER_BLOCK;
+
+		//Get global index by adding the blockid
+		source_blockid += blockid;
+
+		//Get block from partition
+		const auto advection_source_blockno_from_partition = prev_partition.query(source_blockid);
+
+		//Calculate particle id in destination buffer
+		const unsigned int		particle_id = atomicAdd(parcount, 1);
+		
+		//Store id in mapping
+		particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno_from_partition] * config::G_BIN_CAPACITY + source_pidib] = particle_id;
+		
+		printf("ABC0 %d %d %d # %d %d # %u - ", blockid[0], blockid[1], blockid[2], advection_source_blockno_from_partition, source_pidib, particle_id);
+	}
+}
+
+template<typename Partition, typename ParticleBuffer, typename AlphaShapesParticleBuffer, typename ParticleArray>
+__global__ void retrieve_particle_buffer(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, const AlphaShapesParticleBuffer alpha_shapes_particle_buffer, ParticleArray particle_array, unsigned int* particle_id_mapping_buffer, int* alpha_shapes_point_type_transfer_device_buffer, float* alpha_shapes_normal_transfer_device_buffer, float* alpha_shapes_mean_curvature_transfer_device_buffer, float* alpha_shapes_gauss_curvature_transfer_device_buffer) {
+	const int particle_counts	= next_particle_buffer.particle_bucket_sizes[blockIdx.x];
+	const ivec3 blockid			= partition.active_keys[blockIdx.x];
+	const auto advection_bucket = next_particle_buffer.blockbuckets + blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK;
+
+	// auto particle_offset = particle_buffer.bin_offsets[blockIdx.x];
+	for(int particle_id_in_block = static_cast<int>(threadIdx.x); particle_id_in_block < particle_counts; particle_id_in_block += static_cast<int>(blockDim.x)) {
+		//Fetch advection (direction at high bits, particle in in cell at low bits)
+		const auto advect = advection_bucket[particle_id_in_block];
+
+		//Retrieve the direction (first stripping the particle id by division)
+		ivec3 source_blockid;
+		dir_components<3>(advect / config::G_PARTICLE_NUM_PER_BLOCK, source_blockid.data_arr());
 
 		//Retrieve the particle id by AND for lower bits
 		const auto source_pidib = advect % config::G_PARTICLE_NUM_PER_BLOCK;
@@ -2941,11 +2975,8 @@ __global__ void retrieve_particle_buffer(Partition partition, Partition prev_par
 		const auto source_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib / config::G_BIN_CAPACITY);
 		const auto alpha_shapes_source_bin = alpha_shapes_particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib / config::G_BIN_CAPACITY);
 
-		//Calculate particle id in destination buffer
-		const auto particle_id = atomicAdd(parcount, 1);
-		
-		//Store id in mapping
-		particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib] = particle_id;
+		//Fetch particle id in destination buffer
+		const unsigned int particle_id = particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno_from_partition] * config::G_BIN_CAPACITY + source_pidib];
 
 		//Copy position to destination buffer
 		particle_array.val(_0, particle_id) = source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);

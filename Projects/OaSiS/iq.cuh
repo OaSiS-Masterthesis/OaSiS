@@ -368,7 +368,7 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 
 		//Retrieve the direction (first stripping the particle id by division)
 		ivec3 offset;
-		dir_components(advect / config::G_PARTICLE_NUM_PER_BLOCK, offset.data_arr());
+		dir_components<3>(advect / config::G_PARTICLE_NUM_PER_BLOCK, offset.data_arr());
 
 		//Retrieve the particle id by AND for lower bits
 		source_pidib = advect & (config::G_PARTICLE_NUM_PER_BLOCK - 1);
@@ -505,7 +505,7 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 
 		//Retrieve the direction (first stripping the particle id by division)
 		ivec3 offset;
-		dir_components(advect / config::G_PARTICLE_NUM_PER_BLOCK, offset.data_arr());
+		dir_components<3>(advect / config::G_PARTICLE_NUM_PER_BLOCK, offset.data_arr());
 
 		//Retrieve the particle id by AND for lower bits
 		source_pidib = advect & (config::G_PARTICLE_NUM_PER_BLOCK - 1);
@@ -1167,7 +1167,7 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 
 			//Retrieve the direction (first stripping the particle id by division)
 			ivec3 offset;
-			dir_components(advect / config::G_PARTICLE_NUM_PER_BLOCK, offset.data_arr());
+			dir_components<3>(advect / config::G_PARTICLE_NUM_PER_BLOCK, offset.data_arr());
 
 			//Retrieve the particle id by AND for lower bits
 			source_pidib = advect & (config::G_PARTICLE_NUM_PER_BLOCK - 1);
