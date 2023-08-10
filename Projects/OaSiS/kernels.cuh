@@ -2948,7 +2948,7 @@ __global__ void generate_particle_id_mapping(Partition partition, Partition prev
 }
 
 template<typename Partition, typename ParticleBuffer, typename AlphaShapesParticleBuffer, typename ParticleArray>
-__global__ void retrieve_particle_buffer(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, const AlphaShapesParticleBuffer alpha_shapes_particle_buffer, ParticleArray particle_array, unsigned int* particle_id_mapping_buffer, int* alpha_shapes_point_type_transfer_device_buffer, float* alpha_shapes_normal_transfer_device_buffer, float* alpha_shapes_mean_curvature_transfer_device_buffer, float* alpha_shapes_gauss_curvature_transfer_device_buffer) {
+__global__ void retrieve_particle_buffer(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, const AlphaShapesParticleBuffer alpha_shapes_particle_buffer, ParticleArray particle_array, unsigned int* particle_id_mapping_buffer) {
 	const int particle_counts	= next_particle_buffer.particle_bucket_sizes[blockIdx.x];
 	const ivec3 blockid			= partition.active_keys[blockIdx.x];
 	const auto advection_bucket = next_particle_buffer.blockbuckets + blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK;
@@ -2982,13 +2982,54 @@ __global__ void retrieve_particle_buffer(Partition partition, Partition prev_par
 		particle_array.val(_0, particle_id) = source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
 		particle_array.val(_1, particle_id) = source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
 		particle_array.val(_2, particle_id) = source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
+	}
+}
+
+template<typename Partition, typename ParticleBuffer, typename AlphaShapesParticleBuffer>
+__global__ void retrieve_particle_buffer_alpha_shapes(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, const AlphaShapesParticleBuffer alpha_shapes_particle_buffer, unsigned int* particle_id_mapping_buffer, int* alpha_shapes_point_type_transfer_device_buffer, float* alpha_shapes_normal_transfer_device_buffer, float* alpha_shapes_mean_curvature_transfer_device_buffer, float* alpha_shapes_gauss_curvature_transfer_device_buffer) {
+	const int particle_counts	= next_particle_buffer.particle_bucket_sizes[blockIdx.x];
+	const ivec3 blockid			= partition.active_keys[blockIdx.x];
+	const auto advection_bucket = next_particle_buffer.blockbuckets + blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK;
+
+	// auto particle_offset = particle_buffer.bin_offsets[blockIdx.x];
+	for(int particle_id_in_block = static_cast<int>(threadIdx.x); particle_id_in_block < particle_counts; particle_id_in_block += static_cast<int>(blockDim.x)) {
+		//Fetch advection (direction at high bits, particle in in cell at low bits)
+		const auto advect = advection_bucket[particle_id_in_block];
+
+		//Retrieve the direction (first stripping the particle id by division)
+		ivec3 source_blockid;
+		dir_components<3>(advect / config::G_PARTICLE_NUM_PER_BLOCK, source_blockid.data_arr());
+
+		//Retrieve the particle id by AND for lower bits
+		const auto source_pidib = advect % config::G_PARTICLE_NUM_PER_BLOCK;
+
+		//Get global index by adding the blockid
+		source_blockid += blockid;
+
+		//Get block from partition
+		const auto advection_source_blockno_from_partition = prev_partition.query(source_blockid);
+
+		//Get bin from particle buffer
+		const auto source_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib / config::G_BIN_CAPACITY);
+		const auto alpha_shapes_source_bin = alpha_shapes_particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib / config::G_BIN_CAPACITY);
+
+		//Fetch particle id in destination buffer
+		const unsigned int particle_id = particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno_from_partition] * config::G_BIN_CAPACITY + source_pidib];
 		
-		alpha_shapes_point_type_transfer_device_buffer[particle_id] = *reinterpret_cast<const int*>(&alpha_shapes_source_bin.val(_0, source_pidib % config::G_BIN_CAPACITY));
-		alpha_shapes_normal_transfer_device_buffer[3 * particle_id] = alpha_shapes_source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
-		alpha_shapes_normal_transfer_device_buffer[3 * particle_id + 1] = alpha_shapes_source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
-		alpha_shapes_normal_transfer_device_buffer[3 * particle_id + 2] = alpha_shapes_source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
-		alpha_shapes_mean_curvature_transfer_device_buffer[particle_id] = alpha_shapes_source_bin.val(_4, source_pidib % config::G_BIN_CAPACITY);
-		alpha_shapes_gauss_curvature_transfer_device_buffer[particle_id] = alpha_shapes_source_bin.val(_5, source_pidib % config::G_BIN_CAPACITY);
+		if(alpha_shapes_point_type_transfer_device_buffer != nullptr){
+			alpha_shapes_point_type_transfer_device_buffer[particle_id] = *reinterpret_cast<const int*>(&alpha_shapes_source_bin.val(_0, source_pidib % config::G_BIN_CAPACITY));
+		}
+		if(alpha_shapes_normal_transfer_device_buffer != nullptr){
+			alpha_shapes_normal_transfer_device_buffer[3 * particle_id] = alpha_shapes_source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
+			alpha_shapes_normal_transfer_device_buffer[3 * particle_id + 1] = alpha_shapes_source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
+			alpha_shapes_normal_transfer_device_buffer[3 * particle_id + 2] = alpha_shapes_source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
+		}
+		if(alpha_shapes_mean_curvature_transfer_device_buffer != nullptr){
+			alpha_shapes_mean_curvature_transfer_device_buffer[particle_id] = alpha_shapes_source_bin.val(_4, source_pidib % config::G_BIN_CAPACITY);
+		}
+		if(alpha_shapes_gauss_curvature_transfer_device_buffer != nullptr){
+			alpha_shapes_gauss_curvature_transfer_device_buffer[particle_id] = alpha_shapes_source_bin.val(_5, source_pidib % config::G_BIN_CAPACITY);
+		}
 	}
 }
 
