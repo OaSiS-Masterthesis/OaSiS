@@ -2,7 +2,7 @@
 	"simulation": {
 		"gpuid": 0,
 		"fps": 1200,
-		"frames": 120,
+		"frames": 240,
 		"default_dt": 5e-6
 	},
 	"models": [
