@@ -15,6 +15,22 @@ private:
 	
 	std::map<uintptr_t, Space> spaces;
 	
+	void merge(const size_t i){
+		//Merge if possible
+		if((i + 1) < spaces.count()){
+			if(spaces[i+1].second.is_free && spaces[i+1].first == spaces[i].first + spaces[i].second.size){
+				spaces[i].second.size += spaces[i+1].second.size;
+				spaces.erase(i+1);
+			}
+		}
+		if(i > 0){
+			if(spaces[i-1].second.is_free && spaces[i].first == spaces[i-1].first + spaces[i-1].second.size){
+				spaces[i-1].second.size += spaces[i].second.size;
+				spaces.erase(i);
+			}
+		}
+	}
+	
 public:	
 
 	SpaceManager(void* memory, size_t size)
@@ -57,19 +73,7 @@ public:
 				if(next_aligned_address == reinterpret_cast<uintptr_t>(p) && space_entry.first){
 					space_entry.second.alignment = 0;
 					space_entry.second.is_free = true;
-					//Merge if possible
-					if((i + 1) < spaces.count()){
-						if(spaces[i+1].second.is_free && spaces[i+1].first == space_entry.first + space_entry.second.size){
-							space_entry.second.size += spaces[i+1].second.size;
-							spaces.erase(i+1);
-						}
-					}
-					if(i > 0){
-						if(spaces[i-1].second.is_free && space_entry.first == spaces[i-1].first + spaces[i-1].second.size){
-							spaces[i-1].second.size += space_entry.second.size;
-							spaces.erase(i);
-						}
-					}
+					merge(i);
 					break;
 				}
 			}
@@ -80,8 +84,53 @@ public:
 	}
 	
 	//Compresses memory, providing as much connected free space as possible. Not moving locked locations
-	void compress(const std::vector<void*>& locked_locations){
-		
+	void defragmentate(const std::set<void*>& locked_locations){
+		bool move_happened = true;
+		while(move_happened){
+			move_happened = false;
+			for(size_t i = 0; i < spaces.count(); ++i){
+				std::pair<uintptr_t, Space>& space_entry = spaces[i];
+				if(locked_locations.find(reinterpret_cast<void*>(spaces[j].first) == locked_locations.end()){
+					if((i + 1) < spaces.count()){
+						if(space_entry.second.is_free){
+							//Find best fit
+							size_t smallest_diff = std::numeric_limits<size_t>::max();;
+							size_t best_fit_index;
+							bool found = false;
+							for(size_t j = i + 1; j < spaces.count(); ++j){
+								if(locked_locations.find(reinterpret_cast<void*>(spaces[j].first) == locked_locations.end()){
+									const uintptr_t next_aligned_address_current_free = space_entry.first + (spaces[j].second.alignment - space_entry.first % spaces[j].second.alignment);
+									const uintptr_t next_aligned_address_current_full = spaces[j].first + (spaces[j].second.alignment - spaces[j].first % spaces[j].second.alignment);
+									const size_t aligned_size_full = spaces[j].second.size - (next_aligned_address_current_full - spaces[j].first) + (next_aligned_address_current_free - space_entry.first);
+									if(spaces[j].second.is_free && aligned_size_full <= space_entry.second.size){
+										const size_t size_diff = space_entry.second.size - aligned_size_full;
+										if(size_diff < smallest_diff){
+											smallest_diff = size_diff;
+											best_fit_index = j;
+											found = true;
+										}
+									}
+								}
+							}
+							if(found){
+								//Move
+								const uintptr_t next_aligned_address_current_free = space_entry.first + (spaces[best_fit_index].second.alignment - space_entry.first % spaces[best_fit_index].second.alignment);
+								const uintptr_t next_aligned_address_current_full = spaces[best_fit_index].first + (spaces[best_fit_index].second.alignment - spaces[best_fit_index].first % spaces[best_fit_index].second.alignment);
+								const size_t aligned_size_full = spaces[best_fit_index].second.size - (next_aligned_address_current_full - spaces[best_fit_index].first) + (next_aligned_address_current_free - space_entry.first);
+								space_entry.size = aligned_size_full;
+								space_entry.alignment = spaces[best_fit_index].second.alignment;
+								space_entry.is_free = false;
+								
+								spaces[best_fit_index].second.alignment = 0;
+								spaces[best_fit_index].second.is_free = true;
+								merge(best_fit_index);
+								move_happened = true;
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 	
 	//Find free space, also consideringmemory that is currently in use. Returns wheter space was found and what locations to preempt
@@ -142,6 +191,7 @@ class ManagedMemory {
 	
 	intptr_t pointers = 1;
 	
+	int gpuid;
 	DeviceAllocator device_allocator;
 	
 	void* device_memory;
@@ -156,7 +206,7 @@ class ManagedMemory {
 	void* preempt(std::size_t size, std::size_t alignment){
 		void* ret = nullptr;
 		
-		//Compress memory
+		//Defragmentate memory
 		std::vector<void*> locks_device;
 		std::vector<void*> locks_swap;
 		for(std::pair<uintptr_t, MemoryType>& lock : locks){
@@ -167,8 +217,8 @@ class ManagedMemory {
 				locks_swap.push_back(lock_iter->second.first);
 			}
 		}
-		device_space_manager.compress(locks_device);
-		swap_space_manager.compress(locks_swap);
+		device_space_manager.defragmentate(locks_device);
+		swap_space_manager.defragmentate(locks_swap);
 		
 		//Look for free space
 		ret = device_space_manager.allocate(bytes, alignment);
@@ -253,7 +303,9 @@ class ManagedMemory {
 	}
 	
 	void move_memory(std::pair<uintptr_t, std::pair<void*, MemoryType>>::iterator mem_location_iter, const size_t size, const std::pair<void*, MemoryType> new_mem_location){
-		memCpy();
+		auto& cu_dev = Cuda::ref_cuda_context(gpuid);
+		check_cuda_errors(cudaMemcpyAsync(new_mem_location,first, mem_location_iter->decond.first, size, cudaMemcpyDefault, cu_dev.stream_compute()));
+		cu_dev.syncStream<streamIdx::COMPUTE>();
 		switch(mem_location_iter->second.second){
 			case DEVICE:
 				device_space_manager.deallocate(mem_location_iter->second.first, size);
@@ -271,7 +323,7 @@ class ManagedMemory {
 	}
 	
 	public:
-		ManagedMemory(DeviceAllocator& device_allocator)
+		ManagedMemory(DeviceAllocator& device_allocator, int gpuid)
 		: device_allocator(device_allocator)
 		{
 			device_memory = device_allocator.allocate(DeviceMemorySize);
@@ -293,7 +345,7 @@ class ManagedMemory {
 			}
 		}
 		
-		void compress(){
+		void defragmentate(){
 			std::vector<void*> locks_device;
 			std::vector<void*> locks_swap;
 			for(std::pair<uintptr_t, MemoryType>& lock : locks){
@@ -304,8 +356,8 @@ class ManagedMemory {
 					locks_swap.push_back(lock_iter->second.first);
 				}
 			}
-			device_space_manager.compress(locks_device);
-			swap_space_manager.compress(locks_swap);
+			device_space_manager.defragmentate(locks_device);
+			swap_space_manager.defragmentate(locks_swap);
 		}
 	
 		void* allocate(std::size_t bytes, std::size_t alignment) {//NOLINT(readability-convert-member-functions-to-static) Method is designed to be a non-static class member
