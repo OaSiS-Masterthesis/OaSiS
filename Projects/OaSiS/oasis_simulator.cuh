@@ -25,6 +25,7 @@
 #include "triangle_mesh.cuh"
 #include "alpha_shapes.cuh"
 #include "iq.cuh"
+#include "managed_memory.hpp"
 
 #define OUTPUT_TRIANGLE_SHELL_OUTER_POS 1
 #define UPDATE_ALPHA_SHAPES_BEFORE_OUTPUT 1
@@ -43,54 +44,47 @@ struct OasisSimulator {
 	using host_allocator = HeapAllocator;
 
 	static_assert(std::is_same_v<GridBufferDomain::index_type, int>, "block index type is not int");
-
-	struct DeviceAllocator {			   // hide the global one
-		int gpuid;
 	
-		DeviceAllocator(const int gpuid)
-		: gpuid(gpuid){}
+	template<typename Allocator>
+	struct ManagedMemoryAllocator {
+		Allocator allocator;
+	
+		ManagedMemoryAllocator(Allocator allocator)
+		: allocator(allocator){}
 	
 		void* allocate(std::size_t bytes) {//NOLINT(readability-convert-member-functions-to-static) Method is designed to be a non-static class member
-			auto& cu_dev = Cuda::ref_cuda_context(gpuid);
-		
-			void* ret = nullptr;
-			check_cuda_errors(cudaMalloc(&ret, bytes));
-			
-			//Set memory advice
-			//TODO: Enable if using managed memory
-			//if(cu_dev.supportsConcurrentManagedAccess()){
-			//	check_cuda_errors(cudaMemAdvise(ret, bytes, cudaMemAdviseSetPreferredLocation, cu_dev.get_dev_id()));
-			//	check_cuda_errors(cudaMemAdvise(ret, bytes, cudaMemAdviseSetAccessedBy, cu_dev.get_dev_id()));
-			//}
-
-			return ret;
+			return allocator.allocate(bytes, 256);
 		}
 
 		void deallocate(void* p, std::size_t size) {//NOLINT(readability-convert-member-functions-to-static) Method is designed to be a non-static class member
-			(void) size;
-			check_cuda_errors(cudaFree(p));
+			return allocator.deallocate(p, size);
 		}
 	};
 	
 	//Only allocates largest user and shares memory along users
-	struct ReusableDeviceAllocator {			   // hide the global one
+	template<typename Allocator>
+	struct ReusableDeviceAllocator {
 		int gpuid;
+		
+		Allocator allocator;
 		
 		void* memory;
 		size_t current_size;
 	
-		ReusableDeviceAllocator(const int gpuid)
-		: gpuid(gpuid), memory(nullptr), current_size(0){}
+		ReusableDeviceAllocator(Allocator allocator, const int gpuid)
+		: allocator(allocator), gpuid(gpuid), memory(nullptr), current_size(0){}
 	
 		void* allocate(std::size_t bytes) {//NOLINT(readability-convert-member-functions-to-static) Method is designed to be a non-static class member
 
-			if(memory != nullptr && bytes > current_size){
-				deallocate(memory, current_size);
+			if(bytes > current_size){
+				if(memory != nullptr){
+					allocator.deallocate(memory, current_size);
+				}
 				current_size = bytes;
 			}
 
 			if(memory == nullptr){
-				check_cuda_errors(cudaMalloc(&memory, current_size));
+				memory = allocator.allocate(current_size);
 			}
 
 			return memory;
@@ -98,14 +92,18 @@ struct OasisSimulator {
 
 		void deallocate(void* p, std::size_t size) {//NOLINT(readability-convert-member-functions-to-static) Method is designed to be a non-static class member
 			(void) size;
-			std::cout << p << std::endl;
-			check_cuda_errors(cudaFree(p));
+			allocator.deallocate(memory, size);
 			memory = nullptr;
+			current_size = 0;
 		}
 	};
 
+	template<typename Allocator>
 	struct Intermediates {
 		void* base;
+		
+		Allocator allocator;
+		size_t current_size;
 
 		int* d_tmp;
 		int* active_block_marks;
@@ -114,11 +112,16 @@ struct OasisSimulator {
 		int* bin_sizes;
 		unsigned int* particle_id_mapping_buffer;
 		float* d_max_vel;
+		
+		Intermediates(Allocator allocator)
+		: allocator(allocator), current_size(0) {}
+		
 		//NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic) Current c++ version does not yet support std::span
 		void alloc(size_t max_block_count) {
 			//NOLINTBEGIN(readability-magic-numbers) Magic numbers are variable count
-			check_cuda_errors(cudaMalloc(&base, sizeof(int) * (max_block_count * 5 + config::G_MAX_PARTICLE_BIN * config::G_BIN_CAPACITY + 1)));
-
+			current_size = sizeof(int) * (max_block_count * 5 + config::G_MAX_PARTICLE_BIN * config::G_BIN_CAPACITY + 1);
+			base = allocator.allocate(current_size);
+			
 			d_tmp			   = static_cast<int*>(base);
 			active_block_marks = static_cast<int*>(static_cast<void*>(static_cast<char*>(base) + sizeof(int) * max_block_count));
 			destinations	   = static_cast<int*>(static_cast<void*>(static_cast<char*>(base) + sizeof(int) * max_block_count * 2));
@@ -129,9 +132,10 @@ struct OasisSimulator {
 			//NOLINTEND(readability-magic-numbers)
 		}
 		//NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-		void dealloc() const {
+		void dealloc() {
 			cudaDeviceSynchronize();
-			check_cuda_errors(cudaFree(base));
+			allocator.deallocate(base, current_size);
+			current_size = 0;
 		}
 		void resize(size_t max_block_count) {
 			dealloc();
@@ -140,6 +144,8 @@ struct OasisSimulator {
 	};
 
 	///
+	managed_memory_type managed_memory;
+	ManagedMemoryAllocator<managed_memory_type> managed_memory_allocator;
 	int gpuid;
 	int nframes;
 	int fps;
@@ -162,9 +168,9 @@ struct OasisSimulator {
 	int* finalized_triangle_count;
 	std::vector<std::array<int, 2>> solid_fluid_couplings = {};
 
-	ReusableDeviceAllocator reusable_allocator_alpha_shapes_transfer;
+	ReusableDeviceAllocator<ManagedMemoryAllocator<managed_memory_type>> reusable_allocator_alpha_shapes_transfer;
 
-	Intermediates tmps;
+	Intermediates<ManagedMemoryAllocator<managed_memory_type>> tmps;
 
 	/// data on host
 	char rollid;
@@ -225,15 +231,17 @@ struct OasisSimulator {
 		, dt()
 		, next_dt()
 		, max_vel()
-		, tmps()
+		, managed_memory(CustomDeviceAllocator{gpuid}, 0)
+		, managed_memory_allocator(managed_memory)
+		, tmps(managed_memory_allocator)
 		, cur_num_active_blocks()
 		, max_vels()
 		, partition_block_count()
 		, neighbor_block_count()
 		, exterior_block_count()
-		, reusable_allocator_alpha_shapes_transfer(gpuid)
-		, alpha_shapes_grid_buffer(DeviceAllocator {gpuid})
-		//, temporary_grid_buffer(DeviceAllocator {gpuid})		
+		, reusable_allocator_alpha_shapes_transfer(managed_memory_allocator, gpuid)
+		, alpha_shapes_grid_buffer(managed_memory_allocator, &managed_memory)
+		//, temporary_grid_buffer(managed_memory_allocator)		
 		{
 		// data
 		initialize();
@@ -253,8 +261,8 @@ struct OasisSimulator {
 		//Allocate intermediate data for all blocks
 		tmps.alloc(config::G_MAX_ACTIVE_BLOCK);
 		
-		check_cuda_errors(cudaMallocHost(&alpha_shapes_triangle_buffer, sizeof(int) * MAX_ALPHA_SHAPE_TRIANGLES_PER_MODEL));
-		check_cuda_errors(cudaMalloc(&finalized_triangle_count, sizeof(int)));
+		alpha_shapes_triangle_buffer = reinterpret_cast<int*>(managed_memory_allocator.allocate(sizeof(int) * MAX_ALPHA_SHAPE_TRIANGLES_PER_MODEL));
+		finalized_triangle_count = reinterpret_cast<int*>(managed_memory_allocator.allocate(sizeof(int)));
 		
 		alpha_shapes_point_type_transfer_device_buffer = reusable_allocator_alpha_shapes_transfer.allocate(sizeof(int) * model.size());
 		alpha_shapes_normal_transfer_device_buffer = reusable_allocator_alpha_shapes_transfer.allocate(sizeof(float) * config::NUM_DIMENSIONS * model.size());
@@ -264,7 +272,7 @@ struct OasisSimulator {
 		//Create partitions
 		for(int copyid = 0; copyid < BIN_COUNT; copyid++) {
 			
-			partitions.emplace_back(DeviceAllocator {gpuid}, config::G_MAX_ACTIVE_BLOCK);
+			partitions.emplace_back(managed_memory_allocator, &managed_memory, config::G_MAX_ACTIVE_BLOCK);
 			checked_counts[copyid] = 0;
 		}
 
@@ -380,7 +388,7 @@ struct OasisSimulator {
 		auto& cu_dev = Cuda::ref_cuda_context(gpuid);
 		
 		//Create buffers for triangle mesh
-		triangle_meshes.emplace_back(spawn<TriangleMesh, orphan_signature>(DeviceAllocator {gpuid}, 1));
+		triangle_meshes.emplace_back(managed_memory_allocator, &managed_memory, 1);
 		
 		//Init sizes
 		triangle_mesh_vertex_counts.emplace_back(static_cast<uint32_t>(positions.size()));
@@ -389,8 +397,7 @@ struct OasisSimulator {
 		fmt::print("init {}-th mesh with {} vectices and {} faces\n", triangle_meshes.size() - 1, positions.size(), faces.size());
 
 		//Create transfer buffers
-		triangle_mesh_transfer_device_buffers.emplace_back();
-		check_cuda_errors(cudaMalloc(&triangle_mesh_transfer_device_buffers.back(), sizeof(float) * config::NUM_DIMENSIONS * positions.size()));
+		triangle_mesh_transfer_device_buffers.emplace_back(managed_memory_allocator.allocate(sizeof(float) * config::NUM_DIMENSIONS * positions.size()));
 		triangle_mesh_transfer_host_buffers.push_back(positions);
 		
 		
@@ -398,8 +405,7 @@ struct OasisSimulator {
 		triangle_mesh_face_buffers.push_back(faces);
 	
 		//Create temporary transfer buffer
-		void* faces_tmp;
-		check_cuda_errors(cudaMalloc(&faces_tmp, sizeof(unsigned int) * config::NUM_DIMENSIONS * faces.size()));//TODO: MAybe we can dorectly copy into data structure
+		void* faces_tmp = managed_memory_allocator.allocate(sizeof(unsigned int) * config::NUM_DIMENSIONS * faces.size());//TODO: Maybe we can directly copy into data structure
 		
 		//Copy positions and face data to device
 		cudaMemcpyAsync(triangle_mesh_transfer_device_buffers.back(), positions.data(), sizeof(float) * config::NUM_DIMENSIONS * positions.size(), cudaMemcpyDefault, cu_dev.stream_compute());
@@ -409,7 +415,7 @@ struct OasisSimulator {
 		
 		//Free temporary transfer buffer
 		cudaDeviceSynchronize();
-		check_cuda_errors(cudaFree(faces_tmp));
+		managed_memory_allocator.deallocate(faces_tmp, sizeof(unsigned int) * config::NUM_DIMENSIONS * faces.size());
 		
 		//Write out initial state to file
 		std::string fn = std::string {"mesh"} + "_id[" + std::to_string(triangle_meshes.size() - 1) + "]_frame[0].obj";
@@ -425,13 +431,13 @@ struct OasisSimulator {
 
 		//Create particle buffers and grid blocks and reserve buckets
 		for(int copyid = 0; copyid < BIN_COUNT; ++copyid) {
-			particle_bins[copyid].emplace_back(ParticleBuffer<M>(DeviceAllocator {gpuid}, model.size() / config::G_BIN_CAPACITY + config::G_MAX_ACTIVE_BLOCK));
+			particle_bins[copyid].emplace_back(ParticleBuffer<M>(managed_memory_allocator, &managed_memory, model.size() / config::G_BIN_CAPACITY + config::G_MAX_ACTIVE_BLOCK));
 			match(particle_bins[copyid].back())([&](auto& particle_buffer) {
-				particle_buffer.reserve_buckets(DeviceAllocator {gpuid}, config::G_MAX_ACTIVE_BLOCK);
+				particle_buffer.reserve_buckets(managed_memory_allocator, config::G_MAX_ACTIVE_BLOCK);
 			});
-			grid_blocks[copyid].emplace_back(DeviceAllocator {gpuid}, grid_offset.data_arr());
+			grid_blocks[copyid].emplace_back(managed_memory_allocator, &managed_memory, grid_offset.data_arr());
 		}
-		alpha_shapes_particle_buffers.emplace_back(AlphaShapesParticleBuffer(DeviceAllocator {gpuid}, model.size() / config::G_BIN_CAPACITY + config::G_MAX_ACTIVE_BLOCK));
+		alpha_shapes_particle_buffers.emplace_back(AlphaShapesParticleBuffer(managed_memory_allocator, &managed_memory, model.size() / config::G_BIN_CAPACITY + config::G_MAX_ACTIVE_BLOCK));
 
 		//Set initial velocity
 		vel0.emplace_back();
@@ -440,7 +446,7 @@ struct OasisSimulator {
 		}
 
 		//Create array for initial particles
-		particles.emplace_back(spawn<particle_array_, orphan_signature>(DeviceAllocator {gpuid}, sizeof(float) * config::NUM_DIMENSIONS * model.size()));
+		particles.emplace_back(spawn<particle_array_, orphan_signature>(managed_memory_allocator, sizeof(float) * config::NUM_DIMENSIONS * model.size()));
 
 		//Init bin counts
 		cur_num_active_bins.emplace_back(config::G_MAX_PARTICLE_BIN);
@@ -450,7 +456,7 @@ struct OasisSimulator {
 		//Create triangle_shell_grid
 		for(int copyid = 0; copyid < BIN_COUNT; copyid++) {
 			//FIXME: Outcommented to save memory
-			//triangle_shell_grid_buffer[copyid].emplace_back(DeviceAllocator {gpuid});
+			//triangle_shell_grid_buffer[copyid].emplace_back(managed_memory_allocator, &managed_memory);
 		}
 
 		//Init particle counts
@@ -622,8 +628,8 @@ struct OasisSimulator {
 				triangle_shells[copyid].resize(get_model_count());
 				for(int i = 0; i < get_model_count(); ++i) {
 					for(int j = 0; j <triangle_meshes.size(); ++j) {
-						triangle_shells[copyid][i].emplace_back(spawn<TriangleShell, orphan_signature>(DeviceAllocator {gpuid}, 1));
-						triangle_shells[copyid][i].back().particle_buffer.reserve_buckets(DeviceAllocator {gpuid}, config::G_MAX_ACTIVE_BLOCK);
+						triangle_shells[copyid][i].emplace_back(managed_memory_allocator, &managed_memory, 1);
+						triangle_shells[copyid][i].back().particle_buffer.reserve_buckets(managed_memory_allocator, config::G_MAX_ACTIVE_BLOCK);
 						
 						//Write out initial state
 						#ifdef OUTPUT_TRIANGLE_SHELL_OUTER_POS
@@ -711,7 +717,7 @@ struct OasisSimulator {
 					for(int i = 0; i < get_model_count(); ++i) {
 						//Resize particle buffers if we increased the size of active bins
 						if(checked_bin_counts[i] > 0) {
-							alpha_shapes_particle_buffers[i].resize(DeviceAllocator {gpuid}, cur_num_active_bins[i]);
+							alpha_shapes_particle_buffers[i].resize(managed_memory_allocator, cur_num_active_bins[i]);
 						}
 
 						match(particle_bins[rollid][i])([this, &cu_dev, &i](const auto& particle_buffer) {
@@ -1026,7 +1032,7 @@ struct OasisSimulator {
 					for(int i = 0; i < get_model_count(); ++i) {
 						if(checked_bin_counts[i] > 0) {
 							match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &i, &cu_dev](auto& particle_buffer) {
-								particle_buffer.resize(DeviceAllocator {gpuid}, cur_num_active_bins[i]);
+								particle_buffer.resize(managed_memory_allocator, cur_num_active_bins[i]);
 							});
 							checked_bin_counts[i]--;
 						}
@@ -1082,14 +1088,14 @@ struct OasisSimulator {
 					//Resize partition if we increased the size of active blocks
 					//This also deletes current particle buffer meta data.
 					if(checked_counts[0] > 0) {
-						partitions[(rollid + 1) % BIN_COUNT].resize_partition(DeviceAllocator {gpuid}, cur_num_active_blocks);
+						partitions[(rollid + 1) % BIN_COUNT].resize_partition(managed_memory_allocator, cur_num_active_blocks);
 						for(int i = 0; i < get_model_count(); ++i) {
 							match(particle_bins[rollid][i])([this, &cu_dev](auto& particle_buffer) {
-								particle_buffer.reserve_buckets(DeviceAllocator {gpuid}, cur_num_active_blocks);
+								particle_buffer.reserve_buckets(managed_memory_allocator, cur_num_active_blocks);
 							});
 							
 							for(int j = 0; j < triangle_shells[rollid][i].size(); ++j) {
-								triangle_shells[rollid][i][j].particle_buffer.reserve_buckets(DeviceAllocator {gpuid}, cur_num_active_blocks);
+								triangle_shells[rollid][i][j].particle_buffer.reserve_buckets(managed_memory_allocator, cur_num_active_blocks);
 							}
 						}
 						checked_counts[0]--;
@@ -1328,11 +1334,11 @@ struct OasisSimulator {
 
 					//Resize grid if necessary
 					if(checked_counts[0] > 0) {
-						alpha_shapes_grid_buffer.resize(DeviceAllocator {gpuid}, cur_num_active_blocks);
+						alpha_shapes_grid_buffer.resize(managed_memory_allocator, cur_num_active_blocks);
 						for(int i = 0; i < get_model_count(); ++i) {
-							grid_blocks[0][i].resize(DeviceAllocator {gpuid}, cur_num_active_blocks);
+							grid_blocks[0][i].resize(managed_memory_allocator, cur_num_active_blocks);
 							//FIXME: Outcommented to save memory
-							//triangle_shell_grid_buffer[rollid][i].resize(DeviceAllocator {gpuid}, cur_num_active_blocks);
+							//triangle_shell_grid_buffer[rollid][i].resize(managed_memory_allocator, cur_num_active_blocks);
 						}
 					}
 
@@ -1360,12 +1366,12 @@ struct OasisSimulator {
 					//Resize grid if necessary
 					if(checked_counts[0] > 0) {
 						for(int i = 0; i < get_model_count(); ++i) {
-							grid_blocks[1][i].resize(DeviceAllocator {gpuid}, cur_num_active_blocks);
+							grid_blocks[1][i].resize(managed_memory_allocator, cur_num_active_blocks);
 							//FIXME: Outcommented to save memory
-							//triangle_shell_grid_buffer[(rollid + 1) % BIN_COUNT][i].resize(DeviceAllocator {gpuid}, cur_num_active_blocks);
+							//triangle_shell_grid_buffer[(rollid + 1) % BIN_COUNT][i].resize(managed_memory_allocator, cur_num_active_blocks);
 						}
 						tmps.resize(cur_num_active_blocks);
-						//temporary_grid_buffer.resize(DeviceAllocator {gpuid}, cur_num_active_blocks);
+						//temporary_grid_buffer.resize(managed_memory_allocator, cur_num_active_blocks);
 					}
 				}
 
@@ -1434,7 +1440,7 @@ struct OasisSimulator {
 			//Reallocate particle array if necessary
 			if(particle_counts[i] < particle_count){
 				particle_counts[i] = particle_count;
-				particles[i].resize(DeviceAllocator {gpuid}, sizeof(float) * config::NUM_DIMENSIONS * particle_count);
+				particles[i].resize(managed_memory_allocator, sizeof(float) * config::NUM_DIMENSIONS * particle_count);
 				//TODO: Resize device alpha shapes buffers
 			}
 			
@@ -1463,7 +1469,7 @@ struct OasisSimulator {
 				//Alpha shapes
 				//Resize particle buffers if we increased the size of active bins
 				if(checked_bin_counts[i] > 0) {
-					alpha_shapes_particle_buffers[i].resize(DeviceAllocator {gpuid}, cur_num_active_bins[i]);
+					alpha_shapes_particle_buffers[i].resize(managed_memory_allocator, cur_num_active_bins[i]);
 				}
 				
 				//Initialize finalized_triangle_count with 0
@@ -1629,8 +1635,7 @@ struct OasisSimulator {
 			
 			timer.tick();
 			
-			void* init_tmp;
-			check_cuda_errors(cudaMalloc(&init_tmp, sizeof(float) * 9));
+			void* init_tmp = managed_memory_allocator.allocate(sizeof(float) * 9);
 			for(int i = 0; i < triangle_meshes.size(); ++i) {
 				//Calculate center of mass
 				vec3 center_of_mass;
@@ -1668,7 +1673,7 @@ struct OasisSimulator {
 				}
 			}
 			cudaDeviceSynchronize();
-			check_cuda_errors(cudaFree(init_tmp));
+			managed_memory_allocator.deallocate(init_tmp, sizeof(float) * 9);
 			
 			timer.tock(fmt::format("GPU[{}] step {} init_triangle_mesh", gpuid, cur_step));
 		}

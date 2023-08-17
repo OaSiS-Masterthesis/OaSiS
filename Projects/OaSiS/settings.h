@@ -5,6 +5,8 @@
 
 #include <array>
 
+#include "managed_memory.hpp"
+
 //NOLINTNEXTLINE(cppcoreguidelines-macro-usage) Macro usage necessary here for preprocessor if
 #define PRINT_CELL_OVERFLOW 0//TODO: Move to another place
 
@@ -112,6 +114,37 @@ namespace config {
 using BlockDomain	   = CompactDomain<char, config::G_BLOCKSIZE, config::G_BLOCKSIZE, config::G_BLOCKSIZE>;
 using GridDomain	   = CompactDomain<int, config::G_GRID_SIZE, config::G_GRID_SIZE, config::G_GRID_SIZE>;
 using GridBufferDomain = CompactDomain<int, config::G_MAX_ACTIVE_BLOCK>;
+
+//FIXME: Move to another place
+struct CustomDeviceAllocator {			   // hide the global one
+	int gpuid;
+
+	CustomDeviceAllocator(const int gpuid)
+	: gpuid(gpuid){}
+
+	void* allocate(std::size_t bytes) {//NOLINT(readability-convert-member-functions-to-static) Method is designed to be a non-static class member
+		auto& cu_dev = Cuda::ref_cuda_context(gpuid);
+	
+		void* ret = nullptr;
+		check_cuda_errors(cudaMalloc(&ret, bytes));
+		
+		//Set memory advice
+		//TODO: Enable if using managed memory
+		//if(cu_dev.supportsConcurrentManagedAccess()){
+		//	check_cuda_errors(cudaMemAdvise(ret, bytes, cudaMemAdviseSetPreferredLocation, cu_dev.get_dev_id()));
+		//	check_cuda_errors(cudaMemAdvise(ret, bytes, cudaMemAdviseSetAccessedBy, cu_dev.get_dev_id()));
+		//}
+
+		return ret;
+	}
+
+	void deallocate(void* p, std::size_t size) {//NOLINT(readability-convert-member-functions-to-static) Method is designed to be a non-static class member
+		(void) size;
+		check_cuda_errors(cudaFree(p));
+	}
+};
+
+using managed_memory_type = ManagedMemory<CustomDeviceAllocator, (static_cast<size_t>(6) << 30), (static_cast<size_t>(4) << 30)>;
 
 }// namespace mn
 

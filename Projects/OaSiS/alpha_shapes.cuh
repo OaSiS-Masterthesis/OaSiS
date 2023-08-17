@@ -10,6 +10,7 @@
 #include "utility_funcs.hpp"
 #include "triangle_mesh.cuh"
 #include "kernels.cuh"
+#include "managed_memory.hpp"
 
 #ifndef M_PI
     #define M_PI 3.14159265358979323846
@@ -73,21 +74,27 @@ using AlphaShapesGridBufferBlockData = Structural<StructuralType::DYNAMIC, Decor
 
 struct AlphaShapesParticleBuffer : Instance<particle_buffer_<AlphaShapesParticleBufferData>> {
 	using base_t							 = Instance<particle_buffer_<AlphaShapesParticleBufferData>>;
+	
+	managed_memory_type* managed_memory;
 
 	AlphaShapesParticleBuffer() = default;
 
 	template<typename Allocator>
-	AlphaShapesParticleBuffer(Allocator allocator, std::size_t count)
+	AlphaShapesParticleBuffer(Allocator allocator, managed_memory_type* managed_memory, std::size_t count)
 		: base_t {spawn<particle_buffer_<AlphaShapesParticleBufferData>, orphan_signature>(allocator, count)}
+		, managed_memory(managed_memory)
 		{}
 };
 
 struct AlphaShapesGridBuffer : Instance<AlphaShapesGridBufferBlockData> {
 	using base_t = Instance<AlphaShapesGridBufferBlockData>;
+	
+	managed_memory_type* managed_memory;
 
 	template<typename Allocator>
-	explicit AlphaShapesGridBuffer(Allocator allocator)
-		: base_t {spawn<AlphaShapesGridBufferBlockData, orphan_signature>(allocator)} {}
+	explicit AlphaShapesGridBuffer(Allocator allocator, managed_memory_type* managed_memory)
+		: base_t {spawn<AlphaShapesGridBufferBlockData, orphan_signature>(allocator)} 
+		, managed_memory(managed_memory){}
 
 	template<typename Allocator>
 	void check_capacity(Allocator allocator, std::size_t capacity) {

@@ -4,6 +4,7 @@
 
 #include "settings.h"
 #include "particle_buffer.cuh"
+#include "managed_memory.hpp"
 
 namespace mn {
 
@@ -34,10 +35,10 @@ using TriangleShellGridBlockData  = Structural<StructuralType::DENSE, Decorator<
 using TriangleShellGridBufferData = Structural<StructuralType::DYNAMIC, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::COMPACT>, GridBufferDomain, attrib_layout::AOS, TriangleShellGridBlockData>;
 //NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables, readability-identifier-naming)
 
-
 struct TriangleMesh : Instance<TriangleMeshBuffer<TriangleMeshData>> {
 	using base_t							 = Instance<TriangleMeshBuffer<TriangleMeshData>>;
 	
+	managed_memory_type* managed_memory;
 	
 	float mass;
 	
@@ -59,8 +60,9 @@ struct TriangleMesh : Instance<TriangleMeshBuffer<TriangleMeshData>> {
 	{};
 
 	template<typename Allocator>
-	TriangleMesh(Allocator allocator, std::size_t count)
+	TriangleMesh(Allocator allocator, managed_memory_type* managed_memory, std::size_t count)
 		: base_t {spawn<TriangleMeshBuffer<TriangleMeshData>, orphan_signature>(allocator, count)}
+		, managed_memory(managed_memory)
 		, linear_velocity(0.0f)
 		, angular_momentum(0.0f)
 		, center(0.0f)
@@ -131,10 +133,13 @@ struct TriangleShellParticleBuffer{
 
 struct TriangleShellGridBuffer : Instance<TriangleShellGridBufferData> {
 	using base_t = Instance<TriangleShellGridBufferData>;
+	
+	managed_memory_type* managed_memory;
 
 	template<typename Allocator>
-	explicit TriangleShellGridBuffer(Allocator allocator)
-		: base_t {spawn<TriangleShellGridBufferData, orphan_signature>(allocator)} {}
+	explicit TriangleShellGridBuffer(Allocator allocator, managed_memory_type* managed_memory)
+		: base_t {spawn<TriangleShellGridBufferData, orphan_signature>(allocator)} 
+		, managed_memory(managed_memory) {}
 
 	template<typename Allocator>
 	void check_capacity(Allocator allocator, std::size_t capacity) {
@@ -145,20 +150,25 @@ struct TriangleShellGridBuffer : Instance<TriangleShellGridBufferData> {
 
 	template<typename CudaContext>
 	void reset(int block_count, CudaContext& cu_dev) {
+		managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(this->acquire());
 		cu_dev.compute_launch({block_count, config::G_BLOCKVOLUME}, clear_grid_triangle_shell, *this);
+		managed_memory->release(this->release());
 	}
 };
 
 struct TriangleShell : Instance<TriangleShellBuffer<TriangleShellData>> {
 	using base_t							 = Instance<TriangleShellBuffer<TriangleShellData>>;
 	
+	managed_memory_type* managed_memory;
+	
 	TriangleShellParticleBuffer particle_buffer;
 
 	TriangleShell() = default;
 
 	template<typename Allocator>
-	TriangleShell(Allocator allocator, std::size_t count)
+	TriangleShell(Allocator allocator, managed_memory_type* managed_memory, std::size_t count)
 		: base_t {spawn<TriangleShellBuffer<TriangleShellData>, orphan_signature>(allocator, count)}
+		, managed_memory(managed_memory)
 		{}
 };
 

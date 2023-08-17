@@ -8,6 +8,7 @@
 #include "kernels.cuh"
 #include "settings.h"
 #include "utility_funcs.hpp"
+#include "managed_memory.hpp"
 
 //NOLINTNEXTLINE(cppcoreguidelines-macro-usage) Macro usage necessary here for preprocessor if
 #define PRINT_NEGATIVE_BLOGNOS 1
@@ -46,6 +47,8 @@ template<MaterialE Mt>
 struct ParticleBufferImpl : Instance<particle_buffer_<particle_bin_<Mt>>> {
 	static constexpr MaterialE MATERIAL_TYPE = Mt;
 	using base_t							 = Instance<particle_buffer_<particle_bin_<Mt>>>;
+	
+	managed_memory_type* managed_memory;
 
 	std::size_t num_active_blocks;
 	int* cell_particle_counts;
@@ -55,8 +58,9 @@ struct ParticleBufferImpl : Instance<particle_buffer_<particle_bin_<Mt>>> {
 	int* bin_offsets;
 
 	template<typename Allocator>
-	ParticleBufferImpl(Allocator allocator, std::size_t count)
+	ParticleBufferImpl(Allocator allocator, managed_memory_type* managed_memory, std::size_t count)
 		: base_t {spawn<particle_buffer_<particle_bin_<Mt>>, orphan_signature>(allocator, count)}
+		, managed_memory(managed_memory)
 		, num_active_blocks {0}
 		, cell_particle_counts {nullptr}
 		, particle_bucket_sizes {nullptr}
@@ -90,17 +94,31 @@ struct ParticleBufferImpl : Instance<particle_buffer_<particle_bin_<Mt>>> {
 	}
 
 	void reset_ppcs() {
-		check_cuda_errors(cudaMemset(cell_particle_counts, 0, sizeof(int) * num_active_blocks * config::G_BLOCKVOLUME));
+		void* cell_particle_counts_ptr = cell_particle_counts;
+		if(managed_memory->get_memory_type(cell_particle_counts_ptr) == MemoryType::HOST){
+			managed_memory->managed_memory_type::acquire<MemoryType::HOST>(&cell_particle_counts_ptr);
+			memset(cell_particle_counts_ptr, 0, sizeof(int) * num_active_blocks * config::G_BLOCKVOLUME);
+		}else{
+			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(&cell_particle_counts_ptr);
+			check_cuda_errors(cudaMemset(cell_particle_counts_ptr, 0, sizeof(int) * num_active_blocks * config::G_BLOCKVOLUME));
+		}
+		managed_memory->release(cell_particle_counts_ptr);
 	}
 
 	void copy_to(ParticleBufferImpl& other, std::size_t block_count, cudaStream_t stream) const {
-		check_cuda_errors(cudaMemcpyAsync(other.bin_offsets, bin_offsets, sizeof(int) * (block_count + 1), cudaMemcpyDefault, stream));
-		check_cuda_errors(cudaMemcpyAsync(other.particle_bucket_sizes, particle_bucket_sizes, sizeof(int) * block_count, cudaMemcpyDefault, stream));
+		void* bin_offsets_ptr = bin_offsets;
+		void* other_bin_offsets_ptr = other.bin_offsets;
+		void* particle_bucket_sizes_ptr = particle_bucket_sizes;
+		void* other_particle_bucket_sizes_ptr = other.particle_bucket_sizes;
+		managed_memory->acquire_any(&bin_offsets_ptr, &other_bin_offsets_ptr, &particle_bucket_sizes_ptr, &other_particle_bucket_sizes_ptr);
+		check_cuda_errors(cudaMemcpyAsync(other_bin_offsets_ptr, bin_offsets_ptr, sizeof(int) * (block_count + 1), cudaMemcpyDefault, stream));
+		check_cuda_errors(cudaMemcpyAsync(other_particle_bucket_sizes_ptr, particle_bucket_sizes_ptr, sizeof(int) * block_count, cudaMemcpyDefault, stream));
+		managed_memory->release(bin_offsets_ptr, other_bin_offsets_ptr, particle_bucket_sizes_ptr, other_particle_bucket_sizes_ptr);
 	}
 
 	//FIXME: passing key_t here might cause problems because cuda is buggy
 	__forceinline__ __device__ void add_advection(Partition<1>& table, Partition<1>::key_t cellid, int dirtag, int particle_id_in_block) noexcept {
-		const Partition<1>::key_t blockid = cellid / static_cast<int>(config::G_BLOCKSIZE);
+		const typename Partition<1>::key_t blockid = cellid / static_cast<int>(config::G_BLOCKSIZE);
 		const int blockno				  = table.query(blockid);
 
 		//If block does not yet exist, print message and return (particle will be lost).
@@ -165,8 +183,8 @@ struct ParticleBuffer<MaterialE::J_FLUID> : ParticleBufferImpl<MaterialE::J_FLUI
 	//NOLINTEND(readability-magic-numbers)
 
 	template<typename Allocator>
-	ParticleBuffer(Allocator allocator, std::size_t count)
-		: base_t {allocator, count} {}
+	ParticleBuffer(Allocator allocator, managed_memory_type* managed_memory, std::size_t count)
+		: base_t {allocator, managed_memory, count} {}
 };
 
 template<>
@@ -192,8 +210,8 @@ struct ParticleBuffer<MaterialE::FIXED_COROTATED> : ParticleBufferImpl<MaterialE
 	//NOLINTEND(readability-magic-numbers)
 
 	template<typename Allocator>
-	ParticleBuffer(Allocator allocator, std::size_t count)
-		: base_t {allocator, count} {}
+	ParticleBuffer(Allocator allocator, managed_memory_type* managed_memory, std::size_t count)
+		: base_t {allocator, managed_memory, count} {}
 };
 
 template<>
@@ -221,8 +239,8 @@ struct ParticleBuffer<MaterialE::SAND> : ParticleBufferImpl<MaterialE::SAND> {
 	//NOLINTEND(readability-magic-numbers)
 
 	template<typename Allocator>
-	ParticleBuffer(Allocator allocator, std::size_t count)
-		: base_t {allocator, count} {}
+	ParticleBuffer(Allocator allocator, managed_memory_type* managed_memory, std::size_t count)
+		: base_t {allocator, managed_memory, count} {}
 };
 
 template<>
@@ -261,8 +279,8 @@ struct ParticleBuffer<MaterialE::NACC> : ParticleBufferImpl<MaterialE::NACC> {
 	//NOLINTEND(readability-magic-numbers)
 
 	template<typename Allocator>
-	ParticleBuffer(Allocator allocator, std::size_t count)
-		: base_t {allocator, count} {}
+	ParticleBuffer(Allocator allocator, managed_memory_type* managed_memory, std::size_t count)
+		: base_t {allocator, managed_memory, count} {}
 };
 
 template<>
@@ -288,13 +306,13 @@ struct ParticleBuffer<MaterialE::FIXED_COROTATED_GHOST> : ParticleBufferImpl<Mat
 	//NOLINTEND(readability-magic-numbers)
 
 	template<typename Allocator>
-	ParticleBuffer(Allocator allocator, std::size_t count)
-		: base_t {allocator, count} {}
+	ParticleBuffer(Allocator allocator, managed_memory_type* managed_memory, std::size_t count)
+		: base_t {allocator, managed_memory, count} {}
 };
 
 /// conversion
-/// http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p0608r3.html
-using particle_buffer_t = variant<ParticleBuffer<MaterialE::J_FLUID>, ParticleBuffer<MaterialE::FIXED_COROTATED>, ParticleBuffer<MaterialE::SAND>, ParticleBuffer<MaterialE::NACC>, ParticleBuffer<MaterialE::FIXED_COROTATED_GHOST>>;
+	/// http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p0608r3.html
+	using particle_buffer_t = variant<ParticleBuffer<MaterialE::J_FLUID>, ParticleBuffer<MaterialE::FIXED_COROTATED>, ParticleBuffer<MaterialE::SAND>, ParticleBuffer<MaterialE::NACC>, ParticleBuffer<MaterialE::FIXED_COROTATED_GHOST>>;
 
 struct ParticleArray : Instance<particle_array_> {
 	using base_t = Instance<particle_array_>;

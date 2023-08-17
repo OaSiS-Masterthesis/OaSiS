@@ -116,7 +116,7 @@ struct MgspBenchmark {
 	std::vector<HaloGridBlocks> output_halo_grid_blocks;
 	// std::vector<HaloParticleBlocks> inputHaloParticleBlocks,
 	// outputHaloParticleBlocks;
-	vec<ParticleArray, config::G_DEVICE_COUNT> particles;
+	std::array<ParticleArray, config::G_DEVICE_COUNT> particles;
 
 	std::array<Intermediates, config::G_DEVICE_COUNT> tmps = {};
 

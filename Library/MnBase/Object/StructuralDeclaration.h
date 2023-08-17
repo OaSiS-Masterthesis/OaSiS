@@ -99,6 +99,27 @@ struct StructuralTraits {
 	};
 
 	MemResource handle;
+	MemResource handle_virtual{nullptr};
+	
+	void** acquire(){
+		if(handle_virtual.ptr == nullptr){
+			//Save virtual pointer
+			handle_virtual.ptr = handle.ptr;
+			return &handle.ptr;
+		}else{
+			//If virtual is not nullptr, it holds the saved value, that may not be overwritten
+			return nullptr;
+		}
+	}
+	
+	void* release(){
+		if(handle_virtual.ptr != nullptr){
+			//Restore virtual pointer
+			handle.ptr = handle_virtual.ptr;
+			handle_virtual.ptr = nullptr;
+		}
+		return handle.ptr;
+	}
 
 	// memory manage
 	template<typename Allocator>

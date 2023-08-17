@@ -1,3 +1,6 @@
+#ifndef MANAGED_MEMORY_HPP
+#define MANAGED_MEMORY_HPP
+
 #include <MnSystem/Cuda/Cuda.h>
 
 #include <map>
@@ -373,8 +376,12 @@ class ManagedMemory {
 	std::set<void*> locks_host;
 	
 	MemoryLocation preempt(std::size_t bytes, std::size_t alignment){
+		auto& cu_dev = Cuda::ref_cuda_context(gpuid);
+		
 		void* ret = nullptr;
 		MemoryType ret_memory_type;
+		
+		bool move_happened = false;
 		
 		//Look for free space on device
 		ret = device_space_manager.allocate(bytes, alignment);
@@ -436,6 +443,8 @@ class ManagedMemory {
 							new_address_device = swap_space_manager.allocate(std::get<1>(removed_allocation), std::get<2>(removed_allocation));
 							memory_type_device = MemoryType::SWAP;
 							
+							cu_dev.syncStream<Cuda::StreamIndex::COMPUTE>();
+							
 							assert(new_address_device != nullptr && "Could not allocate mem though we just freed enough");
 						}else{
 							new_address_device = std::malloc(std::get<1>(removed_allocation));
@@ -445,7 +454,7 @@ class ManagedMemory {
 								throw std::bad_alloc();
 							}
 						}
-						
+						move_happened = true;
 						move_memory(removed_memory_location_iter, MemoryLocation(new_address_device, std::get<1>(removed_allocation), std::get<2>(removed_allocation), memory_type_device));
 					}
 					
@@ -477,6 +486,7 @@ class ManagedMemory {
 							if(new_address == nullptr){
 								throw std::bad_alloc();
 							}else{
+								move_happened = true;
 								move_memory(removed_memory_location_iter, MemoryLocation(new_address, std::get<1>(removed_allocation), std::get<2>(removed_allocation), MemoryType::HOST));
 							}
 						}
@@ -491,13 +501,17 @@ class ManagedMemory {
 			}
 		}
 		
+		if(move_happened){
+			cu_dev.syncStream<Cuda::StreamIndex::COMPUTE>();
+		}
+		
 		return MemoryLocation(ret, bytes, alignment, ret_memory_type);
 	}
 	
 	void move_memory(std::map<const uintptr_t, MemoryLocation>::iterator old_mem_location_iter, const MemoryLocation new_mem_location){
 		auto& cu_dev = Cuda::ref_cuda_context(gpuid);
 		check_cuda_errors(cudaMemcpyAsync(new_mem_location.address, old_mem_location_iter->second.address, old_mem_location_iter->second.size, cudaMemcpyDefault, cu_dev.stream_compute()));
-		cu_dev.syncStream<Cuda::StreamIndex::COMPUTE>();
+		//cu_dev.syncStream<Cuda::StreamIndex::COMPUTE>();
 		switch(old_mem_location_iter->second.memory_type){
 			case DEVICE:
 				device_space_manager.deallocate(old_mem_location_iter->second.address, old_mem_location_iter->second.size);
@@ -512,6 +526,11 @@ class ManagedMemory {
 				assert(false && "Reached unreachable state");
 		}
 		old_mem_location_iter->second = new_mem_location;
+	}
+	
+	template<MemoryType memory_type, typename T, std::size_t N, std::size_t... I>
+	void acquire_any_helper(std::array<T, N> const &arr, std::index_sequence<I...>) {
+	  acquire<memory_type>(arr[I]...);
 	}
 	
 	public:
@@ -548,6 +567,7 @@ class ManagedMemory {
 			swap_space_manager.defragmentate(locks_swap, moves_swap, space_changes_swap);
 			
 			//TODO:Apply moves
+			const bool move_happened = !moves_device.empty() || !moves_swap.empty();
 			
 			for(const std::pair<uintptr_t, std::pair<uintptr_t, size_t>> & move : moves_device){
 				if(move.first != move.second.first){
@@ -577,7 +597,9 @@ class ManagedMemory {
 				}
 			}
 			
-			cu_dev.syncStream<Cuda::StreamIndex::COMPUTE>();
+			if(move_happened){
+				cu_dev.syncStream<Cuda::StreamIndex::COMPUTE>();
+			}
 			
 			//Update locations
 			for(std::map<uintptr_t, MemoryLocation>::iterator memory_location_iter = memory_locations.begin(); memory_location_iter != memory_locations.end(); ++memory_location_iter){
@@ -667,9 +689,12 @@ class ManagedMemory {
 		
 		template<MemoryType memory_type, typename... Args, typename std::enable_if<std::conjunction<std::is_convertible<Args, void**>...>::value>::type* = nullptr>
 		void acquire(Args... args){
-			std::vector<void**> ptrs = {args...};
+			auto& cu_dev = Cuda::ref_cuda_context(gpuid);
+			
+			std::array<void**, sizeof...(args)> ptrs = {args...};
 			
 			bool already_defragmentated = false;
+			bool move_happened = false;
 			for(void** ptr : ptrs){
 				if(ptr != nullptr && *ptr != nullptr){
 					std::map<uintptr_t, MemoryLocation>::iterator mem_location_iter = memory_locations.find(reinterpret_cast<uintptr_t>(*ptr));
@@ -713,8 +738,8 @@ class ManagedMemory {
 											}
 										}else{
 											new_mem_location = MemoryLocation(ret, size, alignment, MemoryType::DEVICE);
-											
 										}
+										move_happened = true;
 										move_memory(mem_location_iter, new_mem_location);
 									}else{
 										//TODO: Maybe try to copy data from device or swap to host?
@@ -723,21 +748,13 @@ class ManagedMemory {
 									}
 								}
 								break;
-							case SWAP:
-								if(false){
-									throw std::runtime_error("Data is currently locked to another device");
-								}else{
-									ret = mem_location_iter->second.address;
-									locks_swap.insert(*ptr);
-								}
-								break;
 							case HOST:
 								if(lock_iter_device != locks_device.end()){
 									throw std::runtime_error("Data is currently locked to another device");
 								}else{
 									if(mem_location_iter->second.memory_type == MemoryType::DEVICE){
 										//First try to move data to swap memory
-										void* ret = swap_space_manager.allocate(size, alignment);
+										ret = swap_space_manager.allocate(size, alignment);
 											
 										if(ret == nullptr){
 											//If that failed try to move directly to host
@@ -751,12 +768,17 @@ class ManagedMemory {
 										}else{
 											new_mem_location = MemoryLocation(ret, size, alignment, MemoryType::SWAP);
 										}
+										move_happened = true;
 										move_memory(mem_location_iter, new_mem_location);
 									}else{
 										new_mem_location = mem_location_iter->second;
 										ret = mem_location_iter->second.address;
 									}
 								}
+								break;
+							case SWAP:
+							case NONE:
+								throw std::invalid_argument("Cannot acquire for this type");
 								break;
 							default:
 								assert(false && "Reached unreachable state");
@@ -780,11 +802,15 @@ class ManagedMemory {
 					}
 				}
 			}
+			
+			if(move_happened){
+				cu_dev.syncStream<Cuda::StreamIndex::COMPUTE>();
+			}
 		}
 		
 		template<typename... Args, typename std::enable_if<std::conjunction<std::is_convertible<Args, void*>...>::value>::type* = nullptr>
 		void release(Args... args){
-			std::vector<void*> ptrs = {args...};
+			std::array<void*, sizeof...(args)> ptrs = {args...};
 			
 			for(void* ptr : ptrs){
 				if(ptr != nullptr){
@@ -807,6 +833,52 @@ class ManagedMemory {
 					}
 				}
 			}
+		}
+		
+		template<typename... Args, typename std::enable_if<std::conjunction<std::is_convertible<Args, void**>...>::value>::type* = nullptr>
+		void acquire_any(Args... args){
+			using Indices = std::make_index_sequence<sizeof...(args)>;
+			
+			std::array<void**, sizeof...(args)> ptrs = {args...};
+			
+			std::array<void**, sizeof...(args)> ptrs_device = {args...};
+			std::array<void**, sizeof...(args)> ptrs_host = {args...};
+			for(size_t i = 0; i < ptrs.size(); ++i){
+				if(ptrs[i] != nullptr && *ptrs[i] != nullptr){
+					std::map<uintptr_t, MemoryLocation>::iterator mem_location_iter = memory_locations.find(reinterpret_cast<uintptr_t>(*ptrs[i]));
+					if(mem_location_iter != memory_locations.end()){
+						switch(mem_location_iter->second.memory_type){
+							case DEVICE:
+								ptrs_host[i] = nullptr;
+								break;
+							case SWAP:
+								ptrs_device[i] = nullptr;
+								break;
+							case HOST:
+								ptrs_device[i] = nullptr;
+								break;
+							default:
+								assert(false && "Reached unreachable state");
+						}
+					}
+				}
+			}
+			if(ptrs_host.size() > 0){
+				acquire_any_helper<MemoryType::HOST>(ptrs_host, Indices());
+			}
+			if(ptrs_device.size() > 0){
+				acquire_any_helper<MemoryType::DEVICE>(ptrs_host, Indices());
+			}
+		}
+		
+		MemoryType get_memory_type(void* ptr){
+			if(ptr != nullptr){
+				std::map<uintptr_t, MemoryLocation>::iterator mem_location_iter = memory_locations.find(reinterpret_cast<uintptr_t>(ptr));
+				if(mem_location_iter != memory_locations.end()){
+					return mem_location_iter->second.memory_type;
+				}
+			}
+			return MemoryType::NONE;
 		}
 	
 		void print_data(){
@@ -832,3 +904,5 @@ class ManagedMemory {
 };
 
 }
+
+#endif
