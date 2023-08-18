@@ -56,6 +56,12 @@ struct ParticleBufferImpl : Instance<particle_buffer_<particle_bin_<Mt>>> {
 	int* cellbuckets;
 	int* blockbuckets;
 	int* bin_offsets;
+	
+	int* cell_particle_counts_virtual;
+	int* particle_bucket_sizes_virtual;
+	int* cellbuckets_virtual;
+	int* blockbuckets_virtual;
+	int* bin_offsets_virtual;
 
 	template<typename Allocator>
 	ParticleBufferImpl(Allocator allocator, managed_memory_type* managed_memory, std::size_t count)
@@ -66,7 +72,12 @@ struct ParticleBufferImpl : Instance<particle_buffer_<particle_bin_<Mt>>> {
 		, particle_bucket_sizes {nullptr}
 		, cellbuckets {nullptr}
 		, blockbuckets {nullptr}
-		, bin_offsets {nullptr} {}
+		, bin_offsets {nullptr}
+		, cell_particle_counts_virtual {nullptr}
+		, particle_bucket_sizes_virtual {nullptr}
+		, cellbuckets_virtual {nullptr}
+		, blockbuckets_virtual {nullptr}
+		, bin_offsets_virtual {nullptr} {}
 
 	template<typename Allocator>
 	void check_capacity(Allocator allocator, std::size_t capacity) {
@@ -77,43 +88,48 @@ struct ParticleBufferImpl : Instance<particle_buffer_<particle_bin_<Mt>>> {
 
 	template<typename Allocator>
 	void reserve_buckets(Allocator allocator, std::size_t num_block_count) {
-		if(bin_offsets) {
-			allocator.deallocate(cell_particle_counts, sizeof(int) * num_active_blocks * config::G_BLOCKVOLUME);
-			allocator.deallocate(particle_bucket_sizes, sizeof(int) * num_active_blocks);
-			allocator.deallocate(cellbuckets, sizeof(int) * num_active_blocks * config::G_BLOCKVOLUME * config::G_MAX_PARTICLES_IN_CELL);
-			allocator.deallocate(blockbuckets, sizeof(int) * num_active_blocks * config::G_PARTICLE_NUM_PER_BLOCK);
-			allocator.deallocate(bin_offsets, sizeof(int) * num_active_blocks);
+		if(bin_offsets_virtual) {
+			allocator.deallocate(cell_particle_counts_virtual, sizeof(int) * num_active_blocks * config::G_BLOCKVOLUME);
+			allocator.deallocate(particle_bucket_sizes_virtual, sizeof(int) * num_active_blocks);
+			allocator.deallocate(cellbuckets_virtual, sizeof(int) * num_active_blocks * config::G_BLOCKVOLUME * config::G_MAX_PARTICLES_IN_CELL);
+			allocator.deallocate(blockbuckets_virtual, sizeof(int) * num_active_blocks * config::G_PARTICLE_NUM_PER_BLOCK);
+			allocator.deallocate(bin_offsets_virtual, sizeof(int) * num_active_blocks);
 		}
 		num_active_blocks	  = num_block_count;
-		cell_particle_counts  = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks * config::G_BLOCKVOLUME));
-		particle_bucket_sizes = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks));
-		cellbuckets			  = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks * config::G_BLOCKVOLUME * config::G_MAX_PARTICLES_IN_CELL));
-		blockbuckets		  = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks * config::G_PARTICLE_NUM_PER_BLOCK));
-		bin_offsets			  = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks));
+		cell_particle_counts_virtual  = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks * config::G_BLOCKVOLUME));
+		particle_bucket_sizes_virtual = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks));
+		cellbuckets_virtual			  = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks * config::G_BLOCKVOLUME * config::G_MAX_PARTICLES_IN_CELL));
+		blockbuckets_virtual		  = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks * config::G_PARTICLE_NUM_PER_BLOCK));
+		bin_offsets_virtual			  = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks));
 		reset_ppcs();
 	}
 
 	void reset_ppcs() {
-		void* cell_particle_counts_ptr = cell_particle_counts;
-		if(managed_memory->get_memory_type(cell_particle_counts_ptr) == MemoryType::HOST){
-			managed_memory->managed_memory_type::acquire<MemoryType::HOST>(&cell_particle_counts_ptr);
-			memset(cell_particle_counts_ptr, 0, sizeof(int) * num_active_blocks * config::G_BLOCKVOLUME);
+		cell_particle_counts = cell_particle_counts_virtual;
+		if(managed_memory->get_memory_type(cell_particle_counts) == MemoryType::HOST){
+			managed_memory->managed_memory_type::acquire<MemoryType::HOST>(reinterpret_cast<void**>(&cell_particle_counts));
+			memset(cell_particle_counts, 0, sizeof(int) * num_active_blocks * config::G_BLOCKVOLUME);
 		}else{
-			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(&cell_particle_counts_ptr);
-			check_cuda_errors(cudaMemset(cell_particle_counts_ptr, 0, sizeof(int) * num_active_blocks * config::G_BLOCKVOLUME));
+			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(reinterpret_cast<void**>(&cell_particle_counts));
+			check_cuda_errors(cudaMemset(cell_particle_counts, 0, sizeof(int) * num_active_blocks * config::G_BLOCKVOLUME));
 		}
-		managed_memory->release(cell_particle_counts_ptr);
+		managed_memory->release(cell_particle_counts_virtual);
 	}
 
-	void copy_to(ParticleBufferImpl& other, std::size_t block_count, cudaStream_t stream) const {
-		void* bin_offsets_ptr = bin_offsets;
-		void* other_bin_offsets_ptr = other.bin_offsets;
-		void* particle_bucket_sizes_ptr = particle_bucket_sizes;
-		void* other_particle_bucket_sizes_ptr = other.particle_bucket_sizes;
-		managed_memory->acquire_any(&bin_offsets_ptr, &other_bin_offsets_ptr, &particle_bucket_sizes_ptr, &other_particle_bucket_sizes_ptr);
-		check_cuda_errors(cudaMemcpyAsync(other_bin_offsets_ptr, bin_offsets_ptr, sizeof(int) * (block_count + 1), cudaMemcpyDefault, stream));
-		check_cuda_errors(cudaMemcpyAsync(other_particle_bucket_sizes_ptr, particle_bucket_sizes_ptr, sizeof(int) * block_count, cudaMemcpyDefault, stream));
-		managed_memory->release(bin_offsets_ptr, other_bin_offsets_ptr, particle_bucket_sizes_ptr, other_particle_bucket_sizes_ptr);
+	void copy_to(ParticleBufferImpl& other, std::size_t block_count, cudaStream_t stream) {
+		bin_offsets = bin_offsets_virtual;
+		other.bin_offsets = other.bin_offsets_virtual;
+		particle_bucket_sizes = particle_bucket_sizes_virtual;
+		other.particle_bucket_sizes_virtual = other.particle_bucket_sizes_virtual;
+		managed_memory->acquire_any(
+			  reinterpret_cast<void**>(&bin_offsets)
+			, reinterpret_cast<void**>(&other.bin_offsets)
+			, reinterpret_cast<void**>(&particle_bucket_sizes)
+			, reinterpret_cast<void**>(&other.particle_bucket_sizes_virtual)
+		);
+		check_cuda_errors(cudaMemcpyAsync(other.bin_offsets, bin_offsets, sizeof(int) * (block_count + 1), cudaMemcpyDefault, stream));
+		check_cuda_errors(cudaMemcpyAsync(other.particle_bucket_sizes_virtual, particle_bucket_sizes, sizeof(int) * block_count, cudaMemcpyDefault, stream));
+		managed_memory->release(bin_offsets_virtual, other.bin_offsets_virtual, particle_bucket_sizes_virtual, other.particle_bucket_sizes_virtual);
 	}
 
 	//FIXME: passing key_t here might cause problems because cuda is buggy

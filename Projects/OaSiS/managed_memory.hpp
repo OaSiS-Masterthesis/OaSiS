@@ -510,6 +510,7 @@ class ManagedMemory {
 	
 	void move_memory(std::map<const uintptr_t, MemoryLocation>::iterator old_mem_location_iter, const MemoryLocation new_mem_location){
 		auto& cu_dev = Cuda::ref_cuda_context(gpuid);
+		//std::cout << "Memcpy: " << new_mem_location.address << " " << old_mem_location_iter->second.address << " " << old_mem_location_iter->second.size << std::endl;
 		check_cuda_errors(cudaMemcpyAsync(new_mem_location.address, old_mem_location_iter->second.address, old_mem_location_iter->second.size, cudaMemcpyDefault, cu_dev.stream_compute()));
 		//cu_dev.syncStream<Cuda::StreamIndex::COMPUTE>();
 		switch(old_mem_location_iter->second.memory_type){
@@ -695,6 +696,7 @@ class ManagedMemory {
 			
 			bool already_defragmentated = false;
 			bool move_happened = false;
+			std::vector<void**> to_preempt;
 			for(void** ptr : ptrs){
 				if(ptr != nullptr && *ptr != nullptr){
 					std::map<uintptr_t, MemoryLocation>::iterator mem_location_iter = memory_locations.find(reinterpret_cast<uintptr_t>(*ptr));
@@ -727,20 +729,18 @@ class ManagedMemory {
 												}
 												
 												//If that failed, try to preemt pages
-												new_mem_location = preempt(size, alignment);
-												ret = new_mem_location.address;
-												
-												if(ret == nullptr){
-													throw std::runtime_error("Out of memory.");
-												}
+												to_preempt.push_back(ptr);
+												ret = *ptr;//Keep pointer
 											}else{
 												new_mem_location = MemoryLocation(ret, size, alignment, MemoryType::SWAP);
+												move_happened = true;
+												move_memory(mem_location_iter, new_mem_location);
 											}
 										}else{
 											new_mem_location = MemoryLocation(ret, size, alignment, MemoryType::DEVICE);
+											move_happened = true;
+											move_memory(mem_location_iter, new_mem_location);
 										}
-										move_happened = true;
-										move_memory(mem_location_iter, new_mem_location);
 									}else{
 										//TODO: Maybe try to copy data from device or swap to host?
 										new_mem_location = mem_location_iter->second;
@@ -800,6 +800,39 @@ class ManagedMemory {
 					}else{
 						throw std::invalid_argument("Pointer was not allocated using this allocator");
 					}
+				}
+			}
+			
+			//Preempt all at once after locking others
+			for(void** ptr : to_preempt){
+				std::map<uintptr_t, MemoryLocation>::iterator mem_location_iter = memory_locations.find(reinterpret_cast<uintptr_t>(*ptr));
+				if(mem_location_iter != memory_locations.end()){
+					const size_t size = mem_location_iter->second.size;
+					const size_t alignment = mem_location_iter->second.alignment;
+					
+					//TODO: Give an array to preempt or something like that, for more performant preemption
+					MemoryLocation new_mem_location = preempt(size, alignment);
+					void* ret = new_mem_location.address;
+					
+					if(ret == nullptr){
+						throw std::runtime_error("Out of memory.");
+					}
+					move_happened = true;
+					move_memory(mem_location_iter, new_mem_location);
+					switch(new_mem_location.memory_type){
+						case DEVICE:
+							locks_device.insert(*ptr);
+							break;
+						case SWAP:
+							locks_swap.insert(*ptr);
+							break;
+						case HOST:
+							locks_host.insert(*ptr);
+							break;
+						default:
+							assert(false && "Reached unreachable state");
+					}
+					*ptr = ret;
 				}
 			}
 			

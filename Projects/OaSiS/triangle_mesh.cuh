@@ -112,22 +112,27 @@ struct TriangleShellParticleBuffer{
 	int* face_bucket_sizes;
 	int* blockbuckets;
 	int* face_blockbuckets;
+	
+	int* particle_bucket_sizes_virtual;
+	int* face_bucket_sizes_virtual;
+	int* blockbuckets_virtual;
+	int* face_blockbuckets_virtual;
 
 	TriangleShellParticleBuffer() = default;
 		
 	template<typename Allocator>
 	void reserve_buckets(Allocator allocator, std::size_t num_block_count) {
 		if(blockbuckets) {
-			allocator.deallocate(particle_bucket_sizes, sizeof(int) * num_active_blocks);
-			allocator.deallocate(face_bucket_sizes, sizeof(int) * num_active_blocks);
-			allocator.deallocate(blockbuckets, sizeof(int) * num_active_blocks * config::G_PARTICLE_NUM_PER_BLOCK);
-			allocator.deallocate(face_blockbuckets, sizeof(int) * num_active_blocks * config::G_FACE_NUM_PER_BLOCK);
+			allocator.deallocate(particle_bucket_sizes_virtual, sizeof(int) * num_active_blocks);
+			allocator.deallocate(face_bucket_sizes_virtual, sizeof(int) * num_active_blocks);
+			allocator.deallocate(blockbuckets_virtual, sizeof(int) * num_active_blocks * config::G_PARTICLE_NUM_PER_BLOCK);
+			allocator.deallocate(face_blockbuckets_virtual, sizeof(int) * num_active_blocks * config::G_FACE_NUM_PER_BLOCK);
 		}
 		num_active_blocks	  = num_block_count;
-		particle_bucket_sizes = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks));
-		face_bucket_sizes = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks));
-		blockbuckets		  = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks * config::G_PARTICLE_NUM_PER_BLOCK));
-		face_blockbuckets		  = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks * config::G_FACE_NUM_PER_BLOCK));
+		particle_bucket_sizes_virtual = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks));
+		face_bucket_sizes_virtual = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks));
+		blockbuckets_virtual		  = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks * config::G_PARTICLE_NUM_PER_BLOCK));
+		face_blockbuckets_virtual		  = static_cast<int*>(allocator.allocate(sizeof(int) * num_active_blocks * config::G_FACE_NUM_PER_BLOCK));
 	}
 };
 

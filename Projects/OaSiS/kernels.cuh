@@ -2947,8 +2947,8 @@ __global__ void generate_particle_id_mapping(Partition partition, Partition prev
 	}
 }
 
-template<typename Partition, typename ParticleBuffer, typename AlphaShapesParticleBuffer, typename ParticleArray>
-__global__ void retrieve_particle_buffer(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, const AlphaShapesParticleBuffer alpha_shapes_particle_buffer, ParticleArray particle_array, unsigned int* particle_id_mapping_buffer) {
+template<typename Partition, typename ParticleBuffer, typename ParticleArray>
+__global__ void retrieve_particle_buffer(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, ParticleArray particle_array, unsigned int* particle_id_mapping_buffer) {
 	const int particle_counts	= next_particle_buffer.particle_bucket_sizes[blockIdx.x];
 	const ivec3 blockid			= partition.active_keys[blockIdx.x];
 	const auto advection_bucket = next_particle_buffer.blockbuckets + blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK;
@@ -2973,8 +2973,7 @@ __global__ void retrieve_particle_buffer(Partition partition, Partition prev_par
 
 		//Get bin from particle buffer
 		const auto source_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib / config::G_BIN_CAPACITY);
-		const auto alpha_shapes_source_bin = alpha_shapes_particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib / config::G_BIN_CAPACITY);
-
+		
 		//Fetch particle id in destination buffer
 		const unsigned int particle_id = particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno_from_partition] * config::G_BIN_CAPACITY + source_pidib];
 

@@ -52,11 +52,18 @@ struct HaloPartition<1> {
 		void* other_overlap_marks_ptr = other.overlap_marks;
 		void* halo_blocks_ptr = halo_blocks;
 		void* other_halo_blocks_ptr = other.halo_blocks;
-		managed_memory->acquire_any(&halo_marks_ptr, &other_halo_marks_ptr, &overlap_marks_ptr, &other_overlap_marks_ptr, &halo_blocks_ptr, &other_halo_blocks_ptr);
+		managed_memory->acquire_any(
+			  reinterpret_cast<void**>(&halo_marks_ptr)
+			, reinterpret_cast<void**>(&other_halo_marks_ptr)
+			, reinterpret_cast<void**>(&overlap_marks_ptr)
+			, reinterpret_cast<void**>(&other_overlap_marks_ptr)
+			, reinterpret_cast<void**>(&halo_blocks_ptr)
+			, reinterpret_cast<void**>(&other_halo_blocks_ptr)
+		);
 		check_cuda_errors(cudaMemcpyAsync(other_halo_marks_ptr, halo_marks_ptr, sizeof(char) * block_count, cudaMemcpyDefault, stream));
 		check_cuda_errors(cudaMemcpyAsync(other_overlap_marks_ptr, overlap_marks_ptr, sizeof(int) * block_count, cudaMemcpyDefault, stream));
 		check_cuda_errors(cudaMemcpyAsync(other_halo_blocks_ptr, halo_blocks_ptr, sizeof(ivec3) * block_count, cudaMemcpyDefault, stream));
-		managed_memory->release(halo_marks_ptr, other_halo_marks_ptr, overlap_marks_ptr, other_overlap_marks_ptr, halo_blocks_ptr, other_halo_blocks_ptr);
+		managed_memory->release(halo_marks, other.halo_marks, overlap_marks, other.overlap_marks, halo_blocks, other.halo_blocks);
 	}
 
 	template<typename Allocator>
@@ -72,32 +79,32 @@ struct HaloPartition<1> {
 	void reset_halo_count(cudaStream_t stream) const {
 		void* halo_count_ptr = halo_count;
 		if(managed_memory->get_memory_type(halo_count_ptr) == MemoryType::HOST){
-			managed_memory->managed_memory_type::acquire<MemoryType::HOST>(&halo_count_ptr);
+			managed_memory->managed_memory_type::acquire<MemoryType::HOST>(reinterpret_cast<void**>(&halo_count_ptr));
 			memset(halo_count_ptr, 0, sizeof(int));
 		}else{
-			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(&halo_count_ptr);
+			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(reinterpret_cast<void**>(&halo_count_ptr));
 			check_cuda_errors(cudaMemsetAsync(halo_count_ptr, 0, sizeof(int), stream));
 		}
-		managed_memory->release(halo_count_ptr);
+		managed_memory->release(halo_count);
 	}
 
 	void reset_overlap_marks(uint32_t neighbor_block_count, cudaStream_t stream) const {
 		void* overlap_marks_ptr = overlap_marks;
 		if(managed_memory->get_memory_type(overlap_marks_ptr) == MemoryType::HOST){
-			managed_memory->managed_memory_type::acquire<MemoryType::HOST>(&overlap_marks_ptr);
+			managed_memory->managed_memory_type::acquire<MemoryType::HOST>(reinterpret_cast<void**>(&overlap_marks_ptr));
 			memset(overlap_marks_ptr, 0, sizeof(int) * neighbor_block_count);
 		}else{
-			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(&overlap_marks_ptr);
+			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(reinterpret_cast<void**>(&overlap_marks_ptr));
 			check_cuda_errors(cudaMemsetAsync(overlap_marks_ptr, 0, sizeof(int) * neighbor_block_count, stream));
 		}
-		managed_memory->release(overlap_marks_ptr);
+		managed_memory->release(overlap_marks);
 	}
 
 	void retrieve_halo_count(cudaStream_t stream) {
 		void* halo_count_ptr = halo_count;
-		managed_memory->acquire_any(&halo_count_ptr);
+		managed_memory->acquire_any(reinterpret_cast<void**>(&halo_count_ptr));
 		check_cuda_errors(cudaMemcpyAsync(&h_count, halo_count_ptr, sizeof(int), cudaMemcpyDefault, stream));
-		managed_memory->release(halo_count_ptr);
+		managed_memory->release(halo_count);
 	}
 };
 
@@ -138,42 +145,46 @@ struct Partition
 	}
 
 	void reset() {
-		void* count_ptr = this->Instance<block_partition_>::count;
-		void* index_table_ptr = this->index_table;
-		if(managed_memory->get_memory_type(count_ptr) == MemoryType::HOST){
-			managed_memory->managed_memory_type::acquire<MemoryType::HOST>(&count_ptr);
-			memset(count_ptr, 0, sizeof(value_t));
+		this->Instance<block_partition_>::count = this->Instance<block_partition_>::count_virtual;
+		this->index_table = this->index_table_virtual;
+		if(managed_memory->get_memory_type(this->Instance<block_partition_>::count) == MemoryType::HOST){
+			managed_memory->managed_memory_type::acquire<MemoryType::HOST>(reinterpret_cast<void**>(&this->Instance<block_partition_>::count));
+			memset(this->Instance<block_partition_>::count, 0, sizeof(value_t));
 		}else{
-			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(&count_ptr);
-			check_cuda_errors(cudaMemset(count_ptr, 0, sizeof(value_t)));
+			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(reinterpret_cast<void**>(&this->Instance<block_partition_>::count));
+			check_cuda_errors(cudaMemset(this->Instance<block_partition_>::count, 0, sizeof(value_t)));
 		}
-		if(managed_memory->get_memory_type(index_table_ptr) == MemoryType::HOST){
-			managed_memory->managed_memory_type::acquire<MemoryType::HOST>(&index_table_ptr);
-			memset(index_table_ptr, 0xff, sizeof(value_t) * domain::extent);
+		if(managed_memory->get_memory_type(this->index_table) == MemoryType::HOST){
+			managed_memory->managed_memory_type::acquire<MemoryType::HOST>(reinterpret_cast<void**>(&this->index_table));
+			memset(this->index_table, 0xff, sizeof(value_t) * domain::extent);
 		}else{
-			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(&index_table_ptr);
-			check_cuda_errors(cudaMemset(index_table_ptr, 0xff, sizeof(value_t) * domain::extent));
+			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(reinterpret_cast<void**>(&this->index_table));
+			check_cuda_errors(cudaMemset(this->index_table, 0xff, sizeof(value_t) * domain::extent));
 		}
-		managed_memory->release(count_ptr, index_table_ptr);
+		managed_memory->release(this->Instance<block_partition_>::count_virtual, this->index_table_virtual);
 	}
 	void reset_table(cudaStream_t stream) {
-		void* index_table_ptr = this->index_table;
-		if(managed_memory->get_memory_type(index_table_ptr) == MemoryType::HOST){
-			managed_memory->managed_memory_type::acquire<MemoryType::HOST>(&index_table_ptr);
-			memset(index_table_ptr, 0xff, sizeof(value_t) * domain::extent);
+		this->index_table = this->index_table_virtual;
+		if(managed_memory->get_memory_type(this->index_table) == MemoryType::HOST){
+			managed_memory->managed_memory_type::acquire<MemoryType::HOST>(reinterpret_cast<void**>(&this->index_table));
+			memset(this->index_table, 0xff, sizeof(value_t) * domain::extent);
 		}else{
-			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(&index_table_ptr);
-			check_cuda_errors(cudaMemset(index_table_ptr, 0xff, sizeof(value_t) * domain::extent));
+			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(reinterpret_cast<void**>(&this->index_table));
+			check_cuda_errors(cudaMemset(this->index_table, 0xff, sizeof(value_t) * domain::extent));
 		}
-		managed_memory->release(index_table_ptr);
+		managed_memory->release(this->index_table_virtual);
 	}
 	void copy_to(Partition& other, std::size_t block_count, cudaStream_t stream) {
 		halo_base_t::copy_to(other, block_count, stream);
 		
-		void* index_table_ptr = this->index_table;
-		void* other_index_table_ptr = other.index_table;
-		managed_memory->acquire_any(&index_table_ptr, &other_index_table_ptr);
+		this->index_table = this->index_table_virtual;
+		other.index_table = other.index_table_virtual;
+		managed_memory->acquire_any(
+			  reinterpret_cast<void**>(&this->index_table)
+			, reinterpret_cast<void**>(&other.index_table)
+		);
 		check_cuda_errors(cudaMemcpyAsync(other.index_table, this->index_table, sizeof(value_t) * domain::extent, cudaMemcpyDefault, stream));
+		managed_memory->release(this->index_table_virtual, other.index_table_virtual);
 	}
 	//FIXME: passing kjey_t here might cause problems because cuda is buggy
 	__forceinline__ __device__ value_t insert(key_t key) noexcept {

@@ -317,30 +317,30 @@ __forceinline__ __device__ void store_data_neigbours_fluid<MaterialE::FIXED_CORO
 }
 
 template<MaterialE MaterialType>
-__forceinline__ __device__ void update_strain(const ParticleBuffer<MaterialType> particle_buffer, const ParticleBuffer<MaterialType> next_particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure);
+__forceinline__ __device__ void update_strain(const ParticleBuffer<MaterialType> particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure);
 
 template<>
-__forceinline__ __device__ void update_strain<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer, const ParticleBuffer<MaterialE::J_FLUID> next_particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure) {
+__forceinline__ __device__ void update_strain<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure) {
 	printf("Material type not supported for updating strain.");
 }
 
 template<>
-__forceinline__ __device__ void update_strain(const ParticleBuffer<MaterialE::FIXED_COROTATED> particle_buffer, const ParticleBuffer<MaterialE::FIXED_COROTATED> next_particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure) {
+__forceinline__ __device__ void update_strain(const ParticleBuffer<MaterialE::FIXED_COROTATED> particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure) {
 	printf("Material type not supported for updating strain.");
 }
 
 template<>
-__forceinline__ __device__ void update_strain(const ParticleBuffer<MaterialE::SAND> particle_buffer, const ParticleBuffer<MaterialE::SAND> next_particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure) {
+__forceinline__ __device__ void update_strain(const ParticleBuffer<MaterialE::SAND> particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure) {
 	printf("Material type not supported for updating strain.");
 }
 
 template<>
-__forceinline__ __device__ void update_strain(const ParticleBuffer<MaterialE::NACC> particle_buffer, const ParticleBuffer<MaterialE::NACC> next_particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure) {
+__forceinline__ __device__ void update_strain(const ParticleBuffer<MaterialE::NACC> particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure) {
 	printf("Material type not supported for updating strain.");
 }
 
 template<>
-__forceinline__ __device__ void update_strain(const ParticleBuffer<MaterialE::FIXED_COROTATED_GHOST> particle_buffer, const ParticleBuffer<MaterialE::FIXED_COROTATED_GHOST> next_particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure) {
+__forceinline__ __device__ void update_strain(const ParticleBuffer<MaterialE::FIXED_COROTATED_GHOST> particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure) {
 	float J = 1.0f - (weighted_pressure / particle_buffer.lambda);
 		
 	//Too low is bad. clamp to 0.1
@@ -350,7 +350,7 @@ __forceinline__ __device__ void update_strain(const ParticleBuffer<MaterialE::FI
 	}
 	
 	{
-		auto particle_bin													 = particle_buffer.ch(_0, next_particle_buffer.bin_offsets[src_blockno] + particle_id_in_block / config::G_BIN_CAPACITY);
+		auto particle_bin													 = particle_buffer.ch(_0, particle_buffer.bin_offsets[src_blockno] + particle_id_in_block / config::G_BIN_CAPACITY);
 		particle_bin.val(_13, particle_id_in_block % config::G_BIN_CAPACITY) = J;
 	}
 }
@@ -1206,7 +1206,7 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 		const float W_0 = weight_solid_0[0] * weight_solid_0[1] * weight_solid_0[2];
 		const float weighted_pressure = W_0 * pressure_solid_shared[local_id[0]][local_id[1]][local_id[2]];
 
-		update_strain<MaterialTypeSolid>(particle_buffer_solid, next_particle_buffer_soild, src_blockno, particle_id_in_block, weighted_pressure);
+		update_strain<MaterialTypeSolid>(particle_buffer_solid, src_blockno, particle_id_in_block, weighted_pressure);
 	}
 	
 #endif

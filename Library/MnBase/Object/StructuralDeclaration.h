@@ -217,34 +217,38 @@ struct Structural<StructuralType::HASH, Decoration, Domain, Layout, Structurals.
 	value_t* count;
 	key_t* active_keys;	 //
 	value_t* index_table;//
+	
+	value_t* count_virtual;
+	key_t* active_keys_virtual;
+	value_t* index_table_virtual;
 
 	// func members
 	template<typename Allocator>
 	void allocate_table(Allocator allocator, value_t capacity) {
 		this->capacity = capacity;
-		count		   = static_cast<value_t*>(allocator.allocate(sizeof(value_t)));
-		active_keys	   = static_cast<key_t*>(allocator.allocate(sizeof(key_t) * capacity));
+		count_virtual		   = static_cast<value_t*>(allocator.allocate(sizeof(value_t)));
+		active_keys_virtual	   = static_cast<key_t*>(allocator.allocate(sizeof(key_t) * capacity));
 		/// lookup table
-		index_table = static_cast<value_t*>(allocator.allocate(sizeof(value_t) * Domain::extent));
+		index_table_virtual = static_cast<value_t*>(allocator.allocate(sizeof(value_t) * Domain::extent));
 	}
 
 	template<typename Allocator>
 	void resize_table(Allocator allocator, std::size_t capacity) {
-		allocator.deallocate(active_keys, this->capacity);
-		active_keys	   = static_cast<key_t*>(allocator.allocate(sizeof(key_t) * capacity));
+		allocator.deallocate(active_keys_virtual, this->capacity);
+		active_keys_virtual	   = static_cast<key_t*>(allocator.allocate(sizeof(key_t) * capacity));
 		this->capacity = capacity;
 	}
 
 	template<typename Allocator>
 	void deallocate(Allocator allocator) {
-		allocator.deallocate(count, sizeof(value_t));
-		allocator.deallocate(active_keys, sizeof(key_t) * capacity);
-		allocator.deallocate(index_table, sizeof(value_t) * Domain::extent);
+		allocator.deallocate(count_virtual, sizeof(value_t));
+		allocator.deallocate(active_keys_virtual, sizeof(key_t) * capacity);
+		allocator.deallocate(index_table_virtual, sizeof(value_t) * Domain::extent);
 		base_t::deallocate(allocator);
 		capacity	= 0;
-		count		= nullptr;
-		active_keys = nullptr;
-		index_table = nullptr;
+		count_virtual		= nullptr;
+		active_keys_virtual = nullptr;
+		index_table_virtual = nullptr;
 	}
 
 	//TODO: Add (optional) range checks here (and maybe elsewhere too)
