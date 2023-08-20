@@ -155,9 +155,13 @@ struct TriangleShellGridBuffer : Instance<TriangleShellGridBufferData> {
 
 	template<typename CudaContext>
 	void reset(int block_count, CudaContext& cu_dev) {
+		bool this_is_locked = this->is_locked();
+		
 		managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(this->acquire());
 		cu_dev.compute_launch({block_count, config::G_BLOCKVOLUME}, clear_grid_triangle_shell, *this);
-		managed_memory->release(this->release());
+		managed_memory->release(
+			(this_is_locked ? nullptr : this->release())
+		);
 	}
 };
 

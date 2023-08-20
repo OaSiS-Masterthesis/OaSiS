@@ -144,7 +144,7 @@ struct CustomDeviceAllocator {			   // hide the global one
 	}
 };
 
-using managed_memory_type = ManagedMemory<CustomDeviceAllocator, (static_cast<size_t>(6) << 30), (static_cast<size_t>(4) << 30)>;
+using managed_memory_type = ManagedMemory<CustomDeviceAllocator, (static_cast<size_t>(14) << 30), (static_cast<size_t>(0) << 30)>;
 
 }// namespace mn
 

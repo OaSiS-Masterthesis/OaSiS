@@ -120,6 +120,10 @@ struct StructuralTraits {
 		}
 		return handle.ptr;
 	}
+	
+	bool is_locked(){
+		return (handle_virtual.ptr != nullptr);
+	}
 
 	// memory manage
 	template<typename Allocator>

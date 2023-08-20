@@ -509,24 +509,26 @@ class ManagedMemory {
 	}
 	
 	void move_memory(std::map<const uintptr_t, MemoryLocation>::iterator old_mem_location_iter, const MemoryLocation new_mem_location){
-		auto& cu_dev = Cuda::ref_cuda_context(gpuid);
-		//std::cout << "Memcpy: " << new_mem_location.address << " " << old_mem_location_iter->second.address << " " << old_mem_location_iter->second.size << std::endl;
-		check_cuda_errors(cudaMemcpyAsync(new_mem_location.address, old_mem_location_iter->second.address, old_mem_location_iter->second.size, cudaMemcpyDefault, cu_dev.stream_compute()));
-		//cu_dev.syncStream<Cuda::StreamIndex::COMPUTE>();
-		switch(old_mem_location_iter->second.memory_type){
-			case DEVICE:
-				device_space_manager.deallocate(old_mem_location_iter->second.address, old_mem_location_iter->second.size);
-				break;
-			case SWAP:
-				swap_space_manager.deallocate(old_mem_location_iter->second.address, old_mem_location_iter->second.size);
-				break;
-			case HOST:
-				free(old_mem_location_iter->second.address);
-				break;
-			default:
-				assert(false && "Reached unreachable state");
+		if(old_mem_location_iter->second.address != new_mem_location.address){
+			auto& cu_dev = Cuda::ref_cuda_context(gpuid);
+			//std::cout << "Memcpy: " << new_mem_location.address << " " << old_mem_location_iter->second.address << " " << old_mem_location_iter->second.size << std::endl;
+			check_cuda_errors(cudaMemcpyAsync(new_mem_location.address, old_mem_location_iter->second.address, old_mem_location_iter->second.size, cudaMemcpyDefault, cu_dev.stream_compute()));
+			//cu_dev.syncStream<Cuda::StreamIndex::COMPUTE>();
+			switch(old_mem_location_iter->second.memory_type){
+				case DEVICE:
+					device_space_manager.deallocate(old_mem_location_iter->second.address, old_mem_location_iter->second.size);
+					break;
+				case SWAP:
+					swap_space_manager.deallocate(old_mem_location_iter->second.address, old_mem_location_iter->second.size);
+					break;
+				case HOST:
+					free(old_mem_location_iter->second.address);
+					break;
+				default:
+					assert(false && "Reached unreachable state");
+			}
+			old_mem_location_iter->second = new_mem_location;
 		}
-		old_mem_location_iter->second = new_mem_location;
 	}
 	
 	template<MemoryType memory_type, typename T, std::size_t N, std::size_t... I>
@@ -730,7 +732,7 @@ class ManagedMemory {
 												
 												//If that failed, try to preemt pages
 												to_preempt.push_back(ptr);
-												ret = *ptr;//Keep pointer
+												continue;//Go to next ptr
 											}else{
 												new_mem_location = MemoryLocation(ret, size, alignment, MemoryType::SWAP);
 												move_happened = true;
@@ -855,12 +857,12 @@ class ManagedMemory {
 						
 						if(lock_iter_device != locks_device.end()){
 							locks_device.erase(lock_iter_device);
-						}
-						if(lock_iter_swap != locks_swap.end()){
+						}else if(lock_iter_swap != locks_swap.end()){
 							locks_swap.erase(lock_iter_swap);
-						}
-						if(lock_iter_host != locks_host.end()){
+						}else if(lock_iter_host != locks_host.end()){
 							locks_host.erase(lock_iter_host);
+						}else{
+							throw std::runtime_error("Pointer released but not acquired");
 						}
 
 					}
@@ -900,7 +902,7 @@ class ManagedMemory {
 				acquire_any_helper<MemoryType::HOST>(ptrs_host, Indices());
 			}
 			if(ptrs_device.size() > 0){
-				acquire_any_helper<MemoryType::DEVICE>(ptrs_host, Indices());
+				acquire_any_helper<MemoryType::DEVICE>(ptrs_device, Indices());
 			}
 		}
 		
@@ -912,6 +914,29 @@ class ManagedMemory {
 				}
 			}
 			return MemoryType::NONE;
+		}
+		
+		bool is_locked(void* ptr){
+			if(ptr != nullptr){
+				std::map<uintptr_t, MemoryLocation>::iterator mem_location_iter = memory_locations.find(reinterpret_cast<uintptr_t>(ptr));
+				if(mem_location_iter != memory_locations.end()){
+					std::set<void*>::iterator lock_iter_device = locks_device.find(ptr);
+					std::set<void*>::iterator lock_iter_swap = locks_swap.find(ptr);
+					std::set<void*>::iterator lock_iter_host = locks_host.find(ptr);
+					
+					if(lock_iter_device != locks_device.end()){
+						return true;
+					}
+					if(lock_iter_swap != locks_swap.end()){
+						return true;
+					}
+					if(lock_iter_host != locks_host.end()){
+						return true;
+					}
+
+				}
+			}
+			return false;
 		}
 	
 		void print_data(){

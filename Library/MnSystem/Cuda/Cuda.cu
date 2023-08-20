@@ -7,7 +7,7 @@
 
 #include "Cuda.h"
 
-constexpr size_t MEM_POOL_CTRL = 3;
+constexpr size_t MEM_POOL_CTRL = 5;
 
 namespace mn {
 
@@ -103,7 +103,7 @@ Cuda::Cuda()
 		check_cuda_errors(cudaMemGetInfo(&free_byte, &total_byte));
 		///
 		ak_monotonic_allocators.emplace_back(std::make_unique<MonotonicAllocator>(prop.textureAlignment,
-																				  free_byte >> MEM_POOL_CTRL));///< preserve 1/4 space for intermediate
+																				  free_byte >> MEM_POOL_CTRL));///< preserve 1/16 space for intermediate
 		///< computations
 		cudaDeviceSynchronize();
 		printf(

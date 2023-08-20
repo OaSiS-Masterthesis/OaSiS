@@ -32,79 +32,110 @@ struct HaloPartition<1> {
 	char* halo_marks;///< halo particle blocks
 	int* overlap_marks;
 	ivec3* halo_blocks;
+	
+	int* halo_count_virtual;
+	char* halo_marks_virtual;
+	int* overlap_marks_virtual;
+	ivec3* halo_blocks_virtual;
 
 	template<typename Allocator>
 	HaloPartition(Allocator allocator, managed_memory_type* managed_memory, int max_block_count)
 		: h_count(0) 
 		, managed_memory(managed_memory){
-		halo_count	  = static_cast<int*>(allocator.allocate(sizeof(char) * max_block_count));
-		halo_marks	  = static_cast<char*>(allocator.allocate(sizeof(char) * max_block_count));
-		overlap_marks = static_cast<int*>(allocator.allocate(sizeof(int) * max_block_count));
-		halo_blocks	  = static_cast<ivec3*>(allocator.allocate(sizeof(ivec3) * max_block_count));
+		halo_count_virtual	  = static_cast<int*>(allocator.allocate(sizeof(char) * max_block_count));
+		halo_marks_virtual	  = static_cast<char*>(allocator.allocate(sizeof(char) * max_block_count));
+		overlap_marks_virtual = static_cast<int*>(allocator.allocate(sizeof(int) * max_block_count));
+		halo_blocks_virtual	  = static_cast<ivec3*>(allocator.allocate(sizeof(ivec3) * max_block_count));
 	}
 
-	void copy_to(HaloPartition& other, std::size_t block_count, cudaStream_t stream) const {
+	void copy_to(HaloPartition& other, std::size_t block_count, cudaStream_t stream) {
 		other.h_count = h_count;
 		
-		void* halo_marks_ptr = halo_marks;
-		void* other_halo_marks_ptr = other.halo_marks;
-		void* overlap_marks_ptr = overlap_marks;
-		void* other_overlap_marks_ptr = other.overlap_marks;
-		void* halo_blocks_ptr = halo_blocks;
-		void* other_halo_blocks_ptr = other.halo_blocks;
+		bool halo_marks_is_locked = managed_memory->is_locked(halo_marks_virtual);
+		bool other_halo_marks_is_locked = managed_memory->is_locked(other.halo_marks_virtual);
+		bool overlap_marks_is_locked = managed_memory->is_locked(overlap_marks_virtual);
+		bool other_overlap_marks_is_locked = managed_memory->is_locked(other.overlap_marks_virtual);
+		bool halo_blocks_is_locked = managed_memory->is_locked(halo_blocks_virtual);
+		bool other_halo_blocks_is_locked = managed_memory->is_locked(other.halo_blocks_virtual);
+		
+		this->halo_marks = halo_marks_virtual;
+		other.halo_marks = other.halo_marks_virtual;
+		this->overlap_marks = overlap_marks_virtual;
+		other.overlap_marks = other.overlap_marks_virtual;
+		this->halo_blocks = halo_blocks_virtual;
+		other.halo_blocks = other.halo_blocks_virtual;
 		managed_memory->acquire_any(
-			  reinterpret_cast<void**>(&halo_marks_ptr)
-			, reinterpret_cast<void**>(&other_halo_marks_ptr)
-			, reinterpret_cast<void**>(&overlap_marks_ptr)
-			, reinterpret_cast<void**>(&other_overlap_marks_ptr)
-			, reinterpret_cast<void**>(&halo_blocks_ptr)
-			, reinterpret_cast<void**>(&other_halo_blocks_ptr)
+			  reinterpret_cast<void**>(&this->halo_marks)
+			, reinterpret_cast<void**>(&other.halo_marks)
+			, reinterpret_cast<void**>(&this->overlap_marks)
+			, reinterpret_cast<void**>(&other.overlap_marks)
+			, reinterpret_cast<void**>(&this->halo_blocks)
+			, reinterpret_cast<void**>(&other.halo_blocks)
 		);
-		check_cuda_errors(cudaMemcpyAsync(other_halo_marks_ptr, halo_marks_ptr, sizeof(char) * block_count, cudaMemcpyDefault, stream));
-		check_cuda_errors(cudaMemcpyAsync(other_overlap_marks_ptr, overlap_marks_ptr, sizeof(int) * block_count, cudaMemcpyDefault, stream));
-		check_cuda_errors(cudaMemcpyAsync(other_halo_blocks_ptr, halo_blocks_ptr, sizeof(ivec3) * block_count, cudaMemcpyDefault, stream));
-		managed_memory->release(halo_marks, other.halo_marks, overlap_marks, other.overlap_marks, halo_blocks, other.halo_blocks);
+		check_cuda_errors(cudaMemcpyAsync(other.halo_marks, this->halo_marks, sizeof(char) * block_count, cudaMemcpyDefault, stream));
+		check_cuda_errors(cudaMemcpyAsync(other.overlap_marks, this->overlap_marks, sizeof(int) * block_count, cudaMemcpyDefault, stream));
+		check_cuda_errors(cudaMemcpyAsync(other.halo_blocks, this->halo_blocks, sizeof(ivec3) * block_count, cudaMemcpyDefault, stream));
+		managed_memory->release(
+			  (halo_marks_is_locked ? nullptr : halo_marks_virtual)
+			, (other_halo_marks_is_locked ? nullptr : other.halo_marks_virtual)
+			, (overlap_marks_is_locked ? nullptr : overlap_marks_virtual)
+			, (other_overlap_marks_is_locked ? nullptr : other.overlap_marks_virtual)
+			, (halo_blocks_is_locked ? nullptr : halo_blocks_virtual)
+			, (other_halo_blocks_is_locked ? nullptr : other.halo_blocks_virtual)
+		);
 	}
 
 	template<typename Allocator>
 	void resize_partition(Allocator allocator, std::size_t prev_capacity, std::size_t capacity) {
-		allocator.deallocate(halo_marks, sizeof(char) * prev_capacity);
-		allocator.deallocate(overlap_marks, sizeof(int) * prev_capacity);
-		allocator.deallocate(halo_blocks, sizeof(ivec3) * prev_capacity);
-		halo_marks	  = static_cast<char*>(allocator.allocate(sizeof(char) * capacity));
-		overlap_marks = static_cast<int*>(allocator.allocate(sizeof(int) * capacity));
-		halo_blocks	  = static_cast<ivec3*>(allocator.allocate(sizeof(ivec3) * capacity));
+		allocator.deallocate(halo_marks_virtual, sizeof(char) * prev_capacity);
+		allocator.deallocate(overlap_marks_virtual, sizeof(int) * prev_capacity);
+		allocator.deallocate(halo_blocks_virtual, sizeof(ivec3) * prev_capacity);
+		halo_marks_virtual	  = static_cast<char*>(allocator.allocate(sizeof(char) * capacity));
+		overlap_marks_virtual = static_cast<int*>(allocator.allocate(sizeof(int) * capacity));
+		halo_blocks_virtual	  = static_cast<ivec3*>(allocator.allocate(sizeof(ivec3) * capacity));
 	}
 
-	void reset_halo_count(cudaStream_t stream) const {
-		void* halo_count_ptr = halo_count;
-		if(managed_memory->get_memory_type(halo_count_ptr) == MemoryType::HOST){
-			managed_memory->managed_memory_type::acquire<MemoryType::HOST>(reinterpret_cast<void**>(&halo_count_ptr));
-			memset(halo_count_ptr, 0, sizeof(int));
+	void reset_halo_count(cudaStream_t stream) {
+		bool halo_count_is_locked = managed_memory->is_locked(halo_count_virtual);
+		
+		this->halo_count = halo_count_virtual;
+		if(managed_memory->get_memory_type(this->halo_count) == MemoryType::HOST){
+			managed_memory->managed_memory_type::acquire<MemoryType::HOST>(reinterpret_cast<void**>(&this->halo_count));
+			memset(this->halo_count, 0, sizeof(int));
 		}else{
-			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(reinterpret_cast<void**>(&halo_count_ptr));
-			check_cuda_errors(cudaMemsetAsync(halo_count_ptr, 0, sizeof(int), stream));
+			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(reinterpret_cast<void**>(&this->halo_count));
+			check_cuda_errors(cudaMemsetAsync(this->halo_count, 0, sizeof(int), stream));
 		}
-		managed_memory->release(halo_count);
+		managed_memory->release(
+			(halo_count_is_locked ? nullptr : halo_count_virtual)
+		);
 	}
 
-	void reset_overlap_marks(uint32_t neighbor_block_count, cudaStream_t stream) const {
-		void* overlap_marks_ptr = overlap_marks;
-		if(managed_memory->get_memory_type(overlap_marks_ptr) == MemoryType::HOST){
-			managed_memory->managed_memory_type::acquire<MemoryType::HOST>(reinterpret_cast<void**>(&overlap_marks_ptr));
-			memset(overlap_marks_ptr, 0, sizeof(int) * neighbor_block_count);
+	void reset_overlap_marks(uint32_t neighbor_block_count, cudaStream_t stream) {
+		bool overlap_marks_is_locked = managed_memory->is_locked(overlap_marks_virtual);
+		
+		this->overlap_marks = overlap_marks_virtual;
+		if(managed_memory->get_memory_type(this->overlap_marks) == MemoryType::HOST){
+			managed_memory->managed_memory_type::acquire<MemoryType::HOST>(reinterpret_cast<void**>(&this->overlap_marks));
+			memset(this->overlap_marks, 0, sizeof(int) * neighbor_block_count);
 		}else{
-			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(reinterpret_cast<void**>(&overlap_marks_ptr));
-			check_cuda_errors(cudaMemsetAsync(overlap_marks_ptr, 0, sizeof(int) * neighbor_block_count, stream));
+			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(reinterpret_cast<void**>(&this->overlap_marks));
+			check_cuda_errors(cudaMemsetAsync(this->overlap_marks, 0, sizeof(int) * neighbor_block_count, stream));
 		}
-		managed_memory->release(overlap_marks);
+		managed_memory->release(
+			(overlap_marks_is_locked ? nullptr : overlap_marks_virtual)
+		);
 	}
 
 	void retrieve_halo_count(cudaStream_t stream) {
-		void* halo_count_ptr = halo_count;
-		managed_memory->acquire_any(reinterpret_cast<void**>(&halo_count_ptr));
-		check_cuda_errors(cudaMemcpyAsync(&h_count, halo_count_ptr, sizeof(int), cudaMemcpyDefault, stream));
-		managed_memory->release(halo_count);
+		bool halo_count_is_locked = managed_memory->is_locked(halo_count_virtual);
+		
+		this->halo_count = halo_count_virtual;
+		managed_memory->acquire_any(reinterpret_cast<void**>(&this->halo_count));
+		check_cuda_errors(cudaMemcpyAsync(&h_count, this->halo_count, sizeof(int), cudaMemcpyDefault, stream));
+		managed_memory->release(
+			(halo_count_is_locked ? nullptr : halo_count_virtual)
+		);
 	}
 };
 
@@ -145,6 +176,9 @@ struct Partition
 	}
 
 	void reset() {
+		bool count_is_locked = managed_memory->is_locked(this->Instance<block_partition_>::count_virtual);
+		bool index_table_is_locked = managed_memory->is_locked(this->index_table_virtual);
+		
 		this->Instance<block_partition_>::count = this->Instance<block_partition_>::count_virtual;
 		this->index_table = this->index_table_virtual;
 		if(managed_memory->get_memory_type(this->Instance<block_partition_>::count) == MemoryType::HOST){
@@ -161,9 +195,14 @@ struct Partition
 			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(reinterpret_cast<void**>(&this->index_table));
 			check_cuda_errors(cudaMemset(this->index_table, 0xff, sizeof(value_t) * domain::extent));
 		}
-		managed_memory->release(this->Instance<block_partition_>::count_virtual, this->index_table_virtual);
+		managed_memory->release(
+			  (count_is_locked ? nullptr : this->Instance<block_partition_>::count_virtual)
+			, (index_table_is_locked ? nullptr : this->index_table_virtual)
+		);
 	}
 	void reset_table(cudaStream_t stream) {
+		bool index_table_is_locked = managed_memory->is_locked(this->index_table_virtual);
+		
 		this->index_table = this->index_table_virtual;
 		if(managed_memory->get_memory_type(this->index_table) == MemoryType::HOST){
 			managed_memory->managed_memory_type::acquire<MemoryType::HOST>(reinterpret_cast<void**>(&this->index_table));
@@ -172,10 +211,15 @@ struct Partition
 			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(reinterpret_cast<void**>(&this->index_table));
 			check_cuda_errors(cudaMemset(this->index_table, 0xff, sizeof(value_t) * domain::extent));
 		}
-		managed_memory->release(this->index_table_virtual);
+		managed_memory->release(
+			(index_table_is_locked ? nullptr : this->index_table_virtual)
+		);
 	}
 	void copy_to(Partition& other, std::size_t block_count, cudaStream_t stream) {
 		halo_base_t::copy_to(other, block_count, stream);
+		
+		bool index_table_is_locked = managed_memory->is_locked(this->index_table_virtual);
+		bool other_index_table_is_locked = managed_memory->is_locked(other.index_table_virtual);
 		
 		this->index_table = this->index_table_virtual;
 		other.index_table = other.index_table_virtual;
@@ -184,7 +228,10 @@ struct Partition
 			, reinterpret_cast<void**>(&other.index_table)
 		);
 		check_cuda_errors(cudaMemcpyAsync(other.index_table, this->index_table, sizeof(value_t) * domain::extent, cudaMemcpyDefault, stream));
-		managed_memory->release(this->index_table_virtual, other.index_table_virtual);
+		managed_memory->release(
+			  (index_table_is_locked ? nullptr : this->index_table_virtual)
+			, (other_index_table_is_locked ? nullptr : other.index_table_virtual)
+		);
 	}
 	//FIXME: passing kjey_t here might cause problems because cuda is buggy
 	__forceinline__ __device__ value_t insert(key_t key) noexcept {

@@ -40,10 +40,14 @@ struct GridBuffer : Instance<grid_buffer_> {
 
 	template<typename CudaContext>
 	void reset(int block_count, CudaContext& cu_dev) {
+		bool this_is_locked = this->is_locked();
+		
 		//check_cuda_errors(cudaMemsetAsync((void *)&this->val_1d(_0, 0), 0, grid_block_::size * block_count, cu_dev.stream_compute()));
 		managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(this->acquire());
 		cu_dev.compute_launch({block_count, config::G_BLOCKVOLUME}, clear_grid, *this);
-		managed_memory->release(this->release());
+		managed_memory->release(
+			(this_is_locked ? nullptr : this->release())
+		);
 	}
 	
 	__forceinline__ __host__ __device__ const std::array<float, 3>& get_offset() const{
@@ -70,9 +74,13 @@ struct TemporaryGridBuffer : Instance<TemporaryGridBufferData> {
 
 	template<typename CudaContext>
 	void reset(int block_count, CudaContext& cu_dev) {
+		bool this_is_locked = this->is_locked();
+		
 		managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(this->acquire());
 		check_cuda_errors(cudaMemsetAsync((void *)&this->val_1d(_0, 0), 0, TemporaryGridBlockData::size * block_count, cu_dev.stream_compute()));
-		managed_memory->release(this->release());
+		managed_memory->release(
+			(this_is_locked ? nullptr : this->release())
+		);
 	}
 };
 

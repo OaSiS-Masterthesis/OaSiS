@@ -96,7 +96,7 @@ __global__ void build_particle_cell_buckets(uint32_t particle_count, ParticleArr
 __global__ void cell_bucket_to_block(const int* cell_particle_counts, const int* cellbuckets, int* particle_bucket_sizes, int* buckets) {
 	const int cellno		  = static_cast<int>(threadIdx.x) & (config::G_BLOCKVOLUME - 1);
 	const int particle_counts = cell_particle_counts[blockIdx.x * config::G_BLOCKVOLUME + cellno];
-
+	
 	for(int particle_id_in_cell = 0; particle_id_in_cell < config::G_MAX_PARTICLES_IN_CELL; particle_id_in_cell++) {
 		if(particle_id_in_cell < particle_counts) {
 			//Each thread gets its index in the blocks bucket
@@ -2943,7 +2943,7 @@ __global__ void generate_particle_id_mapping(Partition partition, Partition prev
 		//Store id in mapping
 		particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno_from_partition] * config::G_BIN_CAPACITY + source_pidib] = particle_id;
 		
-		printf("ABC0 %d %d %d # %d %d # %u - ", blockid[0], blockid[1], blockid[2], advection_source_blockno_from_partition, source_pidib, particle_id);
+		//printf("ABC0 %d %d %d # %d %d # %u - ", blockid[0], blockid[1], blockid[2], advection_source_blockno_from_partition, source_pidib, particle_id);
 	}
 }
 

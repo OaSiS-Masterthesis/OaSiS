@@ -710,7 +710,7 @@ __forceinline__ __device__ void alpha_shapes_check_contact_condition(const Parti
 		}
 		if(current_contact_triangle_is_alpha != is_alpha && (current_contact_triangle_is_alpha != TriangleFinalizationStatus::ALREADY_FINALIZED)){
 			if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 128 && threadIdx.x == 0){
-				printf("ABC5.3 %d %d %d # %d %d %d # %d %d %d # %d %d - ", cellid[0], cellid[1], cellid[2], current_contact_triangle[0], current_contact_triangle[1], current_contact_triangle[2], current_triangle[0], current_triangle[1], current_triangle[2], current_contact_triangle_is_alpha, is_alpha);
+				//printf("ABC5.3 %d %d %d # %d %d %d # %d %d %d # %d %d - ", cellid[0], cellid[1], cellid[2], current_contact_triangle[0], current_contact_triangle[1], current_contact_triangle[2], current_triangle[0], current_triangle[1], current_triangle[2], current_contact_triangle_is_alpha, is_alpha);
 			}
 			alpha_shapes_finalize_triangle(particle_buffer, prev_partition, partition, grid, alpha_shapes_particle_buffer, alpha_shapes_triangle_buffer, finalized_triangle_count, particle_id_mapping_buffer, shared_memory_storage, own_particle_indices, triangles, current_triangle_count, next_triangle_count, current_contact_triangle,blockid, cellid, src_blockno, finalize_particles_start, finalize_particles_end);
 		}
@@ -1281,7 +1281,7 @@ __forceinline__ __device__ void alpha_shapes_finalize_particles(const ParticleBu
 		normal[1] = particle_bin.val(_2, particle_id_in_bin);
 		normal[2] = particle_bin.val(_3, particle_id_in_bin);
 		
-		printf("ABC1 %d %d %d # %d %d # %.28f - ", cellid[0], cellid[1], cellid[2], advection_source_blockno, source_pidib, summed_area);
+		//printf("ABC1 %d %d %d # %d %d # %.28f - ", cellid[0], cellid[1], cellid[2], advection_source_blockno, source_pidib, summed_area);
 		
 		AlphaShapesPointType point_type;
 		if(summed_area > 0.0f){
@@ -1836,9 +1836,9 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 	__syncthreads();
 	
 	if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 128 && threadIdx.x == 0){
-		printf("M %d # %d %d %d # %d # %d %d # %d %d # %d - ", static_cast<int>(blockIdx.x), cellid[0], cellid[1], cellid[2], test_index, current_triangle_count, next_triangle_count, temporary_convex_hull_triangles_count, next_temporary_convex_hull_triangles_count, additional_contact_particles_count);
+		//printf("M %d # %d %d %d # %d # %d %d # %d %d # %d - ", static_cast<int>(blockIdx.x), cellid[0], cellid[1], cellid[2], test_index, current_triangle_count, next_triangle_count, temporary_convex_hull_triangles_count, next_temporary_convex_hull_triangles_count, additional_contact_particles_count);
 		for(int i = 0; i < additional_contact_particles_count; ++i){
-			printf("Z %d %d %d # %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, shared_memory_storage->circumsphere_points[i]);
+			//printf("Z %d %d %d # %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, shared_memory_storage->circumsphere_points[i]);
 		}
 	}
 	
@@ -1892,23 +1892,23 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 				if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 128 && alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(i) == threadIdx.x){
 					const std::array<int, 3> tmp_abc = triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(i)];
 					const TriangleFinalizationStatus tmp_def = triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(i)];
-					printf("X0 %d %d %d # %d # %d %d %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, tmp_abc[0], tmp_abc[1], tmp_abc[2], tmp_def);
+					//printf("X0 %d %d %d # %d # %d %d %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, tmp_abc[0], tmp_abc[1], tmp_abc[2], tmp_def);
 				}
 			}
 			for(int i = current_triangle_count; i < current_triangle_count + next_triangle_count; ++i){
 				if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 128 && alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(i) == threadIdx.x){
 					const std::array<int, 3> tmp_abc = triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(i)];
 					const TriangleFinalizationStatus tmp_def = triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(i)];
-					printf("Y0 %d %d %d # %d # %d %d %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, tmp_abc[0], tmp_abc[1], tmp_abc[2], tmp_def);
+					//printf("Y0 %d %d %d # %d # %d %d %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, tmp_abc[0], tmp_abc[1], tmp_abc[2], tmp_def);
 				}
 			}
 			
 			if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 128 && threadIdx.x == 0){
 				for(int i = 0; i < temporary_convex_hull_triangles_count; ++i){
-					printf("A0 %d %d %d # %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, shared_memory_storage->circumsphere_triangles[i]);
+					//printf("A0 %d %d %d # %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, shared_memory_storage->circumsphere_triangles[i]);
 				}
 				for(int i = temporary_convex_hull_triangles_count; i < temporary_convex_hull_triangles_count + next_temporary_convex_hull_triangles_count; ++i){
-					printf("B0 %d %d %d # %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, shared_memory_storage->circumsphere_triangles[i]);
+					//printf("B0 %d %d %d # %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, shared_memory_storage->circumsphere_triangles[i]);
 				}
 			}
 			
@@ -1918,30 +1918,30 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 		
 			
 			if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 128 && threadIdx.x == 0){
-				printf("M %d %d %d # %d # %d %d # %d %d # %d  - ", cellid[0], cellid[1], cellid[2], test_index, current_triangle_count, next_triangle_count, temporary_convex_hull_triangles_count, next_temporary_convex_hull_triangles_count, is_alpha);
+				//printf("M %d %d %d # %d # %d %d # %d %d # %d  - ", cellid[0], cellid[1], cellid[2], test_index, current_triangle_count, next_triangle_count, temporary_convex_hull_triangles_count, next_temporary_convex_hull_triangles_count, is_alpha);
 			}
 		
 			for(int i = 0; i < current_triangle_count; ++i){
 				if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 128 && alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(i) == threadIdx.x){
 					const std::array<int, 3> tmp_abc = triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(i)];
 					const TriangleFinalizationStatus tmp_def = triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(i)];
-					printf("X1 %d %d %d # %d # %d %d %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, tmp_abc[0], tmp_abc[1], tmp_abc[2], tmp_def);
+					//printf("X1 %d %d %d # %d # %d %d %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, tmp_abc[0], tmp_abc[1], tmp_abc[2], tmp_def);
 				}
 			}
 			for(int i = current_triangle_count; i < current_triangle_count + next_triangle_count; ++i){
 				if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 128 && alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(i) == threadIdx.x){
 					const std::array<int, 3> tmp_abc = triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(i)];
 					const TriangleFinalizationStatus tmp_def = triangles_is_alpha[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(i)];
-					printf("Y1 %d %d %d # %d # %d %d %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, tmp_abc[0], tmp_abc[1], tmp_abc[2], tmp_def);
+					//printf("Y1 %d %d %d # %d # %d %d %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, tmp_abc[0], tmp_abc[1], tmp_abc[2], tmp_def);
 				}
 			}
 			
 			if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 128 && threadIdx.x == 0){
 				for(int i = 0; i < temporary_convex_hull_triangles_count; ++i){
-					printf("A1 %d %d %d # %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, shared_memory_storage->circumsphere_triangles[i]);
+					//printf("A1 %d %d %d # %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, shared_memory_storage->circumsphere_triangles[i]);
 				}
 				for(int i = temporary_convex_hull_triangles_count; i < temporary_convex_hull_triangles_count + next_temporary_convex_hull_triangles_count; ++i){
-					printf("B1 %d %d %d # %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, shared_memory_storage->circumsphere_triangles[i]);
+					//printf("B1 %d %d %d # %d # %d - ", cellid[0], cellid[1], cellid[2], test_index, shared_memory_storage->circumsphere_triangles[i]);
 				}
 			}
 		
@@ -1957,7 +1957,7 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 			//NOTE: Always false for first triangle
 			if(current_triangle_is_alpha == TriangleFinalizationStatus::IS_ALPHA){
 				if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 128 && threadIdx.x == 0){
-					printf("ABC5.0 %d %d %d # %d %d %d - ", cellid[0], cellid[1], cellid[2], current_triangle[0], current_triangle[1], current_triangle[2]);
+					//printf("ABC5.0 %d %d %d # %d %d %d - ", cellid[0], cellid[1], cellid[2], current_triangle[0], current_triangle[1], current_triangle[2]);
 				}
 				alpha_shapes_finalize_triangle(particle_buffer, prev_partition, partition, grid, alpha_shapes_particle_buffer, alpha_shapes_triangle_buffer, finalized_triangle_count, particle_id_mapping_buffer, shared_memory_storage, own_particle_indices, triangles, current_triangle_count, next_triangle_count, current_triangle, blockid, cellid, src_blockno, finalize_particles_start, finalize_particles_end);
 			}
@@ -3085,7 +3085,7 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 	}
 	if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 128){
 		for(int j = alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(0); j < alpha_shapes_get_thread_count<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(threadIdx.x, current_triangle_count + next_triangle_count); ++j){
-			printf("ABC5 %d # %d %d %d # %d - ", test_index, triangles[j][0], triangles[j][1], triangles[j][2], triangles_is_alpha[j]);
+			//printf("ABC5 %d # %d %d %d # %d - ", test_index, triangles[j][0], triangles[j][1], triangles[j][2], triangles_is_alpha[j]);
 		}
 	}
 	if(test_index == frame_id + 1){
@@ -3126,7 +3126,7 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 		//If we are handling the first triangle, re-add it with flipped normal as outer triangle
 		if(is_first_triangle){
 			if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 128 && threadIdx.x == 0){
-				printf("ABC6 %d %d %d %d # %d - ", current_triangle[0], current_triangle[1], current_triangle[2], shared_memory_storage->circumsphere_points[0], first_is_alpha);
+				//printf("ABC6 %d %d %d %d # %d - ", current_triangle[0], current_triangle[1], current_triangle[2], shared_memory_storage->circumsphere_points[0], first_is_alpha);
 			}
 			
 			if(alpha_shapes_get_thread_index<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(current_triangle_count + next_triangle_count) == threadIdx.x){
@@ -3620,7 +3620,7 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 		
 		if(current_triangle_is_alpha == TriangleFinalizationStatus::IS_ALPHA){
 			if(cellid[0] == 126 && cellid[1] == 106 && cellid[2] == 128 && threadIdx.x == 0){
-				printf("ABC5.2 %d %d %d # %d %d %d - ", cellid[0], cellid[1], cellid[2], current_triangle[0], current_triangle[1], current_triangle[2]);
+				//printf("ABC5.2 %d %d %d # %d %d %d - ", cellid[0], cellid[1], cellid[2], current_triangle[0], current_triangle[1], current_triangle[2]);
 			}
 			alpha_shapes_finalize_triangle(particle_buffer, prev_partition, partition, grid, alpha_shapes_particle_buffer, alpha_shapes_triangle_buffer, finalized_triangle_count, particle_id_mapping_buffer, shared_memory_storage, own_particle_indices, *triangles_ptr, current_triangle_count, next_triangle_count, current_triangle,blockid, cellid, src_blockno, own_last_active_particles_start, own_particle_bucket_size);
 		}

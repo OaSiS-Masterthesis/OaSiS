@@ -105,6 +105,8 @@ struct ParticleBufferImpl : Instance<particle_buffer_<particle_bin_<Mt>>> {
 	}
 
 	void reset_ppcs() {
+		bool cell_particle_counts_is_locked = managed_memory->is_locked(cell_particle_counts_virtual);
+		
 		cell_particle_counts = cell_particle_counts_virtual;
 		if(managed_memory->get_memory_type(cell_particle_counts) == MemoryType::HOST){
 			managed_memory->managed_memory_type::acquire<MemoryType::HOST>(reinterpret_cast<void**>(&cell_particle_counts));
@@ -113,23 +115,35 @@ struct ParticleBufferImpl : Instance<particle_buffer_<particle_bin_<Mt>>> {
 			managed_memory->managed_memory_type::acquire<MemoryType::DEVICE>(reinterpret_cast<void**>(&cell_particle_counts));
 			check_cuda_errors(cudaMemset(cell_particle_counts, 0, sizeof(int) * num_active_blocks * config::G_BLOCKVOLUME));
 		}
-		managed_memory->release(cell_particle_counts_virtual);
+		managed_memory->release(
+			(cell_particle_counts_is_locked ? nullptr : cell_particle_counts_virtual)
+		);
 	}
 
 	void copy_to(ParticleBufferImpl& other, std::size_t block_count, cudaStream_t stream) {
+		bool bin_offsets_is_locked = managed_memory->is_locked(bin_offsets_virtual);
+		bool other_bin_offsets_is_locked = managed_memory->is_locked(other.bin_offsets_virtual);
+		bool particle_bucket_sizes_is_locked = managed_memory->is_locked(particle_bucket_sizes_virtual);
+		bool other_particle_bucket_sizes_is_locked = managed_memory->is_locked(other.particle_bucket_sizes_virtual);
+		
 		bin_offsets = bin_offsets_virtual;
 		other.bin_offsets = other.bin_offsets_virtual;
 		particle_bucket_sizes = particle_bucket_sizes_virtual;
-		other.particle_bucket_sizes_virtual = other.particle_bucket_sizes_virtual;
+		other.particle_bucket_sizes = other.particle_bucket_sizes_virtual;
 		managed_memory->acquire_any(
 			  reinterpret_cast<void**>(&bin_offsets)
 			, reinterpret_cast<void**>(&other.bin_offsets)
 			, reinterpret_cast<void**>(&particle_bucket_sizes)
-			, reinterpret_cast<void**>(&other.particle_bucket_sizes_virtual)
+			, reinterpret_cast<void**>(&other.particle_bucket_sizes)
 		);
 		check_cuda_errors(cudaMemcpyAsync(other.bin_offsets, bin_offsets, sizeof(int) * (block_count + 1), cudaMemcpyDefault, stream));
-		check_cuda_errors(cudaMemcpyAsync(other.particle_bucket_sizes_virtual, particle_bucket_sizes, sizeof(int) * block_count, cudaMemcpyDefault, stream));
-		managed_memory->release(bin_offsets_virtual, other.bin_offsets_virtual, particle_bucket_sizes_virtual, other.particle_bucket_sizes_virtual);
+		check_cuda_errors(cudaMemcpyAsync(other.particle_bucket_sizes, particle_bucket_sizes, sizeof(int) * block_count, cudaMemcpyDefault, stream));
+		managed_memory->release(
+			  (bin_offsets_is_locked ? nullptr : bin_offsets_virtual)
+			, (other_bin_offsets_is_locked ? nullptr : other.bin_offsets_virtual)
+			, (particle_bucket_sizes_is_locked ? nullptr : particle_bucket_sizes_virtual)
+			, (other_particle_bucket_sizes_is_locked ? nullptr : other.particle_bucket_sizes_virtual)
+		);
 	}
 
 	//FIXME: passing key_t here might cause problems because cuda is buggy
@@ -165,7 +179,7 @@ struct ParticleBufferImpl : Instance<particle_buffer_<particle_bin_<Mt>>> {
 #endif
 			return;
 		}
-
+		
 		//NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) Cuda does not yet support std::span
 		cellbuckets[blockno * config::G_PARTICLE_NUM_PER_BLOCK + cellno * config::G_MAX_PARTICLES_IN_CELL + particle_id_in_cell] = (dirtag * config::G_PARTICLE_NUM_PER_BLOCK) | particle_id_in_block;
 	}
