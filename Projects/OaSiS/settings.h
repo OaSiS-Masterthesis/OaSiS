@@ -94,6 +94,9 @@ namespace config {
 	constexpr float DENSITY		   = 1e3;
 	constexpr float YOUNGS_MODULUS = 5e3;
 	constexpr float POISSON_RATIO  = 0.4f;
+	
+	//TODO: Maybe move somewhere else
+	constexpr float MARCHING_CUBES_DENSITY_THRESHOLD = 0.1f;
 
 	constexpr float G_GRAVITY = -9.8f;
 	

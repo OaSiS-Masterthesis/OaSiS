@@ -2865,6 +2865,24 @@ __global__ void sum_grid_mass(Grid grid, float* sum) {
 	atomicAdd(sum, grid.ch(_0, blockIdx.x).val_1d(_0, threadIdx.x));
 }
 
+template<typename Partition, typename Grid>
+__global__ void get_bounding_box(size_t block_count, Partition partition, Grid grid, std::array<int, 3>* bounding_box_min, std::array<int, 3>* bounding_box_max) {
+	uint32_t blockno = blockIdx.x;
+	if(blockno >= block_count) {
+		return;
+	}
+	auto blockid = partition.active_keys[blockno];
+	
+	if(grid.ch(_0, blockIdx.x).val_1d(_0, threadIdx.x) > 0.0f){
+		(*bounding_box_min)[0] = std::min(blockid[0], (*bounding_box_min)[0]);
+		(*bounding_box_min)[1] = std::min(blockid[1], (*bounding_box_min)[1]);
+		(*bounding_box_min)[2] = std::min(blockid[2], (*bounding_box_min)[2]);
+		(*bounding_box_max)[0] = std::max(blockid[0], (*bounding_box_max)[0]);
+		(*bounding_box_max)[1] = std::max(blockid[1], (*bounding_box_max)[1]);
+		(*bounding_box_max)[2] = std::max(blockid[2], (*bounding_box_max)[2]);
+	}
+}
+
 __global__ void sum_particle_counts(uint32_t count, int* __restrict__ counts, int* sum) {
 	auto idx = blockIdx.x * blockDim.x + threadIdx.x;
 	if(idx >= count) {
@@ -2984,8 +3002,8 @@ __global__ void retrieve_particle_buffer(Partition partition, Partition prev_par
 	}
 }
 
-template<typename Partition, typename ParticleBuffer, typename AlphaShapesParticleBuffer>
-__global__ void retrieve_particle_buffer_alpha_shapes(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, const AlphaShapesParticleBuffer alpha_shapes_particle_buffer, unsigned int* particle_id_mapping_buffer, int* alpha_shapes_point_type_transfer_device_buffer, float* alpha_shapes_normal_transfer_device_buffer, float* alpha_shapes_mean_curvature_transfer_device_buffer, float* alpha_shapes_gauss_curvature_transfer_device_buffer) {
+template<typename Partition, typename ParticleBuffer, typename SurfaceParticleBuffer>
+__global__ void retrieve_particle_buffer_surface(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, const SurfaceParticleBuffer surface_particle_buffer, unsigned int* particle_id_mapping_buffer, int* surface_point_type_transfer_device_buffer, float* surface_normal_transfer_device_buffer, float* surface_mean_curvature_transfer_device_buffer, float* surface_gauss_curvature_transfer_device_buffer) {
 	const int particle_counts	= next_particle_buffer.particle_bucket_sizes[blockIdx.x];
 	const ivec3 blockid			= partition.active_keys[blockIdx.x];
 	const auto advection_bucket = next_particle_buffer.blockbuckets + blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK;
@@ -3009,25 +3027,24 @@ __global__ void retrieve_particle_buffer_alpha_shapes(Partition partition, Parti
 		const auto advection_source_blockno_from_partition = prev_partition.query(source_blockid);
 
 		//Get bin from particle buffer
-		const auto source_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib / config::G_BIN_CAPACITY);
-		const auto alpha_shapes_source_bin = alpha_shapes_particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib / config::G_BIN_CAPACITY);
+		const auto surface_source_bin = surface_particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib / config::G_BIN_CAPACITY);
 
 		//Fetch particle id in destination buffer
 		const unsigned int particle_id = particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno_from_partition] * config::G_BIN_CAPACITY + source_pidib];
 		
-		if(alpha_shapes_point_type_transfer_device_buffer != nullptr){
-			alpha_shapes_point_type_transfer_device_buffer[particle_id] = *reinterpret_cast<const int*>(&alpha_shapes_source_bin.val(_0, source_pidib % config::G_BIN_CAPACITY));
+		if(surface_point_type_transfer_device_buffer != nullptr){
+			surface_point_type_transfer_device_buffer[particle_id] = *reinterpret_cast<const int*>(&surface_source_bin.val(_0, source_pidib % config::G_BIN_CAPACITY));
 		}
-		if(alpha_shapes_normal_transfer_device_buffer != nullptr){
-			alpha_shapes_normal_transfer_device_buffer[3 * particle_id] = alpha_shapes_source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
-			alpha_shapes_normal_transfer_device_buffer[3 * particle_id + 1] = alpha_shapes_source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
-			alpha_shapes_normal_transfer_device_buffer[3 * particle_id + 2] = alpha_shapes_source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
+		if(surface_normal_transfer_device_buffer != nullptr){
+			surface_normal_transfer_device_buffer[3 * particle_id] = surface_source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
+			surface_normal_transfer_device_buffer[3 * particle_id + 1] = surface_source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
+			surface_normal_transfer_device_buffer[3 * particle_id + 2] = surface_source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
 		}
-		if(alpha_shapes_mean_curvature_transfer_device_buffer != nullptr){
-			alpha_shapes_mean_curvature_transfer_device_buffer[particle_id] = alpha_shapes_source_bin.val(_4, source_pidib % config::G_BIN_CAPACITY);
+		if(surface_mean_curvature_transfer_device_buffer != nullptr){
+			surface_mean_curvature_transfer_device_buffer[particle_id] = surface_source_bin.val(_4, source_pidib % config::G_BIN_CAPACITY);
 		}
-		if(alpha_shapes_gauss_curvature_transfer_device_buffer != nullptr){
-			alpha_shapes_gauss_curvature_transfer_device_buffer[particle_id] = alpha_shapes_source_bin.val(_5, source_pidib % config::G_BIN_CAPACITY);
+		if(surface_gauss_curvature_transfer_device_buffer != nullptr){
+			surface_gauss_curvature_transfer_device_buffer[particle_id] = surface_source_bin.val(_5, source_pidib % config::G_BIN_CAPACITY);
 		}
 	}
 }
