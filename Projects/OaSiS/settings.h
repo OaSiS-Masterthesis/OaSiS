@@ -62,11 +62,11 @@ namespace config {
 	constexpr float CFL			= 0.5f;
 
 	// background_grid
-	constexpr float GRID_BLOCK_SPACING = 1.0f;
+	constexpr float GRID_BLOCK_SPACING_INV = 1.0f;
 
 	constexpr int BLOCK_BITS			 = 2;
 	constexpr int DOMAIN_BITS			 = 8;
-	constexpr float DXINV				 = (GRID_BLOCK_SPACING * (1 << DOMAIN_BITS));
+	constexpr float DXINV				 = (GRID_BLOCK_SPACING_INV * (1 << DOMAIN_BITS));
 	constexpr int G_DOMAIN_BITS			 = DOMAIN_BITS;
 	constexpr int G_DOMAIN_SIZE			 = (1 << DOMAIN_BITS);
 	constexpr float G_BOUNDARY_CONDITION = 2.0;
@@ -96,7 +96,7 @@ namespace config {
 	constexpr float POISSON_RATIO  = 0.4f;
 	
 	//TODO: Maybe move somewhere else
-	constexpr float MARCHING_CUBES_DENSITY_THRESHOLD = 0.1f;
+	constexpr float MARCHING_CUBES_DENSITY_THRESHOLD_FACTOR = 1.0f;//0.75f;
 
 	constexpr float G_GRAVITY = -9.8f;
 	

@@ -9,10 +9,13 @@
 namespace mn {
 //NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic, readability-magic-numbers, readability-identifier-naming, misc-definitions-in-headers) CUDA does not yet support std::span; Common names for physical formulas; Cannot declare __global__ functions inline
 
-constexpr float MARCHING_CUBES_GRID_BLOCK_SPACING = 0.5f;
-constexpr float MARCHING_CUBES_DX_INV = (MARCHING_CUBES_GRID_BLOCK_SPACING * (1 << config::DOMAIN_BITS));
+constexpr float MARCHING_CUBES_GRID_BLOCK_SPACING_INV = 50.0f;
+constexpr float MARCHING_CUBES_DX_INV = (MARCHING_CUBES_GRID_BLOCK_SPACING_INV * (1 << config::DOMAIN_BITS));
 constexpr float MARCHING_CUBES_DX = 1.f / MARCHING_CUBES_DX_INV;
-constexpr size_t MARCHING_CUBES_MAX_ACTIVE_BLOCK = config::G_MAX_ACTIVE_BLOCK * const_ceil<size_t, float>(MARCHING_CUBES_GRID_BLOCK_SPACING / config::GRID_BLOCK_SPACING);
+constexpr size_t MARCHING_CUBES_MAX_ACTIVE_BLOCK = config::G_MAX_ACTIVE_BLOCK * const_ceil<size_t, float>(config::G_DX / MARCHING_CUBES_DX);
+
+//TODO: Currently looks wrong with degress bigger 1. Maybe wrong threshold? Maybe other issues?
+constexpr size_t MARCHING_CUBES_INTERPOLATION_DEGREE = 1;//const_ceil<size_t, float>(config::G_DX / MARCHING_CUBES_DX);
 
 using MarchingCubesGridBufferDomain  = CompactDomain<int, MARCHING_CUBES_MAX_ACTIVE_BLOCK>;
 
@@ -104,7 +107,7 @@ __global__ void marching_cubes_gen_vertices(const std::array<float, 3> bounding_
 				marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x, y, z, grid_size))=vidx+1;//index_x
 				float prevf=f0,nextf=f1;
 				float dt=((thresh-prevf)/(nextf-prevf));
-				const vec3 pos = bounding_box_offset + (vec3{float(x)+dt, float(y), float(z)} * MARCHING_CUBES_GRID_BLOCK_SPACING);
+				const vec3 pos = bounding_box_offset + (vec3{float(x)+dt, float(y), float(z)} * MARCHING_CUBES_DX);
 				verts_out[3 * vidx] = pos[0];
 				verts_out[3 * vidx + 1] = pos[1];
 				verts_out[3 * vidx + 2] = pos[2];
@@ -119,7 +122,7 @@ __global__ void marching_cubes_gen_vertices(const std::array<float, 3> bounding_
 				marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y, z, grid_size))=vidx+1;
 				float prevf=f0,nextf=f1;
 				float dt=((thresh-prevf)/(nextf-prevf));
-				const vec3 pos = bounding_box_offset + (vec3{float(x), float(y)+dt, float(z)} * MARCHING_CUBES_GRID_BLOCK_SPACING);
+				const vec3 pos = bounding_box_offset + (vec3{float(x), float(y)+dt, float(z)} * MARCHING_CUBES_DX);
 				verts_out[3 * vidx] = pos[0];
 				verts_out[3 * vidx + 1] = pos[1];
 				verts_out[3 * vidx + 2] = pos[2];
@@ -134,7 +137,7 @@ __global__ void marching_cubes_gen_vertices(const std::array<float, 3> bounding_
 				marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z, grid_size))=vidx+1;//index_z
 				float prevf=f0,nextf=f1;
 				float dt=((thresh-prevf)/(nextf-prevf));
-				const vec3 pos = bounding_box_offset + (vec3{float(x), float(y), float(z)+dt} * MARCHING_CUBES_GRID_BLOCK_SPACING);
+				const vec3 pos = bounding_box_offset + (vec3{float(x), float(y), float(z)+dt} * MARCHING_CUBES_DX);
 				verts_out[3 * vidx] = pos[0];
 				verts_out[3 * vidx + 1] = pos[1];
 				verts_out[3 * vidx + 2] = pos[2];
@@ -476,8 +479,9 @@ __global__ void marching_cubes_gen_faces(const std::array<int, 3> grid_size, con
 		}
 	}
 }
+
 template<typename Partition, typename ParticleBuffer, typename MarchingCubesGrid>
-__global__ void marching_cubes_sum_mass(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, MarchingCubesGrid marching_cubes_grid, const std::array<float, 3> bounding_box_offset_arr, const std::array<int, 3> grid_size) {
+__global__ void marching_cubes_calculate_density(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, MarchingCubesGrid marching_cubes_grid, const std::array<float, 3> bounding_box_offset_arr, const std::array<int, 3> grid_size) {
 	const int particle_counts	= next_particle_buffer.particle_bucket_sizes[blockIdx.x];
 	const ivec3 blockid			= partition.active_keys[blockIdx.x];
 	const auto advection_bucket = next_particle_buffer.blockbuckets + blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK;
@@ -505,6 +509,9 @@ __global__ void marching_cubes_sum_mass(Partition partition, Partition prev_part
 		//Get bin from particle buffer
 		const auto source_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib / config::G_BIN_CAPACITY);
 		
+		//Get mass
+		const float mass = source_bin.val(_0, source_pidib % config::G_BIN_CAPACITY);//mass
+		
 		//Get particle position
 		vec3 pos;
 		pos[0] = source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
@@ -513,32 +520,45 @@ __global__ void marching_cubes_sum_mass(Partition partition, Partition prev_part
 		
 		pos -= bounding_box_offset;
 		
-		//Get block id by particle pos
-		const ivec3 coord	= get_cell_id<2>(pos.data_arr(), {0.0f, 0.0f, 0.0f}, {MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV}) - 1;
-		const ivec3 blockid = coord / static_cast<int>(config::G_BLOCKSIZE);
+		//Get position of grid cell
+		const ivec3 global_base_index = get_cell_id<MARCHING_CUBES_INTERPOLATION_DEGREE>(pos.data_arr(), {0.0f, 0.0f, 0.0f}, {MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV});
 		
-		//Add mass
-		const float mass = source_bin.val(_0, source_pidib % config::G_BIN_CAPACITY);
-		atomicAdd(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(blockid[0], blockid[1], blockid[2], grid_size)), mass);//mass
-		if(mass > 0.0f){
-			printf("A %d # %.28f\n", static_cast<int>(blockIdx.x), marching_cubes_grid.val(_0, marching_cubes_calculate_offset(blockid[0], blockid[1], blockid[2], grid_size)));
+		//Get position relative to grid cell
+		const vec3 local_pos = pos - global_base_index * MARCHING_CUBES_DX;
+		
+		//Calculate weights
+		vec<float, 3, MARCHING_CUBES_INTERPOLATION_DEGREE + 1> weight;
+		
+		#pragma unroll 3
+		for(int dd = 0; dd < 3; ++dd) {
+			const std::array<float, MARCHING_CUBES_INTERPOLATION_DEGREE + 1> current_weight = bspline_weight<float, MARCHING_CUBES_INTERPOLATION_DEGREE>(local_pos[dd]);
+			for(int i = 0; i < MARCHING_CUBES_INTERPOLATION_DEGREE + 1; ++i){
+				weight(dd, i)		  = current_weight[i];
+			}
+			for(int i = MARCHING_CUBES_INTERPOLATION_DEGREE + 1; i < 3; ++i){
+				weight(dd, i)		  = 0.0f;
+			}
+		}
+		
+		//Spread mass
+		for(char i = -static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE); i < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; i++) {
+			for(char j = -static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE); j < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; j++) {
+				for(char k = -static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE); k < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; k++) {
+					const ivec3 coord = global_base_index + ivec3(i, j, k);
+					
+					if(
+						   (coord[0] >= 0 && coord[1] >= 0 && coord[2] >= 0)
+						&& (coord[0] < grid_size[0] && coord[1]< grid_size[1] && coord[2] < grid_size[2])
+					){
+						//Weight
+						const float W = weight(0, std::abs(i)) * weight(1, std::abs(j)) * weight(2, std::abs(k));
+						
+						atomicAdd(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(coord[0], coord[1], coord[2], grid_size)), W * mass * (MARCHING_CUBES_DX_INV * MARCHING_CUBES_DX_INV * MARCHING_CUBES_DX_INV));
+					}
+				}
+			}
 		}
 	}
-}
-
-template<typename MarchingCubesGrid>
-__global__ void marching_cubes_calculate_density(size_t block_count, MarchingCubesGrid marching_cubes_grid) {
-	uint32_t blockno = blockIdx.x * blockDim.x + threadIdx.x;
-	
-	if(blockno >= block_count) {
-		return;
-	}
-	
-	const float mass = marching_cubes_grid.val_1d(_0, blockno);
-	if(mass > 0.0f){
-		printf("B %d # %.28f %.28f\n", static_cast<int>(blockno), mass, (MARCHING_CUBES_DX_INV * MARCHING_CUBES_DX_INV * MARCHING_CUBES_DX_INV));
-	}
-	marching_cubes_grid.val_1d(_0, blockno) = mass * (MARCHING_CUBES_DX_INV * MARCHING_CUBES_DX_INV * MARCHING_CUBES_DX_INV);
 }
 	
 //NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic, readability-magic-numbers, readability-identifier-naming, misc-definitions-in-headers)

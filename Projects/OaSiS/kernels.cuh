@@ -2865,6 +2865,8 @@ __global__ void sum_grid_mass(Grid grid, float* sum) {
 	atomicAdd(sum, grid.ch(_0, blockIdx.x).val_1d(_0, threadIdx.x));
 }
 
+/*
+//TODO: Make more efficient by first reducing per block, ...
 template<typename Partition, typename Grid>
 __global__ void get_bounding_box(size_t block_count, Partition partition, Grid grid, std::array<int, 3>* bounding_box_min, std::array<int, 3>* bounding_box_max) {
 	uint32_t blockno = blockIdx.x;
@@ -2872,14 +2874,60 @@ __global__ void get_bounding_box(size_t block_count, Partition partition, Grid g
 		return;
 	}
 	auto blockid = partition.active_keys[blockno];
+	auto cellid =  blockid * config::G_BLOCKSIZE + ivec3(static_cast<int>((threadIdx.x / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE), static_cast<int>((threadIdx.x / config::G_BLOCKSIZE) % config::G_BLOCKSIZE), static_cast<int>(threadIdx.x % config::G_BLOCKSIZE));
 	
 	if(grid.ch(_0, blockIdx.x).val_1d(_0, threadIdx.x) > 0.0f){
-		(*bounding_box_min)[0] = std::min(blockid[0], (*bounding_box_min)[0]);
-		(*bounding_box_min)[1] = std::min(blockid[1], (*bounding_box_min)[1]);
-		(*bounding_box_min)[2] = std::min(blockid[2], (*bounding_box_min)[2]);
-		(*bounding_box_max)[0] = std::max(blockid[0], (*bounding_box_max)[0]);
-		(*bounding_box_max)[1] = std::max(blockid[1], (*bounding_box_max)[1]);
-		(*bounding_box_max)[2] = std::max(blockid[2], (*bounding_box_max)[2]);
+		atomicMin(reinterpret_cast<int*>(bounding_box_min), cellid[0]);
+		atomicMin(reinterpret_cast<int*>(bounding_box_min) + 1, cellid[1]);
+		atomicMin(reinterpret_cast<int*>(bounding_box_min) + 2, cellid[2]);
+		atomicMax(reinterpret_cast<int*>(bounding_box_max), cellid[0]);
+		atomicMax(reinterpret_cast<int*>(bounding_box_max) + 1, cellid[1]);
+		atomicMax(reinterpret_cast<int*>(bounding_box_max) + 2, cellid[2]);
+	}
+}*/
+
+template<typename Partition, typename ParticleBuffer, typename Grid>
+__global__ void get_bounding_box(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, Grid grid, std::array<int, 3>* bounding_box_min, std::array<int, 3>* bounding_box_max) {
+	const int particle_counts	= next_particle_buffer.particle_bucket_sizes[blockIdx.x];
+	const ivec3 blockid			= partition.active_keys[blockIdx.x];
+	const auto advection_bucket = next_particle_buffer.blockbuckets + blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK;
+
+	// auto particle_offset = particle_buffer.bin_offsets[blockIdx.x];
+	for(int particle_id_in_block = static_cast<int>(threadIdx.x); particle_id_in_block < particle_counts; particle_id_in_block += static_cast<int>(blockDim.x)) {
+		//Fetch advection (direction at high bits, particle in in cell at low bits)
+		const auto advect = advection_bucket[particle_id_in_block];
+
+		//Retrieve the direction (first stripping the particle id by division)
+		ivec3 source_blockid;
+		dir_components<3>(advect / config::G_PARTICLE_NUM_PER_BLOCK, source_blockid.data_arr());
+
+		//Retrieve the particle id by AND for lower bits
+		const auto source_pidib = advect % config::G_PARTICLE_NUM_PER_BLOCK;
+
+		//Get global index by adding the blockid
+		source_blockid += blockid;
+
+		//Get block from partition
+		const auto advection_source_blockno_from_partition = prev_partition.query(source_blockid);
+
+		//Get bin from particle buffer
+		const auto source_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib / config::G_BIN_CAPACITY);
+		
+		//Get particle position
+		vec3 pos;
+		pos[0] = source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
+		pos[1] = source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
+		pos[2] = source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
+		
+		//Get position of grid cell
+		const ivec3 global_base_index = get_cell_id<0>(pos.data_arr(), grid.get_offset());
+		
+		atomicMin(reinterpret_cast<int*>(bounding_box_min), global_base_index[0]);
+		atomicMin(reinterpret_cast<int*>(bounding_box_min) + 1, global_base_index[1]);
+		atomicMin(reinterpret_cast<int*>(bounding_box_min) + 2, global_base_index[2]);
+		atomicMax(reinterpret_cast<int*>(bounding_box_max), global_base_index[0]);
+		atomicMax(reinterpret_cast<int*>(bounding_box_max) + 1, global_base_index[1]);
+		atomicMax(reinterpret_cast<int*>(bounding_box_max) + 2, global_base_index[2]);
 	}
 }
 
