@@ -96,7 +96,7 @@ namespace config {
 	constexpr float POISSON_RATIO  = 0.4f;
 	
 	//TODO: Maybe move somewhere else
-	constexpr float MARCHING_CUBES_DENSITY_THRESHOLD_FACTOR = 1.0f;//0.75f;
+	constexpr float MARCHING_CUBES_DENSITY_THRESHOLD_FACTOR = 0.0f;//FIXME:0.75f;
 
 	constexpr float G_GRAVITY = -9.8f;
 	

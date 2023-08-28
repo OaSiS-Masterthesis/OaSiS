@@ -2886,6 +2886,7 @@ __global__ void get_bounding_box(size_t block_count, Partition partition, Grid g
 	}
 }*/
 
+/*
 template<typename Partition, typename ParticleBuffer, typename Grid>
 __global__ void get_bounding_box(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, Grid grid, std::array<int, 3>* bounding_box_min, std::array<int, 3>* bounding_box_max) {
 	const int particle_counts	= next_particle_buffer.particle_bucket_sizes[blockIdx.x];
@@ -2928,6 +2929,29 @@ __global__ void get_bounding_box(Partition partition, Partition prev_partition, 
 		atomicMax(reinterpret_cast<int*>(bounding_box_max), global_base_index[0]);
 		atomicMax(reinterpret_cast<int*>(bounding_box_max) + 1, global_base_index[1]);
 		atomicMax(reinterpret_cast<int*>(bounding_box_max) + 2, global_base_index[2]);
+	}
+}*/
+
+//TODO: Make more efficient by first reducing per block, ...
+template<typename Partition, typename ParticleBuffer>
+__global__ void get_bounding_box(Partition partition, ParticleBuffer particle_buffer, std::array<int, 3>* bounding_box_min, std::array<int, 3>* bounding_box_max) {
+	const int cellno		  = static_cast<int>(threadIdx.x) & (config::G_BLOCKVOLUME - 1);
+	const int particle_counts = particle_buffer.cell_particle_counts[blockIdx.x * config::G_BLOCKVOLUME + cellno];
+	
+	if(particle_counts > 0){
+		const ivec3 blockid			= partition.active_keys[blockIdx.x];
+		const ivec3 cellid = blockid * config::G_BLOCKSIZE + ivec3(static_cast<int>((cellno / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE), static_cast<int>((cellno / config::G_BLOCKSIZE) % config::G_BLOCKSIZE), static_cast<int>(cellno % config::G_BLOCKSIZE));
+		
+		printf("B %d %d %d\n", cellid[0], cellid[1], cellid[2]);
+		
+		atomicMin(reinterpret_cast<int*>(bounding_box_min), cellid[0]);
+		atomicMin(reinterpret_cast<int*>(bounding_box_min) + 1, cellid[1]);
+		atomicMin(reinterpret_cast<int*>(bounding_box_min) + 2, cellid[2]);
+		
+		//NOTE: Adding 2 to maximum cause particle are stored with (get_cell_id<2> - 1)
+		atomicMax(reinterpret_cast<int*>(bounding_box_max), cellid[0] + 2);
+		atomicMax(reinterpret_cast<int*>(bounding_box_max) + 1, cellid[1] + 2);
+		atomicMax(reinterpret_cast<int*>(bounding_box_max) + 2, cellid[2] + 2);
 	}
 }
 
