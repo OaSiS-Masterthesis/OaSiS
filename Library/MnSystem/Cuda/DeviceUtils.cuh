@@ -33,6 +33,9 @@ __forceinline__ __device__ bool atomic_max(T* address, T val);
 template<typename T>
 __forceinline__ __device__ T atomic_add_float(T* address, T val);
 
+template<typename T>
+__forceinline__ __device__ T atomic_cas(T* address, T cmp, T val);
+
 template<>
 __forceinline__ __device__ float atomic_add_float<float>(float* address, float val) {
 	int* address_as_i = static_cast<int*>(static_cast<void*>(address));
@@ -87,6 +90,12 @@ __forceinline__ __device__ bool atomic_max<float>(float* address, float val) {
 }
 
 template<>
+__forceinline__ __device__ float atomic_cas<float>(float* address, float cmp, float val) {
+	int* address_as_i = static_cast<int*>(static_cast<void*>(address));
+	return __int_as_float(::atomicCAS(address_as_i, __float_as_int(cmp), __float_as_int(val)));
+}
+
+template<>
 __forceinline__ __device__ bool atomic_min<double>(double* address, double val) {
 #ifdef _WIN32
 	uint64_t* address_as_ull = static_cast<uint64_t*>(static_cast<void*>(address));
@@ -126,6 +135,16 @@ __forceinline__ __device__ bool atomic_max<double>(double* address, double val) 
 		old		= ::atomicCAS(address_as_ull, assumed, double_as_unsigned_longlong(::fmax(val, unsigned_longlong_as_double(assumed))));
 	} while(assumed != old);
 	return true;
+}
+
+template<>
+__forceinline__ __device__ double atomic_cas<double>(double* address, double cmp, double val) {
+#ifdef _WIN32
+	uint64_t* address_as_ull = static_cast<uint64_t*>(static_cast<void*>(address));
+#else
+	unsigned long long* address_as_ull = static_cast<unsigned long long*>(static_cast<void*>(address));
+#endif// _WIN32
+	return unsigned_longlong_as_double(::atomicCAS(address_as_ull, double_as_unsigned_longlong(cmp), double_as_unsigned_longlong(val)));
 }
 
 __device__ uint64_t packed_add(const uint64_t* masks, const uint64_t i, const uint64_t j);

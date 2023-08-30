@@ -9,7 +9,7 @@
 namespace mn {
 //NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic, readability-magic-numbers, readability-identifier-naming, misc-definitions-in-headers) CUDA does not yet support std::span; Common names for physical formulas; Cannot declare __global__ functions inline
 
-constexpr float MARCHING_CUBES_GRID_BLOCK_SPACING_INV = 30.0f;
+constexpr float MARCHING_CUBES_GRID_BLOCK_SPACING_INV = 1.0f;
 constexpr float MARCHING_CUBES_DX_INV = (MARCHING_CUBES_GRID_BLOCK_SPACING_INV * (1 << config::DOMAIN_BITS));
 constexpr float MARCHING_CUBES_DX = 1.f / MARCHING_CUBES_DX_INV;
 constexpr size_t MARCHING_CUBES_GRID_SCALING = const_ceil<size_t, float>(config::G_DX / MARCHING_CUBES_DX);
@@ -18,8 +18,6 @@ constexpr size_t MARCHING_CUBES_MAX_ACTIVE_BLOCK = config::G_MAX_ACTIVE_BLOCK * 
 //TODO: Currently looks wrong with degress bigger 1. Maybe wrong threshold? Maybe other issues?
 //NOTE: Values bigger than 0 will only have effect on cells being classified full/empty if they have particles or are fully enclosed by full cells
 constexpr size_t MARCHING_CUBES_INTERPOLATION_DEGREE = 1;//MARCHING_CUBES_GRID_SCALING;
-
-constexpr float MARCHING_CUBES_HALFSPACE_TEST_THRESHOLD = 0.0f;//FIXME: Set to corect value
 
 using MarchingCubesGridBufferDomain  = CompactDomain<int, MARCHING_CUBES_MAX_ACTIVE_BLOCK>;
 
@@ -83,6 +81,34 @@ __global__ void marching_cubes_clear_grid(size_t block_count, MarchingCubesGrid 
 	marching_cubes_grid.val_1d(_3, blockno) = 0;
 }
 
+template<typename Partition, MaterialE MaterialType>
+__global__ void marching_cubes_clear_surface_particle_buffer(const ParticleBuffer<MaterialType> particle_buffer, const ParticleBuffer<MaterialType> next_particle_buffer, const Partition prev_partition, SurfaceParticleBuffer surface_particle_buffer){
+	const int src_blockno		   = static_cast<int>(blockIdx.x);
+	const int particle_bucket_size = next_particle_buffer.particle_bucket_sizes[src_blockno];
+	
+	//If we have no particles in the bucket return
+	if(particle_bucket_size == 0) {
+		return;
+	}
+	
+	for(int particle_id_in_block = static_cast<int>(threadIdx.x); particle_id_in_block < particle_bucket_size; particle_id_in_block += static_cast<int>(blockDim.x)) {
+		auto particle_bin													= surface_particle_buffer.ch(_0, next_particle_buffer.bin_offsets[src_blockno] + particle_id_in_block / config::G_BIN_CAPACITY);
+		//point_type
+		SurfacePointType default_point_type = SurfacePointType::ISOLATED_POINT;
+		particle_bin.val(_0, particle_id_in_block % config::G_BIN_CAPACITY) = 	*reinterpret_cast<float*>(&default_point_type);
+		//normal
+		particle_bin.val(_1, particle_id_in_block % config::G_BIN_CAPACITY) = 0.0f;
+		particle_bin.val(_2, particle_id_in_block % config::G_BIN_CAPACITY) = 0.0f;
+		particle_bin.val(_3, particle_id_in_block % config::G_BIN_CAPACITY) = 0.0f;
+		//mean_curvature
+		particle_bin.val(_4, particle_id_in_block % config::G_BIN_CAPACITY) = 0.0f;
+		//gauss_curvature
+		particle_bin.val(_5, particle_id_in_block % config::G_BIN_CAPACITY) = 0.0f;
+		particle_bin.val(_6, particle_id_in_block % config::G_BIN_CAPACITY) = 0.0f;
+		particle_bin.val(_7, particle_id_in_block % config::G_BIN_CAPACITY) = 0.0f;
+	}
+}
+
 template<size_t KernelLength = 3, typename Partition>
 __forceinline__ __device__ void marching_cubes_fetch_id(const Partition prev_partition, const int particle_id, const std::array<int, 3> blockid_arr, int& advection_source_blockno, int& source_pidib){
 	const ivec3 blockid {blockid_arr[0], blockid_arr[1], blockid_arr[2]};
@@ -107,7 +133,7 @@ __forceinline__ __device__ void marching_cubes_fetch_id(const Partition prev_par
 	}
 }
 
-template<typename Partition>
+template<size_t KernelLengthSrc = 3, size_t KernelLengthDst = 2 + 3, typename Partition>
 __forceinline__ __device__ int marching_cubes_convert_id(const Partition prev_partition, const int particle_id, const std::array<int, 3> blockid_offset_arr){
 	const ivec3 blockid_offset {blockid_offset_arr[0], blockid_offset_arr[1], blockid_offset_arr[2]};
 	
@@ -118,13 +144,13 @@ __forceinline__ __device__ int marching_cubes_convert_id(const Partition prev_pa
 
 		//Retrieve the direction (first stripping the particle id by division)
 		ivec3 offset;
-		dir_components<3>(advect / config::G_PARTICLE_NUM_PER_BLOCK, offset.data_arr());
+		dir_components<KernelLengthSrc>(advect / config::G_PARTICLE_NUM_PER_BLOCK, offset.data_arr());
 
 		//Retrieve the particle id by AND for lower bits
 		const int source_pidib = advect % config::G_PARTICLE_NUM_PER_BLOCK;
 
 		//Calculate offset from current blockid
-		const int dirtag = dir_offset<2 + 3>((blockid_offset + offset).data_arr());
+		const int dirtag = dir_offset<KernelLengthDst>((blockid_offset + offset).data_arr());
 		
 		return (dirtag * config::G_PARTICLE_NUM_PER_BLOCK) | source_pidib;
 	}
@@ -289,7 +315,7 @@ __forceinline__ __device__ int marching_cubes_get_cell_minima(const Partition pr
 								}
 							}
 							
-							(*minima)[dd] = marching_cubes_convert_id(prev_partition, particle_id, (blockid_offset + 2).data_arr());
+							(*minima)[dd] = marching_cubes_convert_id<3, 2 + 3>(prev_partition, particle_id, (blockid_offset + 2).data_arr());
 						}
 					}
 				}
@@ -323,12 +349,15 @@ __global__ void marching_cubes_gen_vertices(const Partition prev_partition, cons
 	
 	const ivec3 bounding_box_min {bounding_box_min_arr[0], bounding_box_min_arr[1], bounding_box_min_arr[2]};
 	const vec3 bounding_box_offset {bounding_box_offset_arr[0], bounding_box_offset_arr[1], bounding_box_offset_arr[2]};
+	
+	const ivec3 current_global_grid_cellid = (ivec3(static_cast<int>(x), static_cast<int>(y), static_cast<int>(z)) / MARCHING_CUBES_GRID_SCALING).cast<int>() + bounding_box_min;
+	const ivec3 current_global_grid_blockid = current_global_grid_cellid / config::G_BLOCKSIZE;
 
 	float f0 = marching_cubes_grid.val(_0, marching_cubes_calculate_offset(x, y, z, grid_size));//density
 	bool inside=(f0>thresh);
 	
 	if(inside){
-		printf("A %d %d %d # %d %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), bounding_box_min[0] + static_cast<int>(x / MARCHING_CUBES_GRID_SCALING), bounding_box_min[1] + static_cast<int>(y / MARCHING_CUBES_GRID_SCALING), bounding_box_min[2] + static_cast<int>(z / MARCHING_CUBES_GRID_SCALING));
+		//printf("A %d %d %d # %d %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), bounding_box_min[0] + static_cast<int>(x / MARCHING_CUBES_GRID_SCALING), bounding_box_min[1] + static_cast<int>(y / MARCHING_CUBES_GRID_SCALING), bounding_box_min[2] + static_cast<int>(z / MARCHING_CUBES_GRID_SCALING));
 	}
 	
 	if (x<grid_size[0]-1) {
@@ -336,29 +365,32 @@ __global__ void marching_cubes_gen_vertices(const Partition prev_partition, cons
 		if (inside != (f1>thresh)) {
 			uint32_t vidx = atomicAdd(vertex_count,1);
 			
-			ivec3 marching_cubes_cell_id;
+			ivec3 marching_cubes_cell_id_offset;
 			int minima_index;
 			if(inside){
-				marching_cubes_cell_id[0] = x;
-				marching_cubes_cell_id[1] = y;
-				marching_cubes_cell_id[2] = z;
+				marching_cubes_cell_id_offset[0] = 0;
+				marching_cubes_cell_id_offset[1] = 0;
+				marching_cubes_cell_id_offset[2] = 0;
 				minima_index = 1;
 			}else{//(f1>thresh)
-				marching_cubes_cell_id[0] = x + 1;
-				marching_cubes_cell_id[1] = y;
-				marching_cubes_cell_id[2] = z;
+				marching_cubes_cell_id_offset[0] = 1;
+				marching_cubes_cell_id_offset[1] = 0;
+				marching_cubes_cell_id_offset[2] = 0;
 				minima_index = 0;
 			}
 			
+			const ivec3 marching_cubes_cell_id = ivec3(static_cast<int>(x), static_cast<int>(y), static_cast<int>(z)) + marching_cubes_cell_id_offset;
+			
 			const ivec3 global_grid_cellid = (marching_cubes_cell_id / MARCHING_CUBES_GRID_SCALING).cast<int>() + bounding_box_min;
 			const ivec3 global_grid_blockid = global_grid_cellid / config::G_BLOCKSIZE;
+			const ivec3 global_grid_blockid_offset = global_grid_blockid - current_global_grid_blockid;
 			
 			int minima[6];
 			marching_cubes_get_cell_minima(prev_partition, particle_buffer, bounding_box_offset_arr, global_grid_blockid.data_arr(), global_grid_cellid.data_arr(), marching_cubes_cell_id.data_arr(), reinterpret_cast<std::array<int, 6>*>(&minima));
 
-			marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x, y, z, grid_size)) = minima[minima_index] + 1;//index_x
+			marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x, y, z, grid_size)) = marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[minima_index], global_grid_blockid_offset.data_arr()) + 1;//index_x
 			
-			printf("X %d %d %d # %d %d %d # %d %d # %d %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, minima[minima_index], (particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno] * config::G_BIN_CAPACITY + source_pidib]), advection_source_blockno, source_pidib);
+			//printf("X %d %d %d # %d %d %d # %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
 			
 			/*
 			marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x, y, z, grid_size))=vidx+1;//index_x
@@ -376,29 +408,32 @@ __global__ void marching_cubes_gen_vertices(const Partition prev_partition, cons
 		if (inside != (f1>thresh)) {
 			uint32_t vidx = atomicAdd(vertex_count,1);//index_y
 			
-			ivec3 marching_cubes_cell_id;
+			ivec3 marching_cubes_cell_id_offset;
 			int minima_index;
 			if(inside){
-				marching_cubes_cell_id[0] = x;
-				marching_cubes_cell_id[1] = y;
-				marching_cubes_cell_id[2] = z;
+				marching_cubes_cell_id_offset[0] = 0;
+				marching_cubes_cell_id_offset[1] = 0;
+				marching_cubes_cell_id_offset[2] = 0;
 				minima_index = 3;
 			}else{//(f1>thresh)
-				marching_cubes_cell_id[0] = x;
-				marching_cubes_cell_id[1] = y + 1;
-				marching_cubes_cell_id[2] = z;
+				marching_cubes_cell_id_offset[0] = 0;
+				marching_cubes_cell_id_offset[1] = 1;
+				marching_cubes_cell_id_offset[2] = 0;
 				minima_index = 2;
 			}
 			
+			const ivec3 marching_cubes_cell_id = ivec3(static_cast<int>(x), static_cast<int>(y), static_cast<int>(z)) + marching_cubes_cell_id_offset;
+			
 			const ivec3 global_grid_cellid = (marching_cubes_cell_id / MARCHING_CUBES_GRID_SCALING).cast<int>() + bounding_box_min;
 			const ivec3 global_grid_blockid = global_grid_cellid / config::G_BLOCKSIZE;
+			const ivec3 global_grid_blockid_offset = global_grid_blockid - current_global_grid_blockid;
 			
 			int minima[6];
 			marching_cubes_get_cell_minima(prev_partition, particle_buffer, bounding_box_offset_arr, global_grid_blockid.data_arr(), global_grid_cellid.data_arr(), marching_cubes_cell_id.data_arr(), reinterpret_cast<std::array<int, 6>*>(&minima));
 			
-			marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y, z, grid_size)) = minima[minima_index] + 1;//index_y
+			marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y, z, grid_size)) = marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[minima_index], global_grid_blockid_offset.data_arr()) + 1;//index_y
 			
-			printf("Y %d %d %d # %d %d %d # %d %d # %d %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, minima[minima_index], (particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno] * config::G_BIN_CAPACITY + source_pidib]), advection_source_blockno, source_pidib);
+			//printf("Y %d %d %d # %d %d %d # %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
 			
 			/*
 			marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y, z, grid_size))=vidx+1;
@@ -416,29 +451,32 @@ __global__ void marching_cubes_gen_vertices(const Partition prev_partition, cons
 		if (inside != (f1>thresh)) {
 			uint32_t vidx = atomicAdd(vertex_count,1);
 			
-			ivec3 marching_cubes_cell_id;
+			ivec3 marching_cubes_cell_id_offset;
 			int minima_index;
 			if(inside){
-				marching_cubes_cell_id[0] = x;
-				marching_cubes_cell_id[1] = y;
-				marching_cubes_cell_id[2] = z;
+				marching_cubes_cell_id_offset[0] = 0;
+				marching_cubes_cell_id_offset[1] = 0;
+				marching_cubes_cell_id_offset[2] = 0;
 				minima_index = 5;
 			}else{//(f1>thresh)
-				marching_cubes_cell_id[0] = x;
-				marching_cubes_cell_id[1] = y;
-				marching_cubes_cell_id[2] = z + 1;
+				marching_cubes_cell_id_offset[0] = 0;
+				marching_cubes_cell_id_offset[1] = 0;
+				marching_cubes_cell_id_offset[2] = 1;
 				minima_index = 4;
 			}
 			
+			const ivec3 marching_cubes_cell_id = ivec3(static_cast<int>(x), static_cast<int>(y), static_cast<int>(z)) + marching_cubes_cell_id_offset;
+			
 			const ivec3 global_grid_cellid = (marching_cubes_cell_id / MARCHING_CUBES_GRID_SCALING).cast<int>() + bounding_box_min;
 			const ivec3 global_grid_blockid = global_grid_cellid / config::G_BLOCKSIZE;
+			const ivec3 global_grid_blockid_offset = global_grid_blockid - current_global_grid_blockid;
 			
 			int minima[6];
 			marching_cubes_get_cell_minima(prev_partition, particle_buffer, bounding_box_offset_arr, global_grid_blockid.data_arr(), global_grid_cellid.data_arr(), marching_cubes_cell_id.data_arr(), reinterpret_cast<std::array<int, 6>*>(&minima));
 			
-			marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z, grid_size)) = minima[minima_index] + 1;//index_z
+			marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z, grid_size)) = marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[minima_index], global_grid_blockid_offset.data_arr()) + 1;//index_z
 			
-			printf("Z %d %d %d # %d %d %d # %d %d # %d %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, minima[minima_index], (particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno] * config::G_BIN_CAPACITY + source_pidib]), advection_source_blockno, source_pidib);
+			//printf("Z %d %d %d # %d %d %d # %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
 			
 			/*
 			marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z, grid_size))=vidx+1;//index_z
@@ -454,17 +492,21 @@ __global__ void marching_cubes_gen_vertices(const Partition prev_partition, cons
 }
 
 template<typename Partition, typename ParticleBuffer>
-__forceinline__ __device__ uint32_t marching_cubes_fetch_edge_data(const Partition prev_partition, const ParticleBuffer particle_buffer, const unsigned int* particle_id_mapping_buffer, const std::array<int, 3> bounding_box_min_arr, const int particle_id, const std::array<int, 3> id, std::pair<int, int>& ids){
+__forceinline__ __device__ uint32_t marching_cubes_fetch_edge_data(const Partition prev_partition, const ParticleBuffer particle_buffer, const unsigned int* particle_id_mapping_buffer, const std::array<int, 3> bounding_box_min_arr, const uint32_t particle_id, const std::array<size_t, 3> id, std::pair<int, int>& ids){
+	const ivec3 bounding_box_min {bounding_box_min_arr[0], bounding_box_min_arr[1], bounding_box_min_arr[2]};
+	
 	if(particle_id > 0){
-		const ivec3 current_global_grid_cellid = (ivec3(id[0], id[1], id[2]) / MARCHING_CUBES_GRID_SCALING).cast<int>() + bounding_box_min;
+		const ivec3 current_global_grid_cellid = (ivec3(static_cast<int>(id[0]), static_cast<int>(id[1]), static_cast<int>(id[2])) / MARCHING_CUBES_GRID_SCALING).cast<int>() + bounding_box_min;
 		const ivec3 current_global_grid_blockid = current_global_grid_cellid / config::G_BLOCKSIZE;
 		
 		int advection_source_blockno;
 		int source_pidib;
-		marching_cubes_fetch_id<2 + 3>(prev_partition, particle_id, (current_global_grid_blockid - 2).data_arr(), advection_source_blockno, source_pidib);
+		marching_cubes_fetch_id<3 + 3>(prev_partition, particle_id - 1, (current_global_grid_blockid - 2).data_arr(), advection_source_blockno, source_pidib);
 		
 		ids.first = advection_source_blockno;
 		ids.second = source_pidib;
+		
+		//printf("H %d # %d %d # %d\n", particle_id - 1, advection_source_blockno, source_pidib, particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno] * config::G_BIN_CAPACITY + source_pidib]);
 
 		return particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno] * config::G_BIN_CAPACITY + source_pidib] + 1;
 	}else{
@@ -472,8 +514,9 @@ __forceinline__ __device__ uint32_t marching_cubes_fetch_edge_data(const Partiti
 	}
 }
 
-template<typename MarchingCubesGrid>
-__global__ void marching_cubes_gen_faces(const std::array<int, 3> grid_size, const float thresh, const MarchingCubesGrid marching_cubes_grid, uint32_t* indices_out, uint32_t *__restrict__ triangle_count) {
+
+template<typename Partition, typename ParticleBuffer, typename MarchingCubesGrid>
+__global__ void marching_cubes_gen_faces(Partition prev_partition, ParticleBuffer particle_buffer, unsigned int* particle_id_mapping_buffer, SurfaceParticleBuffer surface_particle_buffer, const std::array<int, 3> bounding_box_min_arr, const std::array<float, 3> bounding_box_offset_arr, const std::array<int, 3> grid_size, const float thresh, const MarchingCubesGrid marching_cubes_grid, uint32_t* indices_out, uint32_t *__restrict__ triangle_count) {
 	// marching cubes tables from https://github.com/pmneila/PyMCubes/blob/master/mcubes/src/marchingcubes.cpp which in turn seems to be from https://web.archive.org/web/20181127124338/http://paulbourke.net/geometry/polygonise/
 	// License is BSD 3-clause, which can be found here: https://github.com/pmneila/PyMCubes/blob/master/LICENSE
 	/*
@@ -770,11 +813,11 @@ __global__ void marching_cubes_gen_faces(const std::array<int, 3> grid_size, con
 	const ivec3 global_grid_blockid = global_grid_cellid / config::G_BLOCKSIZE;
 	
 	size_t cell_triangles_count = 0;
-	std::array<std::array<uint32_t, 3>, 90> cell_triangles;
-	std::array<std::array<std::pair<int, int>, 3>, 90> cell_triangle_ids;
-	for(size_t grid_x = std::min(static_cast<int>(x) - 1, 0); grid_x <= 0; ++grid_x){
-		for(size_t grid_y = std::min(static_cast<int>(y) - 1, 0); grid_y <= 0; ++grid_y){
-			for(size_t grid_z = std::min(static_cast<int>(z) - 1, 0); grid_z <= 0; ++grid_z){
+	size_t cell_adjacent_triangles_count = 0;
+	std::array<std::array<std::pair<int, int>, 3>, 40> cell_triangle_ids;
+	for(size_t grid_x = std::max(static_cast<int>(x) - 1, 0); grid_x <= x; ++grid_x){
+		for(size_t grid_y = std::max(static_cast<int>(y) - 1, 0); grid_y <= y; ++grid_y){
+			for(size_t grid_z = std::max(static_cast<int>(z) - 1, 0); grid_z <= z; ++grid_z){
 				
 				if (grid_x>=grid_size[0]-1 || grid_y>=grid_size[1]-1 || grid_z>=grid_size[2]-1) continue;
 				
@@ -788,9 +831,9 @@ __global__ void marching_cubes_gen_faces(const std::array<int, 3> grid_size, con
 				if (marching_cubes_grid.val(_0, marching_cubes_calculate_offset(grid_x + 1, grid_y + 1, grid_z + 1, grid_size))>thresh) mask|=64;
 				if (marching_cubes_grid.val(_0, marching_cubes_calculate_offset(grid_x, grid_y + 1, grid_z + 1, grid_size))>thresh) mask|=128;
 
-				if (!mask || mask==255) return;
+				if (!mask || mask==255) continue;
 				int local_edges[12];
-				std::pair<int, int> local_edges_ids[12]
+				std::pair<int, int> local_edges_ids[12];
 				local_edges[0] = marching_cubes_fetch_edge_data(prev_partition, particle_buffer, particle_id_mapping_buffer, bounding_box_min_arr, marching_cubes_grid.val(_1, marching_cubes_calculate_offset(grid_x, grid_y, grid_z, grid_size)), {grid_x, grid_y, grid_z}, local_edges_ids[0]);
 				local_edges[1] = marching_cubes_fetch_edge_data(prev_partition, particle_buffer, particle_id_mapping_buffer, bounding_box_min_arr, marching_cubes_grid.val(_2, marching_cubes_calculate_offset(grid_x + 1, grid_y, grid_z, grid_size)), {grid_x + 1, grid_y, grid_z}, local_edges_ids[1]);
 				local_edges[2] = marching_cubes_fetch_edge_data(prev_partition, particle_buffer, particle_id_mapping_buffer, bounding_box_min_arr, marching_cubes_grid.val(_1, marching_cubes_calculate_offset(grid_x, grid_y + 1, grid_z, grid_size)), {grid_x, grid_y + 1, grid_z}, local_edges_ids[2]);
@@ -809,6 +852,10 @@ __global__ void marching_cubes_gen_faces(const std::array<int, 3> grid_size, con
 				const int8_t *triangles=triangle_table[mask];
 				for (;tricount<15;tricount+=3) if (triangles[tricount]<0) break;
 				
+				if(x == 151 && y == 151 && z == 211){
+					printf("TEST0.3\n");
+				}
+				
 				for (int i=0;i<5;++i) {
 					bool adjacent_triangle = false;
 					
@@ -816,15 +863,24 @@ __global__ void marching_cubes_gen_faces(const std::array<int, 3> grid_size, con
 					std::array<std::pair<int, int>, 3> ids;
 					for (int k=0;k<3;++k) {
 						int j = triangles[3 * i + k];
-						if (j<0) break;
+						if (j<0) goto outer_loop_end;
 						if (!local_edges[j]) {
-							printf("at %d %d %d, mask is %d, j is %d, local_edges is 0\n", grid_x,grid_y,grid_z,mask,j);
+							printf("at %d %d %d, mask is %d, j is %d, local_edges is 0\n", static_cast<int>(grid_x),static_cast<int>(grid_y),static_cast<int>(grid_z),mask,j);
 						}
-						if(j == 0 || j == 3 || j == 8){
+						if(
+							   ((grid_x == x && grid_y == y && grid_z == z) && (j == 0 || j == 3 || j == 8))
+							|| ((grid_x < x && grid_y == y && grid_z == z) && (j == 1 || j == 9))
+							|| ((grid_x == x && grid_y < y && grid_z == z) && (j == 2 || j == 11))
+							|| ((grid_x == x && grid_y == y && grid_z < z) && (j == 4 || j == 7))
+							|| ((grid_x < x && grid_y < y && grid_z == z) && (j == 10))
+							|| ((grid_x < x && grid_y == y && grid_z < z) && (j == 5))
+							|| ((grid_x == x && grid_y < y && grid_z < z) && (j == 6))
+						){
 							adjacent_triangle = true;
 						}
 						indices[k]=local_edges[j]-1;
-						ids[k] = local_edges_ids[j];
+						ids[k].first = local_edges_ids[j].first;
+						ids[k].second = local_edges_ids[j].second;
 					}
 					
 					const bool all_unique = (
@@ -843,21 +899,73 @@ __global__ void marching_cubes_gen_faces(const std::array<int, 3> grid_size, con
 								indices_out[tidx + 1] = indices[0];
 								indices_out[tidx + 2] = indices[2];
 							}
-							printf("B %d %d %d # %d %d %d\n", static_cast<int>(grid_x), static_cast<int>(grid_y), static_cast<int>(grid_z), indices[0], indices[1], indices[2]);
+							//printf("B %d %d %d # %d %d %d\n", static_cast<int>(grid_x), static_cast<int>(grid_y), static_cast<int>(grid_z), indices[0], indices[1], indices[2]);
 						}
-						if(adjacent_triangle){
-							cell_triangles[cell_triangles_count] = indices;
-							cell_triangle_ids[cell_triangles_count] = ids;
-							cell_triangles_count++;
-						}
+						
+							if((cell_triangles_count + cell_adjacent_triangles_count) < 40){
+								//NOTE: Flipping order to make ccw
+								cell_triangle_ids[cell_triangles_count + cell_adjacent_triangles_count][0].first = ids[1].first;
+								cell_triangle_ids[cell_triangles_count + cell_adjacent_triangles_count][0].second = ids[1].second;
+								cell_triangle_ids[cell_triangles_count + cell_adjacent_triangles_count][1].first = ids[0].first;
+								cell_triangle_ids[cell_triangles_count + cell_adjacent_triangles_count][1].second = ids[0].second;
+								cell_triangle_ids[cell_triangles_count + cell_adjacent_triangles_count][2].first = ids[2].first;
+								cell_triangle_ids[cell_triangles_count + cell_adjacent_triangles_count][2].second = ids[2].second;
+								if(adjacent_triangle){
+									//Swap to end of adjacent list
+									thrust::swap(cell_triangle_ids[cell_adjacent_triangles_count], cell_triangle_ids[cell_triangles_count + cell_adjacent_triangles_count]);
+									
+									cell_adjacent_triangles_count++;
+								}else{
+									cell_triangles_count++;
+								}
+							}else{
+								printf("Not enough space for all triangles!\n");
+							}
 					}else{
 						if(grid_x == x && grid_y == y && grid_z == z){
-							printf("C %d %d %d # %d %d %d\n", static_cast<int>(grid_x), static_cast<int>(grid_y), static_cast<int>(grid_z), indices[0], indices[1], indices[2]);
+							//printf("C %d %d %d # %d %d %d\n", static_cast<int>(grid_x), static_cast<int>(grid_y), static_cast<int>(grid_z), indices[0], indices[1], indices[2]);
 						}
 					}
 				}
+				outer_loop_end:
+				(void) nullptr;//Nothing
 			}
 		}
+	}
+	
+	for(size_t triangle_index = 0; triangle_index < cell_adjacent_triangles_count; ++triangle_index){
+		printf("J0 %d %d %d # %d # %d %d %d # %d %d # %d %d # %d %d\n"
+			, static_cast<int>(x)
+			, static_cast<int>(y)
+			, static_cast<int>(z)
+			, static_cast<int>(triangle_index)
+			, particle_id_mapping_buffer[particle_buffer.bin_offsets[cell_triangle_ids[triangle_index][0].first] * config::G_BIN_CAPACITY + cell_triangle_ids[triangle_index][0].second]
+			, particle_id_mapping_buffer[particle_buffer.bin_offsets[cell_triangle_ids[triangle_index][1].first] * config::G_BIN_CAPACITY + cell_triangle_ids[triangle_index][1].second]
+			, particle_id_mapping_buffer[particle_buffer.bin_offsets[cell_triangle_ids[triangle_index][2].first] * config::G_BIN_CAPACITY + cell_triangle_ids[triangle_index][2].second]
+			, cell_triangle_ids[triangle_index][0].first
+			, cell_triangle_ids[triangle_index][0].second
+			, cell_triangle_ids[triangle_index][1].first
+			, cell_triangle_ids[triangle_index][1].second
+			, cell_triangle_ids[triangle_index][2].first
+			, cell_triangle_ids[triangle_index][2].second
+		);
+	}
+	for(size_t triangle_index = cell_adjacent_triangles_count; triangle_index < cell_triangles_count; ++triangle_index){
+		printf("J1 %d %d %d # %d # %d %d %d # %d %d # %d %d # %d %d\n"
+			, static_cast<int>(x)
+			, static_cast<int>(y)
+			, static_cast<int>(z)
+			, static_cast<int>(triangle_index)
+			, particle_id_mapping_buffer[particle_buffer.bin_offsets[cell_triangle_ids[triangle_index][0].first] * config::G_BIN_CAPACITY + cell_triangle_ids[triangle_index][0].second]
+			, particle_id_mapping_buffer[particle_buffer.bin_offsets[cell_triangle_ids[triangle_index][1].first] * config::G_BIN_CAPACITY + cell_triangle_ids[triangle_index][1].second]
+			, particle_id_mapping_buffer[particle_buffer.bin_offsets[cell_triangle_ids[triangle_index][2].first] * config::G_BIN_CAPACITY + cell_triangle_ids[triangle_index][2].second]
+			, cell_triangle_ids[triangle_index][0].first
+			, cell_triangle_ids[triangle_index][0].second
+			, cell_triangle_ids[triangle_index][1].first
+			, cell_triangle_ids[triangle_index][1].second
+			, cell_triangle_ids[triangle_index][2].first
+			, cell_triangle_ids[triangle_index][2].second
+		);
 	}
 	
 	const float cotan_clamp_min_rad = 1.0f / std::tan(3.0f * (180.0f / static_cast<float>(M_PI)));
@@ -886,19 +994,19 @@ __global__ void marching_cubes_gen_faces(const std::array<int, 3> grid_size, con
 					int source_pidib;
 					marching_cubes_fetch_id(prev_partition, particle_id, current_blockid.data_arr(), advection_source_blockno, source_pidib);
 					
-					const int global_particle_id = particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno] * config::G_BIN_CAPACITY + source_pidib]
-
+					const int global_particle_id = particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno] * config::G_BIN_CAPACITY + source_pidib];
+					
 					//Get bin from particle buffer
 					const auto source_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
 					
 					//Get particle position
-					vec3 pos;
-					pos[0] = source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
-					pos[1] = source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
-					pos[2] = source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
+					vec3 particle_position;
+					particle_position[0] = source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
+					particle_position[1] = source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
+					particle_position[2] = source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
 					
 					//Get position of grid cell
-					const ivec3 global_base_index_0 = get_cell_id<0>((pos - bounding_box_offset).data_arr(), {0.0f, 0.0f, 0.0f}, {MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV});
+					const ivec3 global_base_index_0 = get_cell_id<0>((particle_position - bounding_box_offset).data_arr(), {0.0f, 0.0f, 0.0f}, {MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV});
 					
 					//If particle is in cell, classify it
 					if(
@@ -906,7 +1014,9 @@ __global__ void marching_cubes_gen_faces(const std::array<int, 3> grid_size, con
 						&& (global_base_index_0[1] == marching_cubes_cell_id[1])
 						&& (global_base_index_0[2] == marching_cubes_cell_id[2])
 					){
-						AlphaShapesPointType point_type = AlphaShapesPointType::ISOLATED_POINT;
+						SurfacePointType point_type = SurfacePointType::ISOLATED_POINT;
+						
+						//printf("K %d %d %d # %d %.28f\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), global_particle_id, marching_cubes_grid.val(_0, marching_cubes_calculate_offset(x, y, z, grid_size)));
 						
 						vec3 summed_normal {0.0f, 0.0f, 0.0f};
 						vec3 summed_laplacians {0.0f, 0.0f, 0.0f};
@@ -914,24 +1024,33 @@ __global__ void marching_cubes_gen_faces(const std::array<int, 3> grid_size, con
 						float summed_angles = 0.0f;
 						
 						//If triangles were generated near the current cell, classify particles based on it.
-						if(cell_triangles_count > 0){
-							bool already_finalized = false;
+						if(cell_triangles_count + cell_adjacent_triangles_count > 0){
 							bool outer = false;
-							for(size_t triangle_index = 0; triangle_index < cell_triangles_count; ++triangle_index){
-								const std::array<uint32_t, 3> current_triangle = cell_triangles[triangle_index];
+							size_t count_intersections = 0;
+							for(size_t triangle_index = 0; triangle_index < cell_triangles_count + cell_adjacent_triangles_count; ++triangle_index){
+								//const bool is_adjacent = (triangle_index < cell_adjacent_triangles_count);
+								
+								bool on_triangle_vertex = false;
+								bool on_triangle_edge = false;
+								bool on_triangle_face = false;
+								
+								int contact_index;
+								int opposite_index;
+								
+								const std::array<uint32_t, 3> current_triangle {
+									  particle_id_mapping_buffer[particle_buffer.bin_offsets[cell_triangle_ids[triangle_index][0].first] * config::G_BIN_CAPACITY + cell_triangle_ids[triangle_index][0].second]
+									, particle_id_mapping_buffer[particle_buffer.bin_offsets[cell_triangle_ids[triangle_index][1].first] * config::G_BIN_CAPACITY + cell_triangle_ids[triangle_index][1].second]
+									, particle_id_mapping_buffer[particle_buffer.bin_offsets[cell_triangle_ids[triangle_index][2].first] * config::G_BIN_CAPACITY + cell_triangle_ids[triangle_index][2].second]
+								};
 								
 								const auto source_bin_0 = particle_buffer.ch(_0, particle_buffer.bin_offsets[cell_triangle_ids[triangle_index][0].first] + cell_triangle_ids[triangle_index][0].second / config::G_BIN_CAPACITY);
 								const auto source_bin_1 = particle_buffer.ch(_0, particle_buffer.bin_offsets[cell_triangle_ids[triangle_index][1].first] + cell_triangle_ids[triangle_index][1].second / config::G_BIN_CAPACITY);
 								const auto source_bin_2 = particle_buffer.ch(_0, particle_buffer.bin_offsets[cell_triangle_ids[triangle_index][2].first] + cell_triangle_ids[triangle_index][2].second / config::G_BIN_CAPACITY);
-		
-								position[0] = source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
-								position[1] = source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
-								position[2] = source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
 								
 								const std::array<vec3, 3> triangle_positions {
-									  vec3(source_bin.val(_1, cell_triangle_ids[triangle_index][0].second % config::G_BIN_CAPACITY), source_bin.val(_2, cell_triangle_ids[triangle_index][0].second % config::G_BIN_CAPACITY), source_bin.val(_3, cell_triangle_ids[triangle_index][0].second % config::G_BIN_CAPACITY))
-									, vec3(source_bin.val(_1, cell_triangle_ids[triangle_index][1].second % config::G_BIN_CAPACITY), source_bin.val(_2, cell_triangle_ids[triangle_index][1].second % config::G_BIN_CAPACITY), source_bin.val(_3, cell_triangle_ids[triangle_index][1].second % config::G_BIN_CAPACITY))
-									, vec3(source_bin.val(_1, cell_triangle_ids[triangle_index][2].second % config::G_BIN_CAPACITY), source_bin.val(_2, cell_triangle_ids[triangle_index][2].second % config::G_BIN_CAPACITY), source_bin.val(_3, cell_triangle_ids[triangle_index][2].second % config::G_BIN_CAPACITY))
+									  vec3(source_bin_0.val(_1, cell_triangle_ids[triangle_index][0].second % config::G_BIN_CAPACITY), source_bin_0.val(_2, cell_triangle_ids[triangle_index][0].second % config::G_BIN_CAPACITY), source_bin_0.val(_3, cell_triangle_ids[triangle_index][0].second % config::G_BIN_CAPACITY))
+									, vec3(source_bin_1.val(_1, cell_triangle_ids[triangle_index][1].second % config::G_BIN_CAPACITY), source_bin_1.val(_2, cell_triangle_ids[triangle_index][1].second % config::G_BIN_CAPACITY), source_bin_1.val(_3, cell_triangle_ids[triangle_index][1].second % config::G_BIN_CAPACITY))
+									, vec3(source_bin_2.val(_1, cell_triangle_ids[triangle_index][2].second % config::G_BIN_CAPACITY), source_bin_2.val(_2, cell_triangle_ids[triangle_index][2].second % config::G_BIN_CAPACITY), source_bin_2.val(_3, cell_triangle_ids[triangle_index][2].second % config::G_BIN_CAPACITY))
 								};
 								
 								vec3 face_normal;
@@ -945,20 +1064,22 @@ __global__ void marching_cubes_gen_faces(const std::array<int, 3> grid_size, con
 								const float face_area = 0.5f * face_normal_length;
 												
 								//Perform halfspace test
-								const bool in_halfspace = alpha_shapes_test_in_halfspace(
+								const bool in_halfspace = surface_test_in_halfspace(
 									  {
 										  triangle_positions[0].data_arr()
 										, triangle_positions[1].data_arr()
 										, triangle_positions[2].data_arr()
 									  }
-									, pos.data_arr()
+									, particle_position.data_arr()
 								);
 								
-								const bool in_halfspace_without_threshold = face_normal.dot(pos - triangle_positions[0]) > 0.0f;
+								const bool in_halfspace_without_threshold = face_normal.dot(particle_position - triangle_positions[0]) > 0.0f;
 								
 								//If particle is a triangle vertex it is part of the triangle
 								if(current_triangle[0] == global_particle_id || current_triangle[1] == global_particle_id || current_triangle[2] == global_particle_id){
-									int contact_index;
+									on_triangle_vertex = true;
+									printf("I %d\n", global_particle_id);
+									
 									if(current_triangle[0] == global_particle_id){
 										contact_index = 0;
 									}else if(current_triangle[1] == global_particle_id){
@@ -967,43 +1088,7 @@ __global__ void marching_cubes_gen_faces(const std::array<int, 3> grid_size, con
 										contact_index = 2;
 									}
 									
-									auto particle_bin													= surface_particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
-									const int particle_id_in_bin = source_pidib  % config::G_BIN_CAPACITY;
-									
-									float cosine = (triangle_positions[(contact_index + 1) % 3] - triangle_positions[contact_index]).dot(triangle_positions[(contact_index + 2) % 3] - triangle_positions[contact_index]) / sqrt((triangle_positions[(contact_index + 1) % 3] - triangle_positions[contact_index]).dot(triangle_positions[(contact_index + 1) % 3] - triangle_positions[contact_index]) * (triangle_positions[(contact_index + 2) % 3] - triangle_positions[contact_index]).dot(triangle_positions[(contact_index + 2) % 3] - triangle_positions[contact_index]));
-									cosine = std::min(std::max(cosine, -1.0f), 1.0f);
-									const float angle = std::acos(cosine);
-									
-									//Normal
-									summed_normal += angle * face_normal;
-									
-									//Gauss curvature
-									summed_face_area += face_area * (1.0f / 3.0f);
-									summed_angles += angle;
-									
-									//Mean curvature
-									float current_cotan;
-									float next_cotan;
-									{
-										const vec3 a = pos - triangle_positions[(contact_index + 2) % 3];
-										const vec3 b = triangle_positions[(contact_index + 1) % 3] - triangle_positions[(contact_index + 2) % 3];
-										
-										vec3 cross;
-										vec_cross_vec_3d(cross.data_arr(), a.data_arr(), b.data_arr());
-										const float cross_norm = sqrt(cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]);
-
-										current_cotan = a.dot(b) / cross_norm;
-										current_cotan = std::min(std::max(current_cotan, cotan_clamp_min_rad), cotan_clamp_max_rad);
-										
-										next_cotan = a.dot(b) / cross_norm;
-										next_cotan = std::min(std::max(next_cotan, cotan_clamp_min_rad), cotan_clamp_max_rad);
-									}
-									
-									const vec3 laplacian = current_cotan * (triangle_positions[contact_index] - particle_position) + next_cotan * (triangle_positions[(contact_index + 1) % 3] - particle_position);
-									summed_laplacians += laplacian;
-									
-									already_finalized = true;
-									break;
+									outer = true;
 								}else if(!in_halfspace && in_halfspace_without_threshold){ //If particle lie within threshold from triangle they are on the triangle
 									
 									const vec9 barycentric_projection_matrix {
@@ -1020,65 +1105,20 @@ __global__ void marching_cubes_gen_faces(const std::array<int, 3> grid_size, con
 									
 									//Accumulate values
 									if(contact_barycentric[0] > 0.0f){//Point somewhere in triangle
-										//Use face normal
-										summed_normal += face_normal;
-										
-										//Gauss curvature
-										summed_face_area += 1.0f;//Just ensure this is not zero
-										summed_angles += 2.0f * static_cast<float>(M_PI);
+										on_triangle_face = true;
 									}else if(contact_barycentric[0] == 1.0f || contact_barycentric[1] == 1.0f || contact_barycentric[0] == 1.0f){//Point on vertex
-										int contact_index;
+										on_triangle_vertex = true;
+										
 										if(contact_barycentric[0] == 1.0f){
-											contact_index = 0;
+										contact_index = 0;
 										}else if(contact_barycentric[1] == 1.0f){
 											contact_index = 1;
 										}else {//contact_barycentric[2] == 1.0f
 											contact_index = 2;
 										}
-									
-										auto particle_bin													= surface_particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
-										const int particle_id_in_bin = source_pidib  % config::G_BIN_CAPACITY;
-										
-										float cosine = (triangle_positions[(contact_index + 1) % 3] - triangle_positions[contact_index]).dot(triangle_positions[(contact_index + 2) % 3] - triangle_positions[contact_index]) / sqrt((triangle_positions[(contact_index + 1) % 3] - triangle_positions[contact_index]).dot(triangle_positions[(contact_index + 1) % 3] - triangle_positions[contact_index]) * (triangle_positions[(contact_index + 2) % 3] - triangle_positions[contact_index]).dot(triangle_positions[(contact_index + 2) % 3] - triangle_positions[contact_index]));
-										cosine = std::min(std::max(cosine, -1.0f), 1.0f);
-										const float angle = std::acos(cosine);
-										
-										//Normal
-										summed_normal += angle * face_normal;
-										
-										//Gauss curvature
-										summed_face_area += face_area * (1.0f / 3.0f);
-										summed_angles += angle;
-										
-										//Mean curvature
-										float current_cotan;
-										float next_cotan;
-										{
-											const vec3 a = pos - triangle_positions[(contact_index + 2) % 3];
-											const vec3 b = triangle_positions[(contact_index + 1) % 3] - triangle_positions[(contact_index + 2) % 3];
-											
-											vec3 cross;
-											vec_cross_vec_3d(cross.data_arr(), a.data_arr(), b.data_arr());
-											const float cross_norm = sqrt(cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]);
-
-											current_cotan = a.dot(b) / cross_norm;
-											current_cotan = std::min(std::max(current_cotan, cotan_clamp_min_rad), cotan_clamp_max_rad);
-											
-											next_cotan = a.dot(b) / cross_norm;
-											next_cotan = std::min(std::max(next_cotan, cotan_clamp_min_rad), cotan_clamp_max_rad);
-										}
-										
-										const vec3 laplacian = current_cotan * (triangle_positions[contact_index] - particle_position) + next_cotan * (triangle_positions[(contact_index + 1) % 3] - particle_position);
-										summed_laplacians += laplacian;
 									}else{//Point on edge
-										//Use half normal
-										summed_normal += 0.5f * face_normal;
+										on_triangle_edge = true;
 										
-										//Gauss curvature
-										summed_face_area += face_area * (1.0f / 3.0f);//Just ensure this is not zero
-										summed_angles += static_cast<float>(M_PI);
-										
-										int opposite_index;
 										if(contact_barycentric[0] == 0.0f){
 											opposite_index = 0;
 										}else if(contact_barycentric[1] == 0.0f){
@@ -1086,50 +1126,138 @@ __global__ void marching_cubes_gen_faces(const std::array<int, 3> grid_size, con
 										}else {//contact_barycentric[2] == 0.0f
 											opposite_index = 2;
 										}
-										
-										//Mean curvature
-										//FIXME: Is this correct?
-										const vec3 laplacian = (triangle_positions[(opposite_index + 1) % 3] - particle_position) + (triangle_positions[(opposite_index + 2) % 3] - particle_position) + 2.0f * (triangle_positions[opposite_index] - particle_position);
-										summed_laplacians += laplacian;
 									}
 									
-									already_finalized = true;
-									break;
-								}else if(in_halfspace){ //All particles that are outside of one of the halfspaces spanned by the triangles are outer
 									outer = true;
-									break;
+								}else{ //Draw line between center of cell and particle and count amount of intersections
+									const vec3 center = bounding_box_offset + (vec3{float(x) + 0.5f, float(y) + 0.5f, float(z) + 0.5f} * MARCHING_CUBES_DX);
+									const vec3 difference = center - particle_position;
+									
+									/*
+									 * We solve
+									 * mat3(p0-p2, p1-p2, -dir)*(a, b, t) = pos - p2;
+									 */
+									const vec9 A {
+											  triangle_positions[0][0] - triangle_positions[2][0], triangle_positions[0][1] - triangle_positions[2][1], triangle_positions[0][2] - triangle_positions[2][2]
+											, triangle_positions[1][0] - triangle_positions[2][0], triangle_positions[1][1] - triangle_positions[2][1], triangle_positions[1][2] - triangle_positions[2][2]
+											, -difference[0], -difference[1], -difference[2]
+									};
+									const vec3 b = particle_position - triangle_positions[2];
+									vec3 x_tmp;
+									solve_linear_system(A.data_arr(), x_tmp.data_arr(),  b.data_arr());
+									
+									if(x_tmp[2] >= 0.0f && x_tmp[2] <= 1.0f){
+										count_intersections++;
+									}
+								}
+								
+								if(on_triangle_vertex){
+									float cosine = (triangle_positions[(contact_index + 1) % 3] - triangle_positions[contact_index]).dot(triangle_positions[(contact_index + 2) % 3] - triangle_positions[contact_index]) / sqrt((triangle_positions[(contact_index + 1) % 3] - triangle_positions[contact_index]).dot(triangle_positions[(contact_index + 1) % 3] - triangle_positions[contact_index]) * (triangle_positions[(contact_index + 2) % 3] - triangle_positions[contact_index]).dot(triangle_positions[(contact_index + 2) % 3] - triangle_positions[contact_index]));
+									cosine = std::min(std::max(cosine, -1.0f), 1.0f);
+									const float angle = std::acos(cosine);
+									
+									//Normal
+									summed_normal += angle * face_normal;
+									
+									printf("M %d %d %d # %d %d %d # %d # %.28f %.28f %.28f # %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n"
+										, static_cast<int>(x)
+										, static_cast<int>(y)
+										, static_cast<int>(z)
+										, current_triangle[0]
+										, current_triangle[1]
+										, current_triangle[2]
+										, global_particle_id
+										, face_normal[0]
+										, face_normal[1]
+										, face_normal[2]
+										, angle
+										, triangle_positions[0][0]
+										, triangle_positions[0][1]
+										, triangle_positions[0][2]
+										, triangle_positions[1][0]
+										, triangle_positions[1][1]
+										, triangle_positions[1][2]
+										, triangle_positions[2][0]
+										, triangle_positions[2][1]
+										, triangle_positions[2][2]
+									);
+									
+									//Gauss curvature
+									summed_face_area += face_area * (1.0f / 3.0f);
+									summed_angles += angle;
+									
+									//Mean curvature
+									float current_cotan;
+									float next_cotan;
+									{
+										const vec3 a = particle_position - triangle_positions[(contact_index + 2) % 3];
+										const vec3 b = triangle_positions[(contact_index + 1) % 3] - triangle_positions[(contact_index + 2) % 3];
+										
+										vec3 cross;
+										vec_cross_vec_3d(cross.data_arr(), a.data_arr(), b.data_arr());
+										const float cross_norm = sqrt(cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]);
+
+										current_cotan = a.dot(b) / cross_norm;
+										current_cotan = std::min(std::max(current_cotan, cotan_clamp_min_rad), cotan_clamp_max_rad);
+										
+										next_cotan = a.dot(b) / cross_norm;
+										next_cotan = std::min(std::max(next_cotan, cotan_clamp_min_rad), cotan_clamp_max_rad);
+									}
+									
+									const vec3 laplacian = current_cotan * (triangle_positions[contact_index] - particle_position) + next_cotan * (triangle_positions[(contact_index + 1) % 3] - particle_position);
+									summed_laplacians += laplacian;
+								}else if(on_triangle_edge){
+									//Use half normal
+									summed_normal += 0.5f * face_normal;
+									
+									//Gauss curvature
+									summed_face_area += face_area * (1.0f / 3.0f);//Just ensure this is not zero
+									summed_angles += static_cast<float>(M_PI);
+									
+									//Mean curvature
+									//FIXME: Is this correct?
+									const vec3 laplacian = (triangle_positions[(opposite_index + 1) % 3] - particle_position) + (triangle_positions[(opposite_index + 2) % 3] - particle_position) + 2.0f * (triangle_positions[opposite_index] - particle_position);
+									summed_laplacians += laplacian;
+								}else if(on_triangle_face){
+									//Use face normal
+									summed_normal += face_normal;
+									
+									//Gauss curvature
+									summed_face_area += 1.0f;//Just ensure this is not zero
+									summed_angles += 2.0f * static_cast<float>(M_PI);
 								}
 							}
 							
-							if(!outer && !already_finalized){
-								point_type = AlphaShapesPointType::INNER_POINT;
-							}
-							
+							if(outer){
+								point_type = SurfacePointType::OUTER_POINT;
+							}else if(count_intersections % 2 == (marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size))>thresh ? 0 : 1)){//Even/Uneven amount of intersections => interior
+								point_type = SurfacePointType::INNER_POINT;
+							}//Otherwise ISOLATED_POINT
 						}else{
-							//If no triangles were generated, all particles are inner if the cell is full, otherwise outer (default).
-							if(marching_cubes_grid.val(_0, marching_cubes_calculate_offset(grid_x, grid_y, grid_z, grid_size))>thresh){
-								point_type = AlphaShapesPointType::INNER_POINT;
+							//If no triangles were generated, all particles are inner if the cell is full, otherwise isolated (default).
+							if(marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size))>thresh){
+								point_type = SurfacePointType::INNER_POINT;
 							}
 						}
 						
 						//Finalize particle
-						auto particle_bin													= surface_particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
-						const int particle_id_in_bin = source_pidib  % config::G_BIN_CAPACITY;
+						auto surface_particle_bin													= surface_particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
+						const int surface_particle_id_in_bin = source_pidib  % config::G_BIN_CAPACITY;
 						
-						summed_laplacians /= 2.0f * summed_area;
+						summed_laplacians /= 2.0f * summed_face_area;
 						const float laplacian_norm = sqrt(summed_laplacians[0] * summed_laplacians[0] + summed_laplacians[1] * summed_laplacians[1] + summed_laplacians[2] * summed_laplacians[2]);
 
-						const float gauss_curvature = (2.0f * static_cast<float>(M_PI) - summed_angles) / summed_area;
+						const float gauss_curvature = (2.0f * static_cast<float>(M_PI) - summed_angles) / summed_face_area;
 						const float mean_curvature = 0.5f * laplacian_norm;
 						
 						const float normal_length = std::sqrt(summed_normal[0] * summed_normal[0] + summed_normal[1] * summed_normal[1] + summed_normal[2] * summed_normal[2]);
 						
-						particle_bin.val(_0, particle_id_in_bin) = *reinterpret_cast<float*>(&point_type);
-						particle_bin.val(_1, particle_id_in_bin) = summed_normal[0] / normal_length;
-						particle_bin.val(_2, particle_id_in_bin) = summed_normal[1] / normal_length;
-						particle_bin.val(_3, particle_id_in_bin) = summed_normal[2] / normal_length;
-						particle_bin.val(_4, particle_id_in_bin) = mean_curvature;
-						particle_bin.val(_5, particle_id_in_bin) = gauss_curvature;
+						surface_particle_bin.val(_0, surface_particle_id_in_bin) = *reinterpret_cast<float*>(&point_type);
+						surface_particle_bin.val(_1, surface_particle_id_in_bin) = summed_normal[0] / normal_length;
+						surface_particle_bin.val(_2, surface_particle_id_in_bin) = summed_normal[1] / normal_length;
+						surface_particle_bin.val(_3, surface_particle_id_in_bin) = summed_normal[2] / normal_length;
+						surface_particle_bin.val(_4, surface_particle_id_in_bin) = mean_curvature;
+						surface_particle_bin.val(_5, surface_particle_id_in_bin) = gauss_curvature;
 					}
 				}
 			}
@@ -1210,8 +1338,9 @@ __global__ void marching_cubes_calculate_density(Partition partition, Partition 
 }
 
 //TODO: Somehow use that several marching cubes cells lie in the same gridcell => several minima in one run, but not too much for shared memory
+//NOTE: Atomic loading and storing memory. This does not mean that one invocation is enough, but only, that invalid neighbouring cells might directly be removed
 template<typename Partition, typename ParticleBuffer, typename MarchingCubesGrid>
-__global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, MarchingCubesGrid marching_cubes_grid, const std::array<int, 3> bounding_box_min_arr, const std::array<float, 3> bounding_box_offset_arr, const std::array<int, 3> grid_size) {
+__global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, const float thresh, MarchingCubesGrid marching_cubes_grid, const std::array<int, 3> bounding_box_min_arr, const std::array<float, 3> bounding_box_offset_arr, const std::array<int, 3> grid_size, uint32_t* removed_cells) {
 	const ivec3 bounding_box_min {bounding_box_min_arr[0], bounding_box_min_arr[1], bounding_box_min_arr[2]};
 	const vec3 bounding_box_offset {bounding_box_offset_arr[0], bounding_box_offset_arr[1], bounding_box_offset_arr[2]};
 	
@@ -1226,104 +1355,202 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 	const ivec3 global_grid_cellid = (marching_cubes_cell_id / MARCHING_CUBES_GRID_SCALING).cast<int>() + bounding_box_min;
 	const ivec3 global_grid_blockid = global_grid_cellid / config::G_BLOCKSIZE;
 	
-	//x-, x+, y-, y+, z-, z+
-	int minima[6];
+	__shared__ uint32_t local_removed_cells;
 	
-	marching_cubes_get_cell_minima(prev_partition, particle_buffer, bounding_box_offset_arr, global_grid_blockid.data_arr(), global_grid_cellid.data_arr(), marching_cubes_cell_id.data_arr(), reinterpret_cast<std::array<int, 6>*>(&minima));
-	
-	const vec3 normals[6] {
-		  vec3(1.0f, 0.0f, 0.0f) //xx
-		, vec3(sqrt(0.5f), sqrt(0.5f), 0.0f) //xy
-		, vec3(sqrt(0.5f), 0.0f, sqrt(0.5f)) //xz
-		, vec3(0.0f, 1.0f, 0.0f) //yy
-		, vec3(0.0f, sqrt(0.5f), sqrt(0.5f)) //yz
-		, vec3(0.0f, 0.0f, 1.0f) //zz
-	};
-	
-	const int max_merge_counts[6] {
-		  0 //xx
-		, 1 //xy
-		, 1 //xz
-		, 0 //yy
-		, 1 //yz
-		, 0 //zz
-	};
-	
-	//Check if cell is valid. If not set density to 0
-	
-	//If minimum is -1 the cell is empty
-	if(minima[0] != -1){
-		vec3 positions[6];
+	do{
+		if(threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0){
+			local_removed_cells = 0;
+		}
 		
-		//Fetch positions
-		#pragma unroll 6
-		for(int dd = 0; dd < 6; ++dd) {
-			int advection_source_blockno;
-			int source_pidib;
-			marching_cubes_fetch_id<2 + 3>(prev_partition, minima[dd], (global_grid_blockid - 2).data_arr(), advection_source_blockno, source_pidib);
-
-			//Get bin from particle buffer
-			const auto source_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
+		__syncthreads();
+		
+		const bool inside = (marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size)) > thresh);
+		
+		if(inside){
+			//x-, x+, y-, y+, z-, z+
+			int minima[6];
 			
-			//Get particle position
-			positions[dd][0] = source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
-			positions[dd][1] = source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
-			positions[dd][2] = source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
-		}
-		
-		//xx, xy, xz, yy, yz, zz
-		int merge_counts[6];
-		
-		//Calculate merges
-		for(int i = 0; i < 6; ++i) {
-			for(int j = i + 1; j < 6; ++j) {
-				const bool axes[3] {
-					  (i < 2) || (j < 2)
-					, (i > 1 && i < 4) || (j > 1 && j < 4)
-					, (i > 3) || (j > 3)
-				};
+			marching_cubes_get_cell_minima(prev_partition, particle_buffer, bounding_box_offset_arr, global_grid_blockid.data_arr(), global_grid_cellid.data_arr(), marching_cubes_cell_id.data_arr(), reinterpret_cast<std::array<int, 6>*>(&minima));
+			
+			const vec3 normals[6] {
+				  vec3(1.0f, 0.0f, 0.0f) //xx
+				, vec3(sqrt(0.5f), sqrt(0.5f), 0.0f) //xy
+				, vec3(sqrt(0.5f), 0.0f, sqrt(0.5f)) //xz
+				, vec3(0.0f, 1.0f, 0.0f) //yy
+				, vec3(0.0f, sqrt(0.5f), sqrt(0.5f)) //yz
+				, vec3(0.0f, 0.0f, 1.0f) //zz
+			};
+			
+			const ivec3 offsets[6] {
+				  ivec3(-1, 0, 0) //x-
+				, ivec3(1, 0, 0) //x+
+				, ivec3(0, -1, 0) //y-
+				, ivec3(0, 1, 0) //y+
+				, ivec3(0, 0, -1) //z-
+				, ivec3(0, 0, 1) //z+
+			};
+			
+			const int max_merge_counts[6] {
+				  0 //xx
+				, 1 //xy
+				, 1 //xz
+				, 0 //yy
+				, 1 //yz
+				, 0 //zz
+			};
+			
+			//Check if cell is valid. If not set density to 0
+			
+			//If minimum is -1 the cell is empty
+			if(minima[0] != -1){
+				vec3 positions[6];
 				
-				int merge_type;
-				if(axes[0] && !axes[1] && !axes[2]){
-					merge_type = 0;
-				}else if(axes[0] && axes[1] && !axes[2]){
-					merge_type = 1;
-				}else if(axes[0] && !axes[1] && axes[2]){
-					merge_type = 2;
-				}else if(!axes[0] && axes[1] && !axes[2]){
-					merge_type = 3;
-				}else if(!axes[0] && axes[1] && axes[2]){
-					merge_type = 4;
-				}else{// !axes[0] && !axes[1] && axes[2]
-					merge_type = 5;
+				//Fetch positions
+				#pragma unroll 6
+				for(int dd = 0; dd < 6; ++dd) {
+					int advection_source_blockno;
+					int source_pidib;
+					marching_cubes_fetch_id<2 + 3>(prev_partition, minima[dd], (global_grid_blockid - 2).data_arr(), advection_source_blockno, source_pidib);
+
+					//Get bin from particle buffer
+					const auto source_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
+					
+					//Get particle position
+					positions[dd][0] = source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
+					positions[dd][1] = source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
+					positions[dd][2] = source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
 				}
 				
-				//Get separating plane
-				const vec3 normal = normals[merge_type];
+				//xx, xy, xz, yy, yz, zz
+				int merge_counts[6];
+				bool merge_participant[6];
 				
-				//Calculate distance along separating plane
-				const vec3 diff = positions[i] - positions[j];
-				const float distance_in_direction = normal.dot(diff);
+				for(int i = 0; i < 6; ++i) {
+					merge_counts[i] = 0;
+					merge_participant[i] = false;
+				}
 				
-				//If smaller then threshold, the vertices merge
-				if(distance_in_direction <= MARCHING_CUBES_HALFSPACE_TEST_THRESHOLD){
-					merge_counts[merge_type]++;
-					//printf("A %d %d %d # %d # %d %d %d %d %d %d\n", marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], merge_type, minima[0], minima[1], minima[2], minima[3], minima[4], minima[5]);
+				//Calculate merges
+				int vertex_count = 6;
+				for(int i = 0; i < 6; ++i) {
+					//Only look at minima on side to neighbour cell that will generate a vertex
+					const ivec3 neighbour_marching_cubes_cell_id_i = marching_cubes_cell_id + offsets[i];
+					if(
+						   (neighbour_marching_cubes_cell_id_i[0] >= 0 && neighbour_marching_cubes_cell_id_i[1] >= 0 && neighbour_marching_cubes_cell_id_i[2] >= 0)
+						&& (neighbour_marching_cubes_cell_id_i[0] < grid_size[0] && neighbour_marching_cubes_cell_id_i[1]< grid_size[1] && neighbour_marching_cubes_cell_id_i[2] < grid_size[2])
+					){
+						const bool neighbour_inside_i = (atomicAdd(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(neighbour_marching_cubes_cell_id_i[0], neighbour_marching_cubes_cell_id_i[1], neighbour_marching_cubes_cell_id_i[2], grid_size)), 0.0f) > thresh);
+						if(inside != neighbour_inside_i){
+							for(int j = i + 1; j < 6; ++j) {
+								const ivec3 neighbour_marching_cubes_cell_id_j = marching_cubes_cell_id + offsets[j];
+								if(
+									   (neighbour_marching_cubes_cell_id_j[0] >= 0 && neighbour_marching_cubes_cell_id_j[1] >= 0 && neighbour_marching_cubes_cell_id_j[2] >= 0)
+									&& (neighbour_marching_cubes_cell_id_j[0] < grid_size[0] && neighbour_marching_cubes_cell_id_j[1]< grid_size[1] && neighbour_marching_cubes_cell_id_j[2] < grid_size[2])
+								){
+									const bool neighbour_inside_j = (atomicAdd(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(neighbour_marching_cubes_cell_id_j[0], neighbour_marching_cubes_cell_id_j[1], neighbour_marching_cubes_cell_id_j[2], grid_size)), 0.0f) > thresh);
+									if(inside != neighbour_inside_j){
+										const bool axes[3] {
+											  (i < 2) || (j < 2)
+											, (i > 1 && i < 4) || (j > 1 && j < 4)
+											, (i > 3) || (j > 3)
+										};
+										
+										int merge_type;
+										if(axes[0] && !axes[1] && !axes[2]){
+											merge_type = 0;
+										}else if(axes[0] && axes[1] && !axes[2]){
+											merge_type = 1;
+										}else if(axes[0] && !axes[1] && axes[2]){
+											merge_type = 2;
+										}else if(!axes[0] && axes[1] && !axes[2]){
+											merge_type = 3;
+										}else if(!axes[0] && axes[1] && axes[2]){
+											merge_type = 4;
+										}else{// !axes[0] && !axes[1] && axes[2]
+											merge_type = 5;
+										}
+										
+										//Get separating plane
+										const vec3 normal = normals[merge_type];
+										
+										//Calculate distance along separating plane
+										const vec3 diff = positions[i] - positions[j];
+										const float distance_in_direction = normal.dot(diff);
+										
+										//If smaller then threshold, the vertices merge
+										if(distance_in_direction <= SURFACE_HALFSPACE_TEST_THRESHOLD){
+											merge_counts[merge_type]++;
+											if(!merge_participant[i]){
+												vertex_count--;
+											}
+											merge_participant[i] = true;
+											merge_participant[j] = true;
+											//printf("A %d %d %d # %d # %d %d %d %d %d %d\n", marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], merge_type, minima[0], minima[1], minima[2], minima[3], minima[4], minima[5]);
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+				
+				//If we got more merges than allowed we have only coplanar values in cell (aligned weith separating plane) and so we mark the cell as empty
+				bool is_invalid = (vertex_count < 4);
+				for(int i = 0; i < 6; ++i) {
+					if(merge_counts[i] > max_merge_counts[i]){
+						is_invalid = true;
+						break;
+					}
+				}
+				
+				if(is_invalid){
+					//Note: Atomic store
+					float value;
+					do{
+						value = marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size));
+					}while(value != atomic_cas(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size)), value, 0.0f));
+					atomicAdd(&local_removed_cells, 1);
+				}
+			}else{
+				bool all_inside = inside;
+				for(int i = 0; i < 6; ++i) {
+					const ivec3 neighbour_marching_cubes_cell_id_i = marching_cubes_cell_id + offsets[i];
+					if(
+								   (neighbour_marching_cubes_cell_id_i[0] >= 0 && neighbour_marching_cubes_cell_id_i[1] >= 0 && neighbour_marching_cubes_cell_id_i[2] >= 0)
+								&& (neighbour_marching_cubes_cell_id_i[0] < grid_size[0] && neighbour_marching_cubes_cell_id_i[1]< grid_size[1] && neighbour_marching_cubes_cell_id_i[2] < grid_size[2])
+					){
+						const bool neighbour_inside_i = (atomicAdd(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(neighbour_marching_cubes_cell_id_i[0], neighbour_marching_cubes_cell_id_i[1], neighbour_marching_cubes_cell_id_i[2], grid_size)), 0.0f) > thresh);
+						all_inside = all_inside && neighbour_inside_i;
+					}
+				}
+				
+				//If all neighbours and cell itself are inside don't set density to 0
+				if(!all_inside){
+					//Note: Atomic store
+					float value;
+					do{
+						value = marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size));
+					}while(value != atomic_cas(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size)), value, 0.0f));
+					atomicAdd(&local_removed_cells, 1);
 				}
 			}
+		}else{
+			//Just set value to 0 to be safe
+			float value;
+			do{
+				value = marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size));
+			}while(value != atomic_cas(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size)), value, 0.0f));
 		}
 		
-		//If we got more merges than allowed we have only coplanar values in cell (aligned weith separating plane) and so we mark the cell as empty
-		for(int i = 0; i < 6; ++i) {
-			if(merge_counts[i] > max_merge_counts[i]){
-				//FIXME:marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size)) = 0.0f;
-				break;
+		__syncthreads();
+		
+		if(threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0){
+			uint32_t abc = atomicAdd(removed_cells, local_removed_cells);
+			if(abc > 0){
+				printf("R %d %d %d # %d %d\n", static_cast<int>(blockIdx.x), static_cast<int>(blockIdx.y), static_cast<int>(blockIdx.z), static_cast<int>(local_removed_cells), static_cast<int>(abc));
 			}
 		}
-	}else{
-		marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size)) = 0.0f;
-	}
-	
+	}while(local_removed_cells > 0);
 }
 	
 //NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic, readability-magic-numbers, readability-identifier-naming, misc-definitions-in-headers)

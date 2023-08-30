@@ -42,7 +42,6 @@ constexpr unsigned int ALPHA_SHAPES_MAX_KERNEL_SIZE = config::G_MAX_ACTIVE_BLOCK
 constexpr size_t MAX_ALPHA_SHAPE_TRIANGLES_PER_CELL = 512;//Used for triangle output
 constexpr size_t MAX_ALPHA_SHAPE_TRIANGLES_PER_MODEL = 3 * MAX_ALPHA_SHAPE_TRIANGLES_PER_CELL * config::G_BLOCKVOLUME * config::G_MAX_ACTIVE_BLOCK;
 
-constexpr float ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD = 1e-7;//TODO: Maybe adjust threshold
 constexpr float ALPHA_SHAPES_LINE_DISTANCE_TEST_THRESHOLD = 1e-7;//TODO: Maybe adjust threshold
 
 //NOTE: Actually this should equal the max value of particles as theoretically all particles can lie in the same circumsphere; But we are limited due to may memory bounds of local/shared memory
@@ -93,15 +92,6 @@ struct AlphaShapesGridBuffer : Instance<AlphaShapesGridBufferBlockData> {
 //TODO: Ensure call dimensions and such are small enough to allow narrowing conversations. Or directly use unsigned where possible
 //TODO: Maybe use names instead of formula signs for better understanding
 //NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic, readability-magic-numbers, readability-identifier-naming, misc-definitions-in-headers) CUDA does not yet support std::span; Common names for physical formulas; Cannot declare __global__ functions inline
-
-enum class AlphaShapesPointType {
-	OUTER_POINT = 0,
-	INNER_POINT,
-	ISOLATED_POINT,
-	CURVE_1D,
-	CURVE_2D,
-	TOTAL
-};
 
 enum class TriangleFinalizationStatus {
 	IS_NOT_ALPHA = 0,
@@ -315,49 +305,6 @@ __forceinline__ __device__ std::array<float, 3> alpha_shapes_get_particle_positi
 	FetchParticleBufferDataIntermediate fetch_particle_buffer_tmp = {};
 	fetch_particle_buffer_data<MaterialType>(particle_buffer, advection_source_blockno, source_pidib, fetch_particle_buffer_tmp);
 	return fetch_particle_buffer_tmp.pos;
-}
-
-__forceinline__ __host__ __device__ std::array<float, 3> alpha_shapes_calculate_triangle_normal(const std::array<std::array<float, 3>, 3>& triangle_positions){
-	const std::array<vec3, 3> positions {
-		  vec3(triangle_positions[0][0], triangle_positions[0][1], triangle_positions[0][2])
-		, vec3(triangle_positions[1][0], triangle_positions[1][1], triangle_positions[1][2])
-		, vec3(triangle_positions[2][0], triangle_positions[2][1], triangle_positions[2][2])
-	};
-	
-	vec3 face_normal;
-	vec_cross_vec_3d(face_normal.data_arr(), (positions[1] - positions[0]).data_arr(), (positions[2] - positions[0]).data_arr());
-	
-	const float face_normal_length = sqrt(face_normal[0] * face_normal[0] + face_normal[1] * face_normal[1] + face_normal[2] * face_normal[2]);
-	
-	//Normalize
-	face_normal = face_normal / face_normal_length;
-	
-	return face_normal.data_arr();
-}
-
-//TODO: Actually we'd also need a threshold for normal (halfspace spanning more than one direction) but this can cause problems (convex hull becoming infinite if ends of two adjacent halfspaces are parallel)
-__forceinline__ __host__ __device__ bool alpha_shapes_test_in_halfspace(const std::array<std::array<float, 3>, 3>& triangle_positions, const std::array<float, 3> particle_position){
-	const std::array<vec3, 3> triangle_positions_vec {
-		  vec3(triangle_positions[0][0], triangle_positions[0][1], triangle_positions[0][2])
-		, vec3(triangle_positions[1][0], triangle_positions[1][1], triangle_positions[1][2])
-		, vec3(triangle_positions[2][0], triangle_positions[2][1], triangle_positions[2][2])
-	};
-	
-	const std::array<float, 3> triangle_normal = alpha_shapes_calculate_triangle_normal(triangle_positions);
-	
-	const vec3 triangle_normal_vec {triangle_normal[0], triangle_normal[1], triangle_normal[2]};
-	const vec3 particle_position_vec {particle_position[0], particle_position[1], particle_position[2]};
-	
-	//Find nearest point
-	//TODO: Maybe ensure that we have an ordering if several have same distance; Or use average;
-	const std::array<vec3, 3>::const_iterator nearest_point = thrust::min_element(thrust::seq, triangle_positions_vec.begin(), triangle_positions_vec.end(), [&particle_position_vec](const vec3& a, const vec3& b){
-		return (particle_position_vec - a).dot(particle_position_vec - a) < (particle_position_vec - b).dot(particle_position_vec - b);
-	});
-		
-	//Perform halfspace test
-	const bool current_in_halfspace = triangle_normal_vec.dot(particle_position_vec - *nearest_point) > ALPHA_SHAPES_HALFSPACE_TEST_THRESHOLD;
-	
-	return current_in_halfspace;
 }
 
 __forceinline__ __device__ void alpha_shapes_get_circumcircle(const std::array<float, 3>& a, const std::array<float, 3>& b, const std::array<float, 3>& c, std::array<float, 3>& center, float& radius){
@@ -1158,7 +1105,7 @@ __forceinline__ __device__ void alpha_shapes_finalize_triangle(const ParticleBuf
 			const std::array<float, 3> current_p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[triangle_id][2], blockid);
 							
 			//Perform halfspace test
-			const bool current_in_halfspace = alpha_shapes_test_in_halfspace(
+			const bool current_in_halfspace = surface_test_in_halfspace(
 				  {
 					current_p0_position_arr,
 					current_p1_position_arr,
@@ -1268,12 +1215,12 @@ __forceinline__ __device__ void alpha_shapes_finalize_particles(const ParticleBu
 		
 		//printf("ABC1 %d %d %d # %d %d # %.28f - ", cellid[0], cellid[1], cellid[2], advection_source_blockno, source_pidib, summed_area);
 		
-		AlphaShapesPointType point_type;
+		SurfacePointType point_type;
 		if(summed_area > 0.0f){
-			point_type = AlphaShapesPointType::OUTER_POINT;
+			point_type = SurfacePointType::OUTER_POINT;
 		}else{
 			//Isolated point or point in shell
-			point_type = AlphaShapesPointType::ISOLATED_POINT;//FIXME: All are currently treated as isolated points
+			point_type = SurfacePointType::ISOLATED_POINT;//FIXME: All are currently treated as isolated points
 			
 			summed_angles += 2.0f * static_cast<float>(M_PI);
 			summed_area += 1.0f;//Just ensure this is not zero
@@ -1371,7 +1318,7 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 						const std::array<float, 3> current_p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, current_triangle[2], blockid);
 						
 						//Perform halfspace test
-						const bool current_in_halfspace = alpha_shapes_test_in_halfspace(
+						const bool current_in_halfspace = surface_test_in_halfspace(
 							  {
 								current_p0_position_arr,
 								current_p1_position_arr,
@@ -1430,7 +1377,7 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 								//Test all outer faces (only one face at the edge)
 								if(edge_count[0] == 1){
 									//Perform halfspace test
-									const bool current_in_halfspace = alpha_shapes_test_in_halfspace(
+									const bool current_in_halfspace = surface_test_in_halfspace(
 										  {
 											current_p1_position_arr,
 											current_p2_position_arr,
@@ -1446,7 +1393,7 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 								}
 								if(edge_count[1] == 1){
 									//Perform halfspace test
-									const bool current_in_halfspace = alpha_shapes_test_in_halfspace(
+									const bool current_in_halfspace = surface_test_in_halfspace(
 										  {
 											current_p2_position_arr,
 											current_p0_position_arr,
@@ -1462,7 +1409,7 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 								}
 								if(edge_count[2] == 1){
 									//Perform halfspace test
-									const bool current_in_halfspace = alpha_shapes_test_in_halfspace(
+									const bool current_in_halfspace = surface_test_in_halfspace(
 										  {
 											current_p0_position_arr,
 											current_p1_position_arr,
@@ -1538,7 +1485,7 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 			const vec3 triangle_normal_vec0 {triangle_normal0[0], triangle_normal0[1], triangle_normal0[2]};
 			
 			//Halfspace test
-			const bool in_halfspace = alpha_shapes_test_in_halfspace(
+			const bool in_halfspace = surface_test_in_halfspace(
 				  triangle_positions
 				, particle_position_arr
 			);
@@ -1566,7 +1513,7 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 						&& (particle_position_arr_a[0] != particle_position[0] || particle_position_arr_a[1] != particle_position[1] || particle_position_arr_a[2] != particle_position[2])
 					){
 					
-						const bool current_in_halfspace = alpha_shapes_test_in_halfspace(
+						const bool current_in_halfspace = surface_test_in_halfspace(
 							  {
 								p0_position_arr,
 								p1_position_arr,
@@ -1610,7 +1557,7 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 							const vec3 triangle_normal_vec2 {triangle_normal2[0], triangle_normal2[1], triangle_normal2[2]};
 							const vec3 triangle_normal_vec3 {triangle_normal3[0], triangle_normal3[1], triangle_normal3[2]};
 							
-							const bool in_halfspace_a1 = alpha_shapes_test_in_halfspace(
+							const bool in_halfspace_a1 = surface_test_in_halfspace(
 								  {
 									triangle_positions[1],
 									triangle_positions[0],
@@ -1618,7 +1565,7 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 								  }
 								, particle_position_arr_a
 							);
-							const bool in_halfspace_a2 = alpha_shapes_test_in_halfspace(
+							const bool in_halfspace_a2 = surface_test_in_halfspace(
 								  {
 									triangle_positions[2],
 									triangle_positions[1],
@@ -1626,7 +1573,7 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 								  }
 								, particle_position_arr_a
 							);
-							const bool in_halfspace_a3 = alpha_shapes_test_in_halfspace(
+							const bool in_halfspace_a3 = surface_test_in_halfspace(
 								  {
 									triangle_positions[0],
 									triangle_positions[2],
@@ -1808,7 +1755,7 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 }*/
 
 template<typename Partition, typename Grid, MaterialE MaterialType>
-__forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuffer<MaterialType> particle_buffer, const Partition prev_partition, const Partition partition, const Grid grid, SurfaceParticleBuffer surface_particle_buffer, int* alpha_shapes_triangle_buffer, int* finalized_triangle_count, const unsigned int* particle_id_mapping_buffer, SharedMemoryType* __restrict__ shared_memory_storage, const int (&particle_indices)[ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD], const int particle_indices_start, const int particle_indices_count, const int particle_bucket_size, int (&own_particle_indices)[ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD], std::array<int, 3> (&triangles)[ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD], TriangleFinalizationStatus (&triangles_is_alpha)[ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD], int& current_triangle_count, int& next_triangle_count, const ivec3 blockid, const ivec3 cellid, const int src_blockno, const float alpha, const int finalize_particles_start, const int finalize_particles_end, const int contact_triangles_count, const int additional_contact_particles_count, float& minimum_x, float& maximum_x, const int& removed_particle_count, int& test_index, const int frame_id){
+__forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuffer<MaterialType> particle_buffer, const Partition prev_partition, const Partition partition, const Grid grid, SurfaceParticleBuffer surface_particle_buffer, int* alpha_shapes_triangle_buffer, int* finalized_triangle_count, const unsigned int* particle_id_mapping_buffer, SharedMemoryType* shared_memory_storage, const int (&particle_indices)[ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD], const int particle_indices_start, const int particle_indices_count, const int particle_bucket_size, int (&own_particle_indices)[ALPHA_SHAPES_MAX_OWN_PARTICLE_COUNT_PER_THREAD], std::array<int, 3> (&triangles)[ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD], TriangleFinalizationStatus (&triangles_is_alpha)[ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD], int& current_triangle_count, int& next_triangle_count, const ivec3 blockid, const ivec3 cellid, const int src_blockno, const float alpha, const int finalize_particles_start, const int finalize_particles_end, const int contact_triangles_count, const int additional_contact_particles_count, float& minimum_x, float& maximum_x, const int& removed_particle_count, int& test_index, const int frame_id){
 	__shared__ int temporary_convex_hull_triangles_count;
 	__shared__ int next_temporary_convex_hull_triangles_count;
 	
@@ -2123,7 +2070,7 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 			const vec3 inner_particle_position {inner_particle_position_arr[0], inner_particle_position_arr[1], inner_particle_position_arr[2]};
 			
 			//Test if point is in inner of the tetrahedron
-			const bool is_in_current_halfspace = alpha_shapes_test_in_halfspace(
+			const bool is_in_current_halfspace = surface_test_in_halfspace(
 				  {
 					p0_position_arr,
 					p1_position_arr,
@@ -2137,7 +2084,7 @@ __forceinline__ __device__ void alpha_shapes_build_tetrahedra(const ParticleBuff
 				const std::array<float, 3> halfspace_test_p1_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, current_triangle[(k + 1) % 3], blockid);
 				const std::array<float, 3> halfspace_test_p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, shared_memory_storage->circumsphere_points[additional_contact_particles_count - 1], blockid);
 				
-				const bool is_in_halfspace = alpha_shapes_test_in_halfspace(
+				const bool is_in_halfspace = surface_test_in_halfspace(
 					  {
 						halfspace_test_p0_position_arr,
 						halfspace_test_p1_position_arr,
@@ -2458,11 +2405,11 @@ __forceinline__ __device__ bool alpha_shapes_handle_triangle_compare_func(const 
 	const vec3 particle_position_b {particle_position_arr_b[0], particle_position_arr_b[1], particle_position_arr_b[2]};
 	
 	//Test if in half_space; Also sorts out particles that lie in a plane with the triangle
-	const bool in_halfspace_a = alpha_shapes_test_in_halfspace(
+	const bool in_halfspace_a = surface_test_in_halfspace(
 		  triangle_positions
 		, particle_position_arr_a
 	);
-	const bool in_halfspace_b = alpha_shapes_test_in_halfspace(
+	const bool in_halfspace_b = surface_test_in_halfspace(
 		  triangle_positions
 		, particle_position_arr_b
 	);
@@ -2606,7 +2553,7 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 			const std::array<float, 3> particle_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, p3, blockid);
 			
 			//If nearest point is not in halfspace of the normal, flip the normal
-			const bool in_halfspace = alpha_shapes_test_in_halfspace(
+			const bool in_halfspace = surface_test_in_halfspace(
 				  triangle_positions
 				, particle_position_arr
 			);
@@ -2666,7 +2613,7 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 			const std::array<float, 3> current_p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[j][2], blockid);
 				
 			//Perform halfspace test
-			const bool current_in_halfspace = alpha_shapes_test_in_halfspace(
+			const bool current_in_halfspace = surface_test_in_halfspace(
 				  {
 					current_p0_position_arr,
 					current_p1_position_arr,
@@ -2736,7 +2683,7 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 					const std::array<float, 3> current_p2_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, triangles[alpha_shapes_get_thread_offset<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_TRIANGLE_COUNT_PER_THREAD>(shared_memory_storage->circumsphere_triangles[j])][2], blockid);
 						
 					//Perform halfspace test
-					const bool current_in_halfspace = alpha_shapes_test_in_halfspace(
+					const bool current_in_halfspace = surface_test_in_halfspace(
 						  {
 							current_p0_position_arr,
 							current_p1_position_arr,
@@ -2821,7 +2768,7 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 						//Test all outer faces (only one face at the edge)
 						if(edge_count[0] == 1){
 							//Perform halfspace test
-							const bool current_in_halfspace = alpha_shapes_test_in_halfspace(
+							const bool current_in_halfspace = surface_test_in_halfspace(
 								  {
 									current_p1_position_arr,
 									current_p2_position_arr,
@@ -2837,7 +2784,7 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 						}
 						if(edge_count[1] == 1){
 							//Perform halfspace test
-							const bool current_in_halfspace = alpha_shapes_test_in_halfspace(
+							const bool current_in_halfspace = surface_test_in_halfspace(
 								  {
 									current_p2_position_arr,
 									current_p0_position_arr,
@@ -2853,7 +2800,7 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 						}
 						if(edge_count[2] == 1){
 							//Perform halfspace test
-							const bool current_in_halfspace = alpha_shapes_test_in_halfspace(
+							const bool current_in_halfspace = surface_test_in_halfspace(
 								  {
 									current_p0_position_arr,
 									current_p1_position_arr,
@@ -3039,7 +2986,7 @@ __forceinline__ __device__ void alpha_shapes_handle_triangle(const ParticleBuffe
 							});
 							
 							//Perform halfspace test
-							const bool current_in_halfspace = alpha_shapes_test_in_halfspace(
+							const bool current_in_halfspace = surface_test_in_halfspace(
 								  {
 									current_p0_position_arr,
 									current_p1_position_arr,
@@ -3616,7 +3563,7 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 }
 
 template<typename Partition, MaterialE MaterialType>
-__global__ void clear_surface_particle_buffer(const ParticleBuffer<MaterialType> particle_buffer, const ParticleBuffer<MaterialType> next_particle_buffer, const Partition prev_partition, SurfaceParticleBuffer surface_particle_buffer){
+__global__ void alpha_shapes_clear_surface_particle_buffer(const ParticleBuffer<MaterialType> particle_buffer, const ParticleBuffer<MaterialType> next_particle_buffer, const Partition prev_partition, SurfaceParticleBuffer surface_particle_buffer){
 	const int src_blockno		   = static_cast<int>(blockIdx.x);
 	const int particle_bucket_size = next_particle_buffer.particle_bucket_sizes[src_blockno];
 	

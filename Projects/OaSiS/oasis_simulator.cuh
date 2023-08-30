@@ -80,6 +80,7 @@ struct OasisSimulator {
 			if(bytes > current_size){
 				if(memory != nullptr){
 					allocator->deallocate(memory, current_size);
+					memory = nullptr;
 				}
 				current_size = bytes;
 			}
@@ -277,11 +278,6 @@ struct OasisSimulator {
 		
 		surface_vertex_count = reinterpret_cast<uint32_t*>(managed_memory_allocator.allocate(sizeof(uint32_t)));
 		surface_triangle_count = reinterpret_cast<uint32_t*>(managed_memory_allocator.allocate(sizeof(uint32_t)));
-		
-		surface_transfer_device_buffer = reusable_allocator_surface_transfer.allocate(sizeof(int) * model.size());
-		surface_transfer_device_buffer = reusable_allocator_surface_transfer.allocate(sizeof(float) * config::NUM_DIMENSIONS * model.size());
-		surface_transfer_device_buffer = reusable_allocator_surface_transfer.allocate(sizeof(float) * model.size());
-		surface_transfer_device_buffer = reusable_allocator_surface_transfer.allocate(sizeof(float) * model.size());
 
 		//Create partitions
 		for(int copyid = 0; copyid < BIN_COUNT; copyid++) {
@@ -413,7 +409,6 @@ struct OasisSimulator {
 		//Create transfer buffers
 		triangle_mesh_transfer_device_buffers.emplace_back(managed_memory_allocator.allocate(sizeof(float) * config::NUM_DIMENSIONS * positions.size()));
 		triangle_mesh_transfer_host_buffers.push_back(positions);
-		
 		
 		//Keep face data
 		triangle_mesh_face_buffers.push_back(faces);
@@ -1984,12 +1979,11 @@ struct OasisSimulator {
 
 			//Retrieve particle count
 			unsigned int* particle_id_mapping_buffer = tmps.particle_id_mapping_buffer;
-			void* surface_transfer_device_buffer_ptr = surface_transfer_device_buffer;
 			
 			void* surface_vertex_count_ptr = surface_vertex_count;
 			void* surface_triangle_count_ptr = surface_triangle_count;
 			
-			match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &particle_count, &i, &particle_id_mapping_buffer, &surface_transfer_device_buffer_ptr, &surface_vertex_count_ptr, &surface_triangle_count_ptr](auto& particle_buffer) {
+			match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &particle_count, &i, &particle_id_mapping_buffer, &surface_vertex_count_ptr, &surface_triangle_count_ptr](auto& particle_buffer) {
 				auto& prev_particle_buffer = get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[rollid][i]);
 				
 				prev_particle_buffer.cellbuckets = prev_particle_buffer.cellbuckets_virtual;
@@ -2021,11 +2015,16 @@ struct OasisSimulator {
 			if(particle_counts[i] < particle_count){
 				particle_counts[i] = particle_count;
 				particles[i].resize(managed_memory_allocator, sizeof(float) * config::NUM_DIMENSIONS * particle_count);
-				//TODO: Resize device alpha shapes buffers
 			}
+			//Create/Increase transfer buffers
+			//NOTE: as we use a ReusableAllocator on resize the old buffer is automatically freed
+			surface_transfer_device_buffer = reusable_allocator_surface_transfer.allocate(sizeof(float) * config::NUM_DIMENSIONS * particle_count);
+			
+			void* surface_transfer_device_buffer_ptr = surface_transfer_device_buffer;
 			
 			managed_memory.acquire<MemoryType::DEVICE>(
-				particles[i].acquire()
+				  particles[i].acquire()
+				, reinterpret_cast<void**>(&surface_transfer_device_buffer_ptr)
 			);
 			
 			//Resize the output model
@@ -2069,7 +2068,7 @@ struct OasisSimulator {
 					);
 					
 					//Clear buffer before use
-					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, clear_alpha_shapes_particle_buffer, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), partitions[(rollid + 1) % BIN_COUNT], surface_particle_buffers[i]);
+					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, alpha_shapes_clear_surface_particle_buffer, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), partitions[(rollid + 1) % BIN_COUNT], surface_particle_buffers[i]);
 					check_cuda_errors(cudaMemset(surface_triangle_buffer, 0, sizeof(int) * MAX_ALPHA_SHAPE_TRIANGLES_PER_MODEL));
 					
 					//FIXME: Does not yet work, maybe also need to reduce block dimension?
@@ -2167,11 +2166,22 @@ struct OasisSimulator {
 				marching_cubes_grid_buffer.resize(managed_memory_allocator, marching_cubes_block_count);
 				marching_cubes_grid_buffer.reset(marching_cubes_block_count, cu_dev);
 				
+				//Resize particle buffers if we increased the size of active bins
+				if(checked_bin_counts[i] > 0) {
+					surface_particle_buffers[i].resize(managed_memory_allocator, cur_num_active_bins[i]);
+				}
+				
 				cu_dev.syncStream<streamIdx::COMPUTE>();
 				
 				managed_memory.acquire<MemoryType::DEVICE>(
-					  marching_cubes_grid_buffer.acquire()
+					    marching_cubes_grid_buffer.acquire()
+					  , surface_particle_buffers[i].acquire()
 				);
+				
+				//Clear particle buffer
+				match(particle_bins[rollid][i])([this, &cu_dev, &i](const auto& particle_buffer) {
+					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, marching_cubes_clear_surface_particle_buffer, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), partitions[(rollid + 1) % BIN_COUNT], surface_particle_buffers[i]);
+				});
 				
 				//Calculate densities
 				match(particle_bins[rollid][i])([this, &cu_dev, &i, &bounding_box_offset, &marching_cubes_grid_size](const auto& particle_buffer) {
@@ -2181,24 +2191,41 @@ struct OasisSimulator {
 				
 				//TODO: Do this before setting grid size to minimize it
 				//Sort out invalid cells
-				match(particle_bins[rollid][i])([this, &cu_dev, &marching_cubes_launch_config, &bounding_box_min, &bounding_box_offset, &marching_cubes_grid_size](const auto& particle_buffer) {
-					//partition_block_count; G_PARTICLE_BATCH_CAPACITY
-					cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_sort_out_invalid_cells, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, marching_cubes_grid_buffer, bounding_box_min.data_arr(), bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr());
-				});
+				uint32_t* removed_cells = static_cast<uint32_t*>(cu_dev.borrow(sizeof(uint32_t)));
+			
+				uint32_t removed_cells_host;
+				do{
+					//Init removed_particles with 0
+					check_cuda_errors(cudaMemsetAsync(removed_cells, 0, sizeof(uint32_t), cu_dev.stream_compute()));
+					
+					cu_dev.syncStream<streamIdx::COMPUTE>();
+					
+					match(particle_bins[rollid][i])([this, &cu_dev, &marching_cubes_launch_config, &bounding_box_min, &bounding_box_offset, &marching_cubes_grid_size, &removed_cells](const auto& particle_buffer) {
+						const float density_threshold = particle_buffer.rho * config::MARCHING_CUBES_DENSITY_THRESHOLD_FACTOR;
+						
+						//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+						cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_sort_out_invalid_cells, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, density_threshold, marching_cubes_grid_buffer, bounding_box_min.data_arr(), bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr(), removed_cells);
+					});
+					
+					check_cuda_errors(cudaMemcpyAsync(&removed_cells_host, removed_cells, sizeof(uint32_t), cudaMemcpyDefault, cu_dev.stream_compute()));
+				
+					cu_dev.syncStream<streamIdx::COMPUTE>();
+					
+					std::cout << "ABC " << removed_cells_host << std::endl;
+				}while(removed_cells_host > 0);
 				
 				//Initialize surface_triangle_count and surface_vertex_count with 0
 				check_cuda_errors(cudaMemsetAsync(surface_vertex_count_ptr, 0, sizeof(uint32_t), cu_dev.stream_compute()));
 				check_cuda_errors(cudaMemsetAsync(surface_triangle_count_ptr, 0, sizeof(uint32_t), cu_dev.stream_compute()));
-				
-
+					
 				cu_dev.syncStream<streamIdx::COMPUTE>();
 	
 				//Get counts
-				match(particle_bins[rollid][i])([this, &cu_dev, &marching_cubes_launch_config, &bounding_box_min, &bounding_box_offset, &marching_cubes_grid_size, &surface_vertex_count_ptr, &surface_triangle_count_ptr, &particle_id_mapping_buffer](const auto& particle_buffer) {
+				match(particle_bins[rollid][i])([this, &cu_dev, &i, &marching_cubes_launch_config, &bounding_box_min, &bounding_box_offset, &marching_cubes_grid_size, &surface_vertex_count_ptr, &surface_triangle_count_ptr, &particle_id_mapping_buffer](const auto& particle_buffer) {
 					const float density_threshold = particle_buffer.rho * config::MARCHING_CUBES_DENSITY_THRESHOLD_FACTOR;
 					
 					cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_gen_vertices, partitions[(rollid + 1) % BIN_COUNT], particle_buffer, bounding_box_min.data_arr(), bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr(), density_threshold, marching_cubes_grid_buffer, static_cast<uint32_t*>(surface_vertex_count_ptr));
-					cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_gen_faces, marching_cubes_grid_size.data_arr(), density_threshold, marching_cubes_grid_buffer, static_cast<uint32_t*>(nullptr), static_cast<uint32_t*>(surface_triangle_count_ptr));
+					cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_gen_faces, partitions[(rollid + 1) % BIN_COUNT], particle_buffer, particle_id_mapping_buffer, surface_particle_buffers[i], bounding_box_min.data_arr(), bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr(), density_threshold, marching_cubes_grid_buffer, static_cast<uint32_t*>(nullptr), static_cast<uint32_t*>(surface_triangle_count_ptr));
 				});
 				
 				cu_dev.syncStream<streamIdx::COMPUTE>();
@@ -2247,11 +2274,11 @@ struct OasisSimulator {
 					check_cuda_errors(cudaMemsetAsync(surface_vertex_count_ptr, 0, sizeof(uint32_t), cu_dev.stream_compute()));
 					
 					//Calculate triangulation
-					match(particle_bins[rollid][i])([this, &cu_dev, &marching_cubes_launch_config, &bounding_box_min, &bounding_box_offset, &marching_cubes_grid_size, &surface_vertex_count_ptr, &surface_triangle_count_ptr, &surface_vertex_buffer_ptr, &surface_triangle_buffer_ptr, &particle_id_mapping_buffer](const auto& particle_buffer) {
+					match(particle_bins[rollid][i])([this, &cu_dev, &i, &marching_cubes_launch_config, &bounding_box_min, &bounding_box_offset, &marching_cubes_grid_size, &surface_vertex_count_ptr, &surface_triangle_count_ptr, &surface_vertex_buffer_ptr, &surface_triangle_buffer_ptr, &particle_id_mapping_buffer](const auto& particle_buffer) {
 						const float density_threshold = particle_buffer.rho * config::MARCHING_CUBES_DENSITY_THRESHOLD_FACTOR;
 						
 						cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_gen_vertices, partitions[(rollid + 1) % BIN_COUNT], particle_buffer, bounding_box_min.data_arr(), bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr(), density_threshold, marching_cubes_grid_buffer, static_cast<uint32_t*>(surface_vertex_count_ptr));
-						cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_gen_faces, marching_cubes_grid_size.data_arr(), density_threshold, marching_cubes_grid_buffer, static_cast<uint32_t*>(surface_triangle_buffer_ptr), static_cast<uint32_t*>(surface_triangle_count_ptr));
+						cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_gen_faces, partitions[(rollid + 1) % BIN_COUNT], particle_buffer, particle_id_mapping_buffer, surface_particle_buffers[i], bounding_box_min.data_arr(), bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr(), density_threshold, marching_cubes_grid_buffer, static_cast<uint32_t*>(surface_triangle_buffer_ptr), static_cast<uint32_t*>(surface_triangle_count_ptr));
 					});
 					
 					cu_dev.syncStream<streamIdx::COMPUTE>();
@@ -2293,7 +2320,7 @@ struct OasisSimulator {
 			
 			managed_memory.release(particles[i].release());
 			
-			/*
+			
 			{
 				match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count, &particle_id_mapping_buffer, &surface_transfer_device_buffer_ptr](const auto& particle_buffer) {
 					//partition_block_count; G_PARTICLE_BATCH_CAPACITY
@@ -2301,6 +2328,8 @@ struct OasisSimulator {
 				});
 				
 				cu_dev.syncStream<streamIdx::COMPUTE>();
+				
+				std::cout << surface_point_type_transfer_host_buffer.data() << " " << surface_transfer_device_buffer_ptr << " " << particle_count << std::endl;
 				
 				//Copy the data to the output model
 				check_cuda_errors(cudaMemcpyAsync(surface_point_type_transfer_host_buffer.data(), surface_transfer_device_buffer_ptr, sizeof(int) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
@@ -2340,16 +2369,16 @@ struct OasisSimulator {
 				
 				//Copy the data to the output model
 				check_cuda_errors(cudaMemcpyAsync(surface_gauss_curvature_transfer_host_buffer.data(), surface_transfer_device_buffer_ptr, sizeof(float) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
-			}*/
+			}
 			
 			match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &particle_count, &i, &particle_id_mapping_buffer, &surface_transfer_device_buffer_ptr](const auto& particle_buffer) {
 				auto& prev_particle_buffer = get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[rollid][i]);
 			
 				managed_memory.release(
-					  //surface_particle_buffers[i].release()
-					  prev_particle_buffer.release()
+					  surface_particle_buffers[i].release()
+					, prev_particle_buffer.release()
 					, particle_id_mapping_buffer
-					//, surface_transfer_device_buffer
+					, surface_transfer_device_buffer
 					, prev_particle_buffer.cellbuckets_virtual
 					, prev_particle_buffer.bin_offsets_virtual
 					, prev_particle_buffer.cell_particle_counts_virtual
