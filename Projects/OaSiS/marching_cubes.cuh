@@ -9,7 +9,7 @@
 namespace mn {
 //NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic, readability-magic-numbers, readability-identifier-naming, misc-definitions-in-headers) CUDA does not yet support std::span; Common names for physical formulas; Cannot declare __global__ functions inline
 
-constexpr float MARCHING_CUBES_GRID_BLOCK_SPACING_INV = 1.0f;
+constexpr float MARCHING_CUBES_GRID_BLOCK_SPACING_INV = 2.0f;
 constexpr float MARCHING_CUBES_DX_INV = (MARCHING_CUBES_GRID_BLOCK_SPACING_INV * (1 << config::DOMAIN_BITS));
 constexpr float MARCHING_CUBES_DX = 1.f / MARCHING_CUBES_DX_INV;
 constexpr size_t MARCHING_CUBES_GRID_SCALING = const_ceil<size_t, float>(config::G_DX / MARCHING_CUBES_DX);
@@ -18,6 +18,9 @@ constexpr size_t MARCHING_CUBES_MAX_ACTIVE_BLOCK = config::G_MAX_ACTIVE_BLOCK * 
 //TODO: Currently looks wrong with degress bigger 1. Maybe wrong threshold? Maybe other issues?
 //NOTE: Values bigger than 0 will only have effect on cells being classified full/empty if they have particles or are fully enclosed by full cells
 constexpr size_t MARCHING_CUBES_INTERPOLATION_DEGREE = 1;//MARCHING_CUBES_GRID_SCALING;
+
+//Controls maximum distance from face == maximum distance from normal marching cubes vertex
+constexpr float MARCHING_CUBES_MAXIMUM_FACE_DISTANCE = 0.25f;//FIXME: Set to corrent value
 
 using MarchingCubesGridBufferDomain  = CompactDomain<int, MARCHING_CUBES_MAX_ACTIVE_BLOCK>;
 
@@ -216,20 +219,56 @@ __forceinline__ __device__ int marching_cubes_get_cell_minima(const Partition pr
 					const vec3 local_pos_0 = pos - global_base_index_0 * MARCHING_CUBES_DX;
 					
 					//Calculate distance to box walls and store minima
-					const float distances[6] {
-						  local_pos_0[0]
-						, MARCHING_CUBES_DX - local_pos_0[0]
-						, local_pos_0[1]
-						, MARCHING_CUBES_DX - local_pos_0[1]
-						, local_pos_0[2]
-						, MARCHING_CUBES_DX - local_pos_0[2]
+					const vec3 diffs[6]{
+						  local_pos_0 - vec3(0.0f, 0.5f, 0.5f) * MARCHING_CUBES_DX
+						, local_pos_0 - vec3(1.0f, 0.5f, 0.5f) * MARCHING_CUBES_DX
+						, local_pos_0 - vec3(0.5f, 0.0f, 0.5f) * MARCHING_CUBES_DX
+						, local_pos_0 - vec3(0.5f, 1.0f, 0.5f) * MARCHING_CUBES_DX
+						, local_pos_0 - vec3(0.5f, 0.5f, 0.0f) * MARCHING_CUBES_DX
+						, local_pos_0 - vec3(0.5f, 0.5f, 1.0f) * MARCHING_CUBES_DX
 					};
 					
-					//If particle is in cell, test if it is smaller than our minima
+					const float distances_from_face[6] {
+						  vec3(1.0f, 0.0f, 0.0f).dot(diffs[0])
+						, vec3(1.0f, 0.0f, 0.0f).dot(diffs[1])
+						, vec3(0.0f, 1.0f, 0.0f).dot(diffs[2])
+						, vec3(0.0f, 1.0f, 0.0f).dot(diffs[3])
+						, vec3(0.0f, 0.0f, 1.0f).dot(diffs[4])
+						, vec3(0.0f, 0.0f, 1.0f).dot(diffs[5])
+					};
+					
+					const float distances_from_face_center[6] {
+						  std::sqrt(diffs[0][0] * diffs[0][0] + diffs[0][1] * diffs[0][1] + diffs[0][2] * diffs[0][2])
+						, std::sqrt(diffs[1][0] * diffs[1][0] + diffs[1][1] * diffs[1][1] + diffs[1][2] * diffs[1][2])
+						, std::sqrt(diffs[2][0] * diffs[2][0] + diffs[2][1] * diffs[2][1] + diffs[2][2] * diffs[2][2])
+						, std::sqrt(diffs[3][0] * diffs[3][0] + diffs[3][1] * diffs[3][1] + diffs[3][2] * diffs[3][2])
+						, std::sqrt(diffs[4][0] * diffs[4][0] + diffs[4][1] * diffs[4][1] + diffs[4][2] * diffs[4][2])
+						, std::sqrt(diffs[5][0] * diffs[5][0] + diffs[5][1] * diffs[5][1] + diffs[5][2] * diffs[5][2])
+					};
+					
+					const vec3 diffs_from_axes[3]{
+						  diffs[0] - distances_from_face[0] * vec3(1.0f, 0.0f, 0.0f)
+						, diffs[2] - distances_from_face[2] * vec3(0.0f, 1.0f, 0.0f)
+						, diffs[4] - distances_from_face[4] * vec3(0.0f, 0.0f, 1.0f)
+					};
+					
+					const float distances_from_axes[3] {
+						  std::sqrt(diffs_from_axes[0][0] * diffs_from_axes[0][0] + diffs_from_axes[0][1] * diffs_from_axes[0][1] + diffs_from_axes[0][2] * diffs_from_axes[0][2])
+						, std::sqrt(diffs_from_axes[1][0] * diffs_from_axes[1][0] + diffs_from_axes[1][1] * diffs_from_axes[1][1] + diffs_from_axes[1][2] * diffs_from_axes[1][2])
+						, std::sqrt(diffs_from_axes[2][0] * diffs_from_axes[2][0] + diffs_from_axes[2][1] * diffs_from_axes[2][1] + diffs_from_axes[2][2] * diffs_from_axes[2][2])
+					};
+					
+					const ivec3 absolute_cell_offset{
+						  std::abs(global_base_index_0[0] - marching_cubes_cell_id[0])
+						, std::abs(global_base_index_0[1] - marching_cubes_cell_id[1])
+						, std::abs(global_base_index_0[2] - marching_cubes_cell_id[2])
+					};
+					
+					//If particle is in cell or neighbour cell, test if it is smaller than our minima
 					if(
-						   (global_base_index_0[0] == marching_cubes_cell_id[0])
-						&& (global_base_index_0[1] == marching_cubes_cell_id[1])
-						&& (global_base_index_0[2] == marching_cubes_cell_id[2])
+						   (absolute_cell_offset[0] < 2)
+						&& (absolute_cell_offset[1] < 2)
+						&& (absolute_cell_offset[2] < 2)
 					){
 						//Store minima
 						#pragma unroll 6
@@ -301,20 +340,53 @@ __forceinline__ __device__ int marching_cubes_get_cell_minima(const Partition pr
 								//Get position relative to grid cell
 								const vec3 local_pos_minimum = pos_minimum - global_base_index_minimum * MARCHING_CUBES_DX;
 								
-								const float distances_minimum[6] {
-									  local_pos_minimum[0]
-									, MARCHING_CUBES_DX - local_pos_minimum[0]
-									, local_pos_minimum[1]
-									, MARCHING_CUBES_DX - local_pos_minimum[1]
-									, local_pos_minimum[2]
-									, MARCHING_CUBES_DX - local_pos_minimum[2]
+								const vec3 diffs_minimum[6]{
+									  local_pos_minimum - vec3(0.0f, 0.5f, 0.5f) * MARCHING_CUBES_DX
+									, local_pos_minimum - vec3(1.0f, 0.5f, 0.5f) * MARCHING_CUBES_DX
+									, local_pos_minimum - vec3(0.5f, 0.0f, 0.5f) * MARCHING_CUBES_DX
+									, local_pos_minimum - vec3(0.5f, 1.0f, 0.5f) * MARCHING_CUBES_DX
+									, local_pos_minimum - vec3(0.5f, 0.5f, 0.0f) * MARCHING_CUBES_DX
+									, local_pos_minimum - vec3(0.5f, 0.5f, 1.0f) * MARCHING_CUBES_DX
 								};
 								
-								if(distances_minimum[dd] <= distances[dd]){
+								const float distances_from_face_minimum[6] {
+									  vec3(1.0f, 0.0f, 0.0f).dot(diffs_minimum[0])
+									, vec3(1.0f, 0.0f, 0.0f).dot(diffs_minimum[1])
+									, vec3(0.0f, 1.0f, 0.0f).dot(diffs_minimum[2])
+									, vec3(0.0f, 1.0f, 0.0f).dot(diffs_minimum[3])
+									, vec3(0.0f, 0.0f, 1.0f).dot(diffs_minimum[4])
+									, vec3(0.0f, 0.0f, 1.0f).dot(diffs_minimum[5])
+								};
+								
+								const float distances_from_face_center_minimum[6] {
+									  std::sqrt(diffs_minimum[0][0] * diffs_minimum[0][0] + diffs_minimum[0][1] * diffs_minimum[0][1] + diffs_minimum[0][2] * diffs_minimum[0][2])
+									, std::sqrt(diffs_minimum[1][0] * diffs_minimum[1][0] + diffs_minimum[1][1] * diffs_minimum[1][1] + diffs_minimum[1][2] * diffs_minimum[1][2])
+									, std::sqrt(diffs_minimum[2][0] * diffs_minimum[2][0] + diffs_minimum[2][1] * diffs_minimum[2][1] + diffs_minimum[2][2] * diffs_minimum[2][2])
+									, std::sqrt(diffs_minimum[3][0] * diffs_minimum[3][0] + diffs_minimum[3][1] * diffs_minimum[3][1] + diffs_minimum[3][2] * diffs_minimum[3][2])
+									, std::sqrt(diffs_minimum[4][0] * diffs_minimum[4][0] + diffs_minimum[4][1] * diffs_minimum[4][1] + diffs_minimum[4][2] * diffs_minimum[4][2])
+									, std::sqrt(diffs_minimum[5][0] * diffs_minimum[5][0] + diffs_minimum[5][1] * diffs_minimum[5][1] + diffs_minimum[5][2] * diffs_minimum[5][2])
+								};
+								
+								if(distances_from_face_center_minimum[dd] <= distances_from_face_center[dd]){
 									continue;
 								}
+								
+								//printf("O %d %d %d # %d # %.28f %.28f # %d %d\n", marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], dd, distances_from_face_center[dd], distances_from_face_center_minimum[dd], marching_cubes_convert_id<3, 2 + 3>(prev_partition, particle_id, (blockid_offset + 2).data_arr()), last_minimum);
 							}
 							
+							
+							//Sort out minima that are too far away from face as this may cause degeneration (e.g. self-intersections)
+							if(distances_from_axes[dd / 2] > MARCHING_CUBES_MAXIMUM_FACE_DISTANCE * MARCHING_CUBES_DX){
+								continue;
+							}
+							
+							//Sort out minima that are out of half
+							if(distances_from_face[dd] > 0.5f * MARCHING_CUBES_DX){
+								continue;
+							}
+							
+								
+								
 							(*minima)[dd] = marching_cubes_convert_id<3, 2 + 3>(prev_partition, particle_id, (blockid_offset + 2).data_arr());
 						}
 					}
@@ -390,7 +462,7 @@ __global__ void marching_cubes_gen_vertices(const Partition prev_partition, cons
 
 			marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x, y, z, grid_size)) = marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[minima_index], global_grid_blockid_offset.data_arr()) + 1;//index_x
 			
-			//printf("X %d %d %d # %d %d %d # %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
+			printf("X %d %d %d # %d %d %d # %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
 			
 			/*
 			marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x, y, z, grid_size))=vidx+1;//index_x
@@ -433,7 +505,7 @@ __global__ void marching_cubes_gen_vertices(const Partition prev_partition, cons
 			
 			marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y, z, grid_size)) = marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[minima_index], global_grid_blockid_offset.data_arr()) + 1;//index_y
 			
-			//printf("Y %d %d %d # %d %d %d # %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
+			printf("Y %d %d %d # %d %d %d # %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
 			
 			/*
 			marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y, z, grid_size))=vidx+1;
@@ -476,7 +548,7 @@ __global__ void marching_cubes_gen_vertices(const Partition prev_partition, cons
 			
 			marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z, grid_size)) = marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[minima_index], global_grid_blockid_offset.data_arr()) + 1;//index_z
 			
-			//printf("Z %d %d %d # %d %d %d # %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
+			printf("Z %d %d %d # %d %d %d # %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
 			
 			/*
 			marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z, grid_size))=vidx+1;//index_z
@@ -506,7 +578,7 @@ __forceinline__ __device__ uint32_t marching_cubes_fetch_edge_data(const Partiti
 		ids.first = advection_source_blockno;
 		ids.second = source_pidib;
 		
-		//printf("H %d # %d %d # %d\n", particle_id - 1, advection_source_blockno, source_pidib, particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno] * config::G_BIN_CAPACITY + source_pidib]);
+		printf("H %d # %d %d # %d\n", particle_id - 1, advection_source_blockno, source_pidib, particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno] * config::G_BIN_CAPACITY + source_pidib]);
 
 		return particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno] * config::G_BIN_CAPACITY + source_pidib] + 1;
 	}else{
@@ -1297,7 +1369,7 @@ __global__ void marching_cubes_calculate_density(Partition partition, Partition 
 		const ivec3 global_base_index_0 = get_cell_id<0>(pos.data_arr(), {0.0f, 0.0f, 0.0f}, {MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV});
 		const ivec3 global_base_index = get_cell_id<MARCHING_CUBES_INTERPOLATION_DEGREE>(pos.data_arr(), {0.0f, 0.0f, 0.0f}, {MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV});
 		
-		//printf("D %d %d %d # %d %d %d\n", global_base_index_0[0], global_base_index_0[1], global_base_index_0[2], blockid[0], blockid[1], blockid[2]);
+		//printf("D %d %d %d # %d %d %d\n", global_base_index_0[0], global_base_index_0[1], global_base_index_0[2], global_base_index[0], global_base_index[1], global_base_index[2]);
 		
 		//Get position relative to grid cell
 		const vec3 local_pos = pos - global_base_index * MARCHING_CUBES_DX;
@@ -1401,13 +1473,12 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 			
 			//Check if cell is valid. If not set density to 0
 			
-			//If minimum is -1 the cell is empty
-			if(minima[0] != -1){
-				vec3 positions[6];
-				
-				//Fetch positions
-				#pragma unroll 6
-				for(int dd = 0; dd < 6; ++dd) {
+			vec3 positions[6];
+			
+			//Fetch positions
+			#pragma unroll 6
+			for(int dd = 0; dd < 6; ++dd) {
+				if(minima[0] != -1){
 					int advection_source_blockno;
 					int source_pidib;
 					marching_cubes_fetch_id<2 + 3>(prev_partition, minima[dd], (global_grid_blockid - 2).data_arr(), advection_source_blockno, source_pidib);
@@ -1420,119 +1491,141 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 					positions[dd][1] = source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
 					positions[dd][2] = source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
 				}
-				
-				//xx, xy, xz, yy, yz, zz
-				int merge_counts[6];
-				bool merge_participant[6];
-				
-				for(int i = 0; i < 6; ++i) {
-					merge_counts[i] = 0;
-					merge_participant[i] = false;
-				}
-				
-				//Calculate merges
-				int vertex_count = 6;
-				for(int i = 0; i < 6; ++i) {
-					//Only look at minima on side to neighbour cell that will generate a vertex
-					const ivec3 neighbour_marching_cubes_cell_id_i = marching_cubes_cell_id + offsets[i];
-					if(
-						   (neighbour_marching_cubes_cell_id_i[0] >= 0 && neighbour_marching_cubes_cell_id_i[1] >= 0 && neighbour_marching_cubes_cell_id_i[2] >= 0)
-						&& (neighbour_marching_cubes_cell_id_i[0] < grid_size[0] && neighbour_marching_cubes_cell_id_i[1]< grid_size[1] && neighbour_marching_cubes_cell_id_i[2] < grid_size[2])
-					){
-						const bool neighbour_inside_i = (atomicAdd(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(neighbour_marching_cubes_cell_id_i[0], neighbour_marching_cubes_cell_id_i[1], neighbour_marching_cubes_cell_id_i[2], grid_size)), 0.0f) > thresh);
-						if(inside != neighbour_inside_i){
-							for(int j = i + 1; j < 6; ++j) {
-								const ivec3 neighbour_marching_cubes_cell_id_j = marching_cubes_cell_id + offsets[j];
-								if(
-									   (neighbour_marching_cubes_cell_id_j[0] >= 0 && neighbour_marching_cubes_cell_id_j[1] >= 0 && neighbour_marching_cubes_cell_id_j[2] >= 0)
-									&& (neighbour_marching_cubes_cell_id_j[0] < grid_size[0] && neighbour_marching_cubes_cell_id_j[1]< grid_size[1] && neighbour_marching_cubes_cell_id_j[2] < grid_size[2])
-								){
-									const bool neighbour_inside_j = (atomicAdd(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(neighbour_marching_cubes_cell_id_j[0], neighbour_marching_cubes_cell_id_j[1], neighbour_marching_cubes_cell_id_j[2], grid_size)), 0.0f) > thresh);
-									if(inside != neighbour_inside_j){
-										const bool axes[3] {
-											  (i < 2) || (j < 2)
-											, (i > 1 && i < 4) || (j > 1 && j < 4)
-											, (i > 3) || (j > 3)
-										};
-										
-										int merge_type;
-										if(axes[0] && !axes[1] && !axes[2]){
-											merge_type = 0;
-										}else if(axes[0] && axes[1] && !axes[2]){
-											merge_type = 1;
-										}else if(axes[0] && !axes[1] && axes[2]){
-											merge_type = 2;
-										}else if(!axes[0] && axes[1] && !axes[2]){
-											merge_type = 3;
-										}else if(!axes[0] && axes[1] && axes[2]){
-											merge_type = 4;
-										}else{// !axes[0] && !axes[1] && axes[2]
-											merge_type = 5;
+			}
+			
+			//xx, xy, xz, yy, yz, zz
+			int merge_counts[6];
+			bool merge_participant[6];
+			
+			for(int i = 0; i < 6; ++i) {
+				merge_counts[i] = 0;
+				merge_participant[i] = false;
+			}
+			
+			//Calculate merges
+			int vertex_count = 6;
+			for(int i = 0; i < 6; ++i) {
+				//Only look at minima on side to neighbour cell that will generate a vertex
+				//NOTE: Actually no need to look for existenz of neighbour cell cause we made grid big enough to have everything surrounded by empty cells
+				const ivec3 neighbour_marching_cubes_cell_id_i = marching_cubes_cell_id + offsets[i];
+				if(
+					   (neighbour_marching_cubes_cell_id_i[0] >= 0 && neighbour_marching_cubes_cell_id_i[1] >= 0 && neighbour_marching_cubes_cell_id_i[2] >= 0)
+					&& (neighbour_marching_cubes_cell_id_i[0] < grid_size[0] && neighbour_marching_cubes_cell_id_i[1]< grid_size[1] && neighbour_marching_cubes_cell_id_i[2] < grid_size[2])
+				){
+					const bool neighbour_inside_i = (atomicAdd(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(neighbour_marching_cubes_cell_id_i[0], neighbour_marching_cubes_cell_id_i[1], neighbour_marching_cubes_cell_id_i[2], grid_size)), 0.0f) > thresh);
+					if(inside != neighbour_inside_i){
+						for(int j = i + 1; j < 6; ++j) {
+							const ivec3 neighbour_marching_cubes_cell_id_j = marching_cubes_cell_id + offsets[j];
+							if(
+								   (neighbour_marching_cubes_cell_id_j[0] >= 0 && neighbour_marching_cubes_cell_id_j[1] >= 0 && neighbour_marching_cubes_cell_id_j[2] >= 0)
+								&& (neighbour_marching_cubes_cell_id_j[0] < grid_size[0] && neighbour_marching_cubes_cell_id_j[1]< grid_size[1] && neighbour_marching_cubes_cell_id_j[2] < grid_size[2])
+							){
+								const bool neighbour_inside_j = (atomicAdd(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(neighbour_marching_cubes_cell_id_j[0], neighbour_marching_cubes_cell_id_j[1], neighbour_marching_cubes_cell_id_j[2], grid_size)), 0.0f) > thresh);
+								if(inside != neighbour_inside_j){
+									
+									//If one of the minima does not exist but is needed the cell is invalid, so we set the vertex count to 0
+									if(minima[i] == -1 || minima[j] == -1){
+										vertex_count = 0;
+										break;
+									}
+									
+									const bool axes[3] {
+										  (i < 2) || (j < 2)
+										, (i > 1 && i < 4) || (j > 1 && j < 4)
+										, (i > 3) || (j > 3)
+									};
+									
+									int merge_type;
+									if(axes[0] && !axes[1] && !axes[2]){
+										merge_type = 0;
+									}else if(axes[0] && axes[1] && !axes[2]){
+										merge_type = 1;
+									}else if(axes[0] && !axes[1] && axes[2]){
+										merge_type = 2;
+									}else if(!axes[0] && axes[1] && !axes[2]){
+										merge_type = 3;
+									}else if(!axes[0] && axes[1] && axes[2]){
+										merge_type = 4;
+									}else{// !axes[0] && !axes[1] && axes[2]
+										merge_type = 5;
+									}
+									
+									//Get separating plane
+									const vec3 normal = normals[merge_type];
+									
+									//Calculate distance along separating plane
+									const vec3 diff = positions[i] - positions[j];
+									const float distance_in_direction = std::abs(normal.dot(diff));
+									
+									//If smaller then threshold, the vertices merge
+									if(distance_in_direction <= SURFACE_HALFSPACE_TEST_THRESHOLD){
+										merge_counts[merge_type]++;
+										if(!merge_participant[i]){
+											vertex_count--;
 										}
-										
-										//Get separating plane
-										const vec3 normal = normals[merge_type];
-										
-										//Calculate distance along separating plane
-										const vec3 diff = positions[i] - positions[j];
-										const float distance_in_direction = normal.dot(diff);
-										
-										//If smaller then threshold, the vertices merge
-										if(distance_in_direction <= SURFACE_HALFSPACE_TEST_THRESHOLD){
-											merge_counts[merge_type]++;
-											if(!merge_participant[i]){
-												vertex_count--;
-											}
-											merge_participant[i] = true;
-											merge_participant[j] = true;
-											//printf("A %d %d %d # %d # %d %d %d %d %d %d\n", marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], merge_type, minima[0], minima[1], minima[2], minima[3], minima[4], minima[5]);
-										}
+										merge_participant[i] = true;
+										merge_participant[j] = true;
+										/*printf("A %d %d %d # %d %d %d # %d # %d %d %d %d %d %d # %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n"
+											, marching_cubes_cell_id[0]
+											, marching_cubes_cell_id[1]
+											, marching_cubes_cell_id[2]
+											, global_grid_cellid[0]
+											, global_grid_cellid[1]
+											, global_grid_cellid[2]
+											, merge_type
+											, minima[0]
+											, minima[1]
+											, minima[2]
+											, minima[3]
+											, minima[4]
+											, minima[5]
+											, distance_in_direction
+											, diff[0]
+											, diff[1]
+											, diff[2]
+											, normal[0]
+											, normal[1]
+											, normal[2]
+										);*/
 									}
 								}
 							}
 						}
 					}
 				}
-				
-				//If we got more merges than allowed we have only coplanar values in cell (aligned weith separating plane) and so we mark the cell as empty
-				bool is_invalid = (vertex_count < 4);
-				for(int i = 0; i < 6; ++i) {
-					if(merge_counts[i] > max_merge_counts[i]){
-						is_invalid = true;
-						break;
-					}
+			}
+			
+			//If we got more merges than allowed we have only coplanar values in cell (aligned weith separating plane) and so we mark the cell as empty
+			bool is_invalid = (vertex_count < 4);
+			for(int i = 0; i < 6; ++i) {
+				if(merge_counts[i] > max_merge_counts[i]){
+					is_invalid = true;
+					break;
 				}
-				
-				if(is_invalid){
-					//Note: Atomic store
-					float value;
-					do{
-						value = marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size));
-					}while(value != atomic_cas(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size)), value, 0.0f));
-					atomicAdd(&local_removed_cells, 1);
-				}
-			}else{
-				bool all_inside = inside;
-				for(int i = 0; i < 6; ++i) {
-					const ivec3 neighbour_marching_cubes_cell_id_i = marching_cubes_cell_id + offsets[i];
-					if(
-								   (neighbour_marching_cubes_cell_id_i[0] >= 0 && neighbour_marching_cubes_cell_id_i[1] >= 0 && neighbour_marching_cubes_cell_id_i[2] >= 0)
-								&& (neighbour_marching_cubes_cell_id_i[0] < grid_size[0] && neighbour_marching_cubes_cell_id_i[1]< grid_size[1] && neighbour_marching_cubes_cell_id_i[2] < grid_size[2])
-					){
-						const bool neighbour_inside_i = (atomicAdd(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(neighbour_marching_cubes_cell_id_i[0], neighbour_marching_cubes_cell_id_i[1], neighbour_marching_cubes_cell_id_i[2], grid_size)), 0.0f) > thresh);
-						all_inside = all_inside && neighbour_inside_i;
-					}
-				}
-				
-				//If all neighbours and cell itself are inside don't set density to 0
-				if(!all_inside){
-					//Note: Atomic store
-					float value;
-					do{
-						value = marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size));
-					}while(value != atomic_cas(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size)), value, 0.0f));
-					atomicAdd(&local_removed_cells, 1);
-				}
+			}
+			
+			if(is_invalid){
+				//Note: Atomic store
+				float value;
+				do{
+					value = marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size));
+				}while(value != atomic_cas(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size)), value, 0.0f));
+				atomicAdd(&local_removed_cells, 1);
+				/*printf("S %d %d %d # %d %d %d # %d # %d %d %d %d %d %d\n"
+					, marching_cubes_cell_id[0]
+					, marching_cubes_cell_id[1]
+					, marching_cubes_cell_id[2]
+					, global_grid_cellid[0]
+					, global_grid_cellid[1]
+					, global_grid_cellid[2]
+					, vertex_count
+					, merge_counts[0]
+					, merge_counts[1]
+					, merge_counts[2]
+					, merge_counts[3]
+					, merge_counts[4]
+					, merge_counts[5]
+				);*/
 			}
 		}else{
 			//Just set value to 0 to be safe
@@ -1547,7 +1640,7 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 		if(threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0){
 			uint32_t abc = atomicAdd(removed_cells, local_removed_cells);
 			if(abc > 0){
-				printf("R %d %d %d # %d %d\n", static_cast<int>(blockIdx.x), static_cast<int>(blockIdx.y), static_cast<int>(blockIdx.z), static_cast<int>(local_removed_cells), static_cast<int>(abc));
+				//printf("R %d %d %d # %d %d\n", static_cast<int>(blockIdx.x), static_cast<int>(blockIdx.y), static_cast<int>(blockIdx.z), static_cast<int>(local_removed_cells), static_cast<int>(abc));
 			}
 		}
 	}while(local_removed_cells > 0);

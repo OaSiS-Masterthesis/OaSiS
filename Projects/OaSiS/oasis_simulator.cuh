@@ -2145,8 +2145,8 @@ struct OasisSimulator {
 				cu_dev.syncStream<streamIdx::COMPUTE>();
 				
 				//Extend to neighbour cells
-				bounding_box_min -= ivec3(std::max(static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE), 1), std::max(static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE), 1), std::max(static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE), 1));
-				bounding_box_max += ivec3(std::max(static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE), 1), std::max(static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE), 1), std::max(static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE), 1));
+				bounding_box_min -= ivec3(static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1, static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1, static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1);
+				bounding_box_max += ivec3(static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1, static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1, static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1);
 				
 				//NOTE: Plus 1 cause both min and max are inclusive
 				const ivec3 marching_cubes_grid_size = ((bounding_box_max - bounding_box_min + ivec3(1, 1, 1)) * MARCHING_CUBES_GRID_SCALING).cast<int>();
@@ -2210,8 +2210,6 @@ struct OasisSimulator {
 					check_cuda_errors(cudaMemcpyAsync(&removed_cells_host, removed_cells, sizeof(uint32_t), cudaMemcpyDefault, cu_dev.stream_compute()));
 				
 					cu_dev.syncStream<streamIdx::COMPUTE>();
-					
-					std::cout << "ABC " << removed_cells_host << std::endl;
 				}while(removed_cells_host > 0);
 				
 				//Initialize surface_triangle_count and surface_vertex_count with 0
@@ -2328,8 +2326,6 @@ struct OasisSimulator {
 				});
 				
 				cu_dev.syncStream<streamIdx::COMPUTE>();
-				
-				std::cout << surface_point_type_transfer_host_buffer.data() << " " << surface_transfer_device_buffer_ptr << " " << particle_count << std::endl;
 				
 				//Copy the data to the output model
 				check_cuda_errors(cudaMemcpyAsync(surface_point_type_transfer_host_buffer.data(), surface_transfer_device_buffer_ptr, sizeof(int) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
