@@ -5,7 +5,7 @@
 
 namespace mn {
 	
-constexpr float SURFACE_HALFSPACE_TEST_THRESHOLD = 0.0f;//FIXME:1e-7;//TODO: Maybe adjust threshold
+constexpr float SURFACE_HALFSPACE_TEST_THRESHOLD = 1e-7;//TODO: Maybe adjust threshold
 	
 //NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables, readability-identifier-naming) Check is buggy and reports variable errors for template arguments
 using SurfaceParticleBufferData  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, ParticleBinDomain, attrib_layout::SOA, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_>;//Point type (integer bytes as float, needs to be casted accordingly), normal, mean_curvature, gauss_curvature ; temporary: summed_area, normal, summed_angles, summed_laplacians

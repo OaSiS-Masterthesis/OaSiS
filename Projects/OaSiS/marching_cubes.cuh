@@ -9,7 +9,7 @@
 namespace mn {
 //NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic, readability-magic-numbers, readability-identifier-naming, misc-definitions-in-headers) CUDA does not yet support std::span; Common names for physical formulas; Cannot declare __global__ functions inline
 
-constexpr float MARCHING_CUBES_GRID_BLOCK_SPACING_INV = 2.0f;
+constexpr float MARCHING_CUBES_GRID_BLOCK_SPACING_INV = 30.0f;
 constexpr float MARCHING_CUBES_DX_INV = (MARCHING_CUBES_GRID_BLOCK_SPACING_INV * (1 << config::DOMAIN_BITS));
 constexpr float MARCHING_CUBES_DX = 1.f / MARCHING_CUBES_DX_INV;
 constexpr size_t MARCHING_CUBES_GRID_SCALING = const_ceil<size_t, float>(config::G_DX / MARCHING_CUBES_DX);
@@ -20,7 +20,7 @@ constexpr size_t MARCHING_CUBES_MAX_ACTIVE_BLOCK = config::G_MAX_ACTIVE_BLOCK * 
 constexpr size_t MARCHING_CUBES_INTERPOLATION_DEGREE = 1;//MARCHING_CUBES_GRID_SCALING;
 
 //Controls maximum distance from face == maximum distance from normal marching cubes vertex
-constexpr float MARCHING_CUBES_MAXIMUM_FACE_DISTANCE = 0.25f;//FIXME: Set to corrent value
+constexpr float MARCHING_CUBES_MAXIMUM_AXIS_DISTANCE = 0.5f;//FIXME: Set to corrent value (something lower than 0.25
 
 using MarchingCubesGridBufferDomain  = CompactDomain<int, MARCHING_CUBES_MAX_ACTIVE_BLOCK>;
 
@@ -177,9 +177,10 @@ __forceinline__ __device__ int marching_cubes_get_cell_minima(const Partition pr
 	
 	//Iterate through all particles of grid_cell
 	//NOTE: Neighbour cells needed cause particle are stored with (get_cell_id<2> - 1)
-	for(int grid_x = -2; grid_x <= -1; ++grid_x){
-		for(int grid_y = -2; grid_y <= -1; ++grid_y){
-			for(int grid_z = -2; grid_z <= -1; ++grid_z){
+	//NOTE: Also iterationg over neighbour cells
+	for(int grid_x = -3; grid_x <= 0; ++grid_x){
+		for(int grid_y = -3; grid_y <= 0; ++grid_y){
+			for(int grid_z = -3; grid_z <= 0; ++grid_z){
 				const ivec3 cellid_offset {grid_x, grid_y, grid_z};
 				const ivec3 current_cellid = global_grid_cellid + cellid_offset;
 				const int current_cellno = ((current_cellid[0] & config::G_BLOCKMASK) << (config::G_BLOCKBITS << 1)) | ((current_cellid[1] & config::G_BLOCKMASK) << config::G_BLOCKBITS) | (current_cellid[2] & config::G_BLOCKMASK);
@@ -216,7 +217,7 @@ __forceinline__ __device__ int marching_cubes_get_cell_minima(const Partition pr
 					const ivec3 global_base_index_0 = get_cell_id<0>(pos.data_arr(), {0.0f, 0.0f, 0.0f}, {MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV});
 					
 					//Get position relative to grid cell
-					const vec3 local_pos_0 = pos - global_base_index_0 * MARCHING_CUBES_DX;
+					const vec3 local_pos_0 = pos - marching_cubes_cell_id * MARCHING_CUBES_DX;
 					
 					//Calculate distance to box walls and store minima
 					const vec3 diffs[6]{
@@ -229,12 +230,12 @@ __forceinline__ __device__ int marching_cubes_get_cell_minima(const Partition pr
 					};
 					
 					const float distances_from_face[6] {
-						  vec3(1.0f, 0.0f, 0.0f).dot(diffs[0])
-						, vec3(1.0f, 0.0f, 0.0f).dot(diffs[1])
-						, vec3(0.0f, 1.0f, 0.0f).dot(diffs[2])
-						, vec3(0.0f, 1.0f, 0.0f).dot(diffs[3])
-						, vec3(0.0f, 0.0f, 1.0f).dot(diffs[4])
-						, vec3(0.0f, 0.0f, 1.0f).dot(diffs[5])
+						  std::abs(diffs[0][0])
+						, std::abs(diffs[1][0])
+						, std::abs(diffs[2][1])
+						, std::abs(diffs[3][1])
+						, std::abs(diffs[4][2])
+						, std::abs(diffs[5][2])
 					};
 					
 					const float distances_from_face_center[6] {
@@ -246,16 +247,16 @@ __forceinline__ __device__ int marching_cubes_get_cell_minima(const Partition pr
 						, std::sqrt(diffs[5][0] * diffs[5][0] + diffs[5][1] * diffs[5][1] + diffs[5][2] * diffs[5][2])
 					};
 					
-					const vec3 diffs_from_axes[3]{
-						  diffs[0] - distances_from_face[0] * vec3(1.0f, 0.0f, 0.0f)
-						, diffs[2] - distances_from_face[2] * vec3(0.0f, 1.0f, 0.0f)
-						, diffs[4] - distances_from_face[4] * vec3(0.0f, 0.0f, 1.0f)
+					const float distances_from_axes[3] {
+						  std::sqrt(diffs[0][1] * diffs[0][1] + diffs[0][2] * diffs[0][2])
+						, std::sqrt(diffs[2][0] * diffs[2][0] + diffs[2][2] * diffs[2][2])
+						, std::sqrt(diffs[4][0] * diffs[4][0] + diffs[4][1] * diffs[4][1])
 					};
 					
-					const float distances_from_axes[3] {
-						  std::sqrt(diffs_from_axes[0][0] * diffs_from_axes[0][0] + diffs_from_axes[0][1] * diffs_from_axes[0][1] + diffs_from_axes[0][2] * diffs_from_axes[0][2])
-						, std::sqrt(diffs_from_axes[1][0] * diffs_from_axes[1][0] + diffs_from_axes[1][1] * diffs_from_axes[1][1] + diffs_from_axes[1][2] * diffs_from_axes[1][2])
-						, std::sqrt(diffs_from_axes[2][0] * diffs_from_axes[2][0] + diffs_from_axes[2][1] * diffs_from_axes[2][1] + diffs_from_axes[2][2] * diffs_from_axes[2][2])
+					const ivec3 cell_offset{
+						  global_base_index_0[0] - marching_cubes_cell_id[0]
+						, global_base_index_0[1] - marching_cubes_cell_id[1]
+						, global_base_index_0[2] - marching_cubes_cell_id[2]
 					};
 					
 					const ivec3 absolute_cell_offset{
@@ -350,12 +351,12 @@ __forceinline__ __device__ int marching_cubes_get_cell_minima(const Partition pr
 								};
 								
 								const float distances_from_face_minimum[6] {
-									  vec3(1.0f, 0.0f, 0.0f).dot(diffs_minimum[0])
-									, vec3(1.0f, 0.0f, 0.0f).dot(diffs_minimum[1])
-									, vec3(0.0f, 1.0f, 0.0f).dot(diffs_minimum[2])
-									, vec3(0.0f, 1.0f, 0.0f).dot(diffs_minimum[3])
-									, vec3(0.0f, 0.0f, 1.0f).dot(diffs_minimum[4])
-									, vec3(0.0f, 0.0f, 1.0f).dot(diffs_minimum[5])
+									  std::abs(diffs_minimum[0][0])
+									, std::abs(diffs_minimum[1][0])
+									, std::abs(diffs_minimum[2][1])
+									, std::abs(diffs_minimum[3][1])
+									, std::abs(diffs_minimum[4][2])
+									, std::abs(diffs_minimum[5][2])
 								};
 								
 								const float distances_from_face_center_minimum[6] {
@@ -371,21 +372,26 @@ __forceinline__ __device__ int marching_cubes_get_cell_minima(const Partition pr
 									continue;
 								}
 								
-								//printf("O %d %d %d # %d # %.28f %.28f # %d %d\n", marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], dd, distances_from_face_center[dd], distances_from_face_center_minimum[dd], marching_cubes_convert_id<3, 2 + 3>(prev_partition, particle_id, (blockid_offset + 2).data_arr()), last_minimum);
 							}
 							
+							if(marching_cubes_cell_id[0] == 8 && marching_cubes_cell_id[1] == 7 && marching_cubes_cell_id[2] == 11){
+								printf("O %d %d %d # %d %d %d # %d # %.28f %.28f %.28f # %.28f %.28f # %d\n", marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], global_base_index_0[0], global_base_index_0[1], global_base_index_0[2], dd, distances_from_face_center[dd], distances_from_face[dd], distances_from_axes[dd / 2], MARCHING_CUBES_MAXIMUM_AXIS_DISTANCE * MARCHING_CUBES_DX, 0.5f * MARCHING_CUBES_DX, marching_cubes_convert_id<3, 2 + 3>(prev_partition, particle_id, (blockid_offset + 2).data_arr()));
+							}
 							
 							//Sort out minima that are too far away from face as this may cause degeneration (e.g. self-intersections)
-							if(distances_from_axes[dd / 2] > MARCHING_CUBES_MAXIMUM_FACE_DISTANCE * MARCHING_CUBES_DX){
+							if(distances_from_axes[dd / 2] > MARCHING_CUBES_MAXIMUM_AXIS_DISTANCE * MARCHING_CUBES_DX){
 								continue;
 							}
 							
-							//Sort out minima that are out of half
-							if(distances_from_face[dd] > 0.5f * MARCHING_CUBES_DX){
+							//Sort out minima that are out of half and minima that are not in adjacent cell of face
+							if(
+								   (distances_from_face[dd] >= 0.5f * MARCHING_CUBES_DX && absolute_cell_offset[dd / 2] > 0) 
+								|| (distances_from_face[dd] > 0.5f * MARCHING_CUBES_DX && absolute_cell_offset[dd / 2] == 0) 
+								|| absolute_cell_offset[((dd / 2 + 1) % 3)] > 0 
+								|| absolute_cell_offset[((dd / 2 + 2) % 3)] > 0
+							){
 								continue;
-							}
-							
-								
+							}	
 								
 							(*minima)[dd] = marching_cubes_convert_id<3, 2 + 3>(prev_partition, particle_id, (blockid_offset + 2).data_arr());
 						}
@@ -429,7 +435,7 @@ __global__ void marching_cubes_gen_vertices(const Partition prev_partition, cons
 	bool inside=(f0>thresh);
 	
 	if(inside){
-		//printf("A %d %d %d # %d %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), bounding_box_min[0] + static_cast<int>(x / MARCHING_CUBES_GRID_SCALING), bounding_box_min[1] + static_cast<int>(y / MARCHING_CUBES_GRID_SCALING), bounding_box_min[2] + static_cast<int>(z / MARCHING_CUBES_GRID_SCALING));
+		printf("A %d %d %d # %d %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), bounding_box_min[0] + static_cast<int>(x / MARCHING_CUBES_GRID_SCALING), bounding_box_min[1] + static_cast<int>(y / MARCHING_CUBES_GRID_SCALING), bounding_box_min[2] + static_cast<int>(z / MARCHING_CUBES_GRID_SCALING));
 	}
 	
 	if (x<grid_size[0]-1) {
@@ -462,7 +468,7 @@ __global__ void marching_cubes_gen_vertices(const Partition prev_partition, cons
 
 			marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x, y, z, grid_size)) = marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[minima_index], global_grid_blockid_offset.data_arr()) + 1;//index_x
 			
-			printf("X %d %d %d # %d %d %d # %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
+			printf("X %d %d %d # %d %d %d # %d %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, minima[minima_index], marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
 			
 			/*
 			marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x, y, z, grid_size))=vidx+1;//index_x
@@ -505,7 +511,7 @@ __global__ void marching_cubes_gen_vertices(const Partition prev_partition, cons
 			
 			marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y, z, grid_size)) = marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[minima_index], global_grid_blockid_offset.data_arr()) + 1;//index_y
 			
-			printf("Y %d %d %d # %d %d %d # %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
+			printf("Y %d %d %d # %d %d %d # %d %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, minima[minima_index], marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
 			
 			/*
 			marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y, z, grid_size))=vidx+1;
@@ -548,7 +554,7 @@ __global__ void marching_cubes_gen_vertices(const Partition prev_partition, cons
 			
 			marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z, grid_size)) = marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[minima_index], global_grid_blockid_offset.data_arr()) + 1;//index_z
 			
-			printf("Z %d %d %d # %d %d %d # %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
+			printf("Z %d %d %d # %d %d %d # %d %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, minima[minima_index], marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
 			
 			/*
 			marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z, grid_size))=vidx+1;//index_z
@@ -920,6 +926,7 @@ __global__ void marching_cubes_gen_faces(Partition prev_partition, ParticleBuffe
 				local_edges[9] = marching_cubes_fetch_edge_data(prev_partition, particle_buffer, particle_id_mapping_buffer, bounding_box_min_arr, marching_cubes_grid.val(_3, marching_cubes_calculate_offset(grid_x + 1, grid_y, grid_z, grid_size)), {grid_x + 1, grid_y, grid_z}, local_edges_ids[9]);
 				local_edges[10] = marching_cubes_fetch_edge_data(prev_partition, particle_buffer, particle_id_mapping_buffer, bounding_box_min_arr, marching_cubes_grid.val(_3, marching_cubes_calculate_offset(grid_x + 1, grid_y + 1, grid_z, grid_size)), {grid_x + 1, grid_y + 1, grid_z}, local_edges_ids[10]);
 				local_edges[11] = marching_cubes_fetch_edge_data(prev_partition, particle_buffer, particle_id_mapping_buffer, bounding_box_min_arr, marching_cubes_grid.val(_3, marching_cubes_calculate_offset(grid_x, grid_y + 1, grid_z, grid_size)), {grid_x, grid_y + 1, grid_z}, local_edges_ids[11]);
+				
 				uint32_t tricount=0;
 				const int8_t *triangles=triangle_table[mask];
 				for (;tricount<15;tricount+=3) if (triangles[tricount]<0) break;
@@ -1003,6 +1010,93 @@ __global__ void marching_cubes_gen_faces(Partition prev_partition, ParticleBuffe
 				(void) nullptr;//Nothing
 			}
 		}
+	}
+	
+	//Calculate center
+	vec3 center;
+	{
+		vec3 positions[6];
+		
+		if(x > 0){
+			std::pair<int, int> current_id;
+			if(marching_cubes_fetch_edge_data(prev_partition, particle_buffer, particle_id_mapping_buffer, bounding_box_min_arr, marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x - 1, y, z, grid_size)), {x - 1, y, z}, current_id) != 0){
+			
+				const auto source_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[current_id.first] + current_id.second / config::G_BIN_CAPACITY);
+				positions[0] = vec3(source_bin.val(_1, current_id.second % config::G_BIN_CAPACITY), source_bin.val(_2, current_id.second % config::G_BIN_CAPACITY), source_bin.val(_3, current_id.second % config::G_BIN_CAPACITY));
+			}else{
+				positions[0] = bounding_box_offset + (vec3{float(x) - 0.5f, float(y), float(z)} * MARCHING_CUBES_DX);
+			}
+		}else{
+			positions[0] = bounding_box_offset + (vec3{float(x) - 0.5f, float(y), float(z)} * MARCHING_CUBES_DX);
+		}
+		
+		{
+			std::pair<int, int> current_id;
+			if(marching_cubes_fetch_edge_data(prev_partition, particle_buffer, particle_id_mapping_buffer, bounding_box_min_arr, marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x, y, z, grid_size)), {x, y, z}, current_id) != 0){
+			
+				const auto source_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[current_id.first] + current_id.second / config::G_BIN_CAPACITY);
+				positions[1] = vec3(source_bin.val(_1, current_id.second % config::G_BIN_CAPACITY), source_bin.val(_2, current_id.second % config::G_BIN_CAPACITY), source_bin.val(_3, current_id.second % config::G_BIN_CAPACITY));
+			}else{
+				positions[1] = bounding_box_offset + (vec3{float(x) + 0.5f, float(y), float(z)} * MARCHING_CUBES_DX);
+			}
+		}
+		
+		if(y > 0){
+			std::pair<int, int> current_id;
+			if(marching_cubes_fetch_edge_data(prev_partition, particle_buffer, particle_id_mapping_buffer, bounding_box_min_arr, marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y - 1, z, grid_size)), {x, y - 1, z}, current_id) != 0){
+			
+				const auto source_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[current_id.first] + current_id.second / config::G_BIN_CAPACITY);
+				positions[2] = vec3(source_bin.val(_1, current_id.second % config::G_BIN_CAPACITY), source_bin.val(_2, current_id.second % config::G_BIN_CAPACITY), source_bin.val(_3, current_id.second % config::G_BIN_CAPACITY));
+			}else{
+				positions[2] = bounding_box_offset + (vec3{float(x), float(y) - 0.5f, float(z)} * MARCHING_CUBES_DX);
+			}
+		}else{
+			positions[2] = bounding_box_offset + (vec3{float(x), float(y) - 0.5f, float(z)} * MARCHING_CUBES_DX);
+		}
+		
+		{
+			std::pair<int, int> current_id;
+			if(marching_cubes_fetch_edge_data(prev_partition, particle_buffer, particle_id_mapping_buffer, bounding_box_min_arr, marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y, z, grid_size)), {x, y, z}, current_id) != 0){
+			
+				const auto source_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[current_id.first] + current_id.second / config::G_BIN_CAPACITY);
+				positions[3] = vec3(source_bin.val(_1, current_id.second % config::G_BIN_CAPACITY), source_bin.val(_2, current_id.second % config::G_BIN_CAPACITY), source_bin.val(_3, current_id.second % config::G_BIN_CAPACITY));
+			}else{
+				positions[3] = bounding_box_offset + (vec3{float(x), float(y) + 0.5f, float(z)} * MARCHING_CUBES_DX);
+			}
+		}
+		
+		if(z > 0){
+			std::pair<int, int> current_id;
+			if(marching_cubes_fetch_edge_data(prev_partition, particle_buffer, particle_id_mapping_buffer, bounding_box_min_arr, marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z - 1, grid_size)), {x, y, z - 1}, current_id) != 0){
+			
+				const auto source_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[current_id.first] + current_id.second / config::G_BIN_CAPACITY);
+				positions[4] = vec3(source_bin.val(_1, current_id.second % config::G_BIN_CAPACITY), source_bin.val(_2, current_id.second % config::G_BIN_CAPACITY), source_bin.val(_3, current_id.second % config::G_BIN_CAPACITY));
+			}else{
+				positions[4] = bounding_box_offset + (vec3{float(x), float(y), float(z) - 0.5f} * MARCHING_CUBES_DX);
+			}
+		}else{
+			positions[4] = bounding_box_offset + (vec3{float(x), float(y), float(z) - 0.5f} * MARCHING_CUBES_DX);
+		}
+		
+		{
+			std::pair<int, int> current_id;
+			if(marching_cubes_fetch_edge_data(prev_partition, particle_buffer, particle_id_mapping_buffer, bounding_box_min_arr, marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z, grid_size)), {x, y, z}, current_id) != 0){
+			
+				const auto source_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[current_id.first] + current_id.second / config::G_BIN_CAPACITY);
+				positions[5] = vec3(source_bin.val(_1, current_id.second % config::G_BIN_CAPACITY), source_bin.val(_2, current_id.second % config::G_BIN_CAPACITY), source_bin.val(_3, current_id.second % config::G_BIN_CAPACITY));
+			}else{
+				positions[5] = bounding_box_offset + (vec3{float(x), float(y), float(z) + 0.5f} * MARCHING_CUBES_DX);
+			}
+		}
+		
+		center = 
+			  positions[0] / 6.0f
+			+ positions[1] / 6.0f
+			+ positions[2] / 6.0f
+			+ positions[3] / 6.0f
+			+ positions[4] / 6.0f
+			+ positions[5] / 6.0f
+		;
 	}
 	
 	for(size_t triangle_index = 0; triangle_index < cell_adjacent_triangles_count; ++triangle_index){
@@ -1202,7 +1296,6 @@ __global__ void marching_cubes_gen_faces(Partition prev_partition, ParticleBuffe
 									
 									outer = true;
 								}else{ //Draw line between center of cell and particle and count amount of intersections
-									const vec3 center = bounding_box_offset + (vec3{float(x) + 0.5f, float(y) + 0.5f, float(z) + 0.5f} * MARCHING_CUBES_DX);
 									const vec3 difference = center - particle_position;
 									
 									/*
@@ -1444,6 +1537,21 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 			
 			marching_cubes_get_cell_minima(prev_partition, particle_buffer, bounding_box_offset_arr, global_grid_blockid.data_arr(), global_grid_cellid.data_arr(), marching_cubes_cell_id.data_arr(), reinterpret_cast<std::array<int, 6>*>(&minima));
 			
+			printf("P %d %d %d # %d %d %d # %d %d %d %d %d %d\n"
+				, marching_cubes_cell_id[0]
+				, marching_cubes_cell_id[1]
+				, marching_cubes_cell_id[2]
+				, global_grid_cellid[0]
+				, global_grid_cellid[1]
+				, global_grid_cellid[2]
+				, minima[0]
+				, minima[1]
+				, minima[2]
+				, minima[3]
+				, minima[4]
+				, minima[5]
+			);
+			
 			const vec3 normals[6] {
 				  vec3(1.0f, 0.0f, 0.0f) //xx
 				, vec3(sqrt(0.5f), sqrt(0.5f), 0.0f) //xy
@@ -1514,6 +1622,12 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 				){
 					const bool neighbour_inside_i = (atomicAdd(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(neighbour_marching_cubes_cell_id_i[0], neighbour_marching_cubes_cell_id_i[1], neighbour_marching_cubes_cell_id_i[2], grid_size)), 0.0f) > thresh);
 					if(inside != neighbour_inside_i){
+						//If one of the minima does not exist but is needed the cell is invalid, so we set the vertex count to 0
+						if(minima[i] == -1){
+							vertex_count = 0;
+							break;
+						}
+						
 						for(int j = i + 1; j < 6; ++j) {
 							const ivec3 neighbour_marching_cubes_cell_id_j = marching_cubes_cell_id + offsets[j];
 							if(
@@ -1522,12 +1636,6 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 							){
 								const bool neighbour_inside_j = (atomicAdd(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(neighbour_marching_cubes_cell_id_j[0], neighbour_marching_cubes_cell_id_j[1], neighbour_marching_cubes_cell_id_j[2], grid_size)), 0.0f) > thresh);
 								if(inside != neighbour_inside_j){
-									
-									//If one of the minima does not exist but is needed the cell is invalid, so we set the vertex count to 0
-									if(minima[i] == -1 || minima[j] == -1){
-										vertex_count = 0;
-										break;
-									}
 									
 									const bool axes[3] {
 										  (i < 2) || (j < 2)
@@ -1565,7 +1673,7 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 										}
 										merge_participant[i] = true;
 										merge_participant[j] = true;
-										/*printf("A %d %d %d # %d %d %d # %d # %d %d %d %d %d %d # %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n"
+										printf("A %d %d %d # %d %d %d # %d # %d %d %d %d %d %d # %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n"
 											, marching_cubes_cell_id[0]
 											, marching_cubes_cell_id[1]
 											, marching_cubes_cell_id[2]
@@ -1586,7 +1694,7 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 											, normal[0]
 											, normal[1]
 											, normal[2]
-										);*/
+										);
 									}
 								}
 							}
@@ -1611,7 +1719,7 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 					value = marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size));
 				}while(value != atomic_cas(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size)), value, 0.0f));
 				atomicAdd(&local_removed_cells, 1);
-				/*printf("S %d %d %d # %d %d %d # %d # %d %d %d %d %d %d\n"
+				printf("S %d %d %d # %d %d %d # %d # %d %d %d %d %d %d\n"
 					, marching_cubes_cell_id[0]
 					, marching_cubes_cell_id[1]
 					, marching_cubes_cell_id[2]
@@ -1625,7 +1733,7 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 					, merge_counts[3]
 					, merge_counts[4]
 					, merge_counts[5]
-				);*/
+				);
 			}
 		}else{
 			//Just set value to 0 to be safe
