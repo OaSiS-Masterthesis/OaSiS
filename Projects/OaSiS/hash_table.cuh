@@ -233,7 +233,7 @@ struct Partition
 			, (other_index_table_is_locked ? nullptr : other.index_table_virtual)
 		);
 	}
-	//FIXME: passing kjey_t here might cause problems because cuda is buggy
+	//FIXME: passing key_t here might cause problems because cuda is buggy
 	__forceinline__ __device__ value_t insert(key_t key) noexcept {
 		value_t tag = atomicCAS(&this->index(key), sentinel_v, 0);
 		if(tag == sentinel_v) {

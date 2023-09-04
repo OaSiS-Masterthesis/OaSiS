@@ -170,8 +170,9 @@ struct OasisSimulator {
 	std::vector<ParticleArray> particles								= {};
 	std::vector<SurfaceParticleBuffer> surface_particle_buffers = {};
 	//AlphaShapesGridBuffer alpha_shapes_grid_buffer;
+	size_t global_marching_cubes_block_count;
 	MarchingCubesGridBuffer marching_cubes_grid_buffer;
-	float* surface_vertex_buffer;
+	//float* surface_vertex_buffer;
 	uint32_t* surface_triangle_buffer;
 	uint32_t* surface_vertex_count;
 	uint32_t* surface_triangle_count;
@@ -249,11 +250,12 @@ struct OasisSimulator {
 		, partition_block_count()
 		, neighbor_block_count()
 		, exterior_block_count()
-		, surface_vertex_buffer(nullptr)
+		//, surface_vertex_buffer(nullptr)
 		, surface_triangle_buffer(nullptr)
 		, max_surface_vertex_count(0)
 		, max_surface_triangle_count(0)
 		, reusable_allocator_surface_transfer(&managed_memory_allocator, gpu)
+		, global_marching_cubes_block_count(0)
 		, marching_cubes_grid_buffer(managed_memory_allocator, &managed_memory)
 		//, alpha_shapes_grid_buffer(managed_memory_allocator, &managed_memory)
 		//, temporary_grid_buffer(managed_memory_allocator)		
@@ -826,6 +828,207 @@ struct OasisSimulator {
 					managed_memory.release(alpha_shapes_grid_buffer.release());
 					
 					cu_dev.syncStream<streamIdx::COMPUTE>();*/
+					
+					int* d_particle_count = static_cast<int*>(cu_dev.borrow(sizeof(int)));
+					
+					unsigned int* particle_id_mapping_buffer = tmps.particle_id_mapping_buffer;
+			
+					void* surface_vertex_count_ptr = surface_vertex_count;
+					void* surface_triangle_count_ptr = surface_triangle_count;
+					
+					managed_memory.acquire<MemoryType::DEVICE>(
+						  reinterpret_cast<void**>(&surface_vertex_count_ptr)
+						, reinterpret_cast<void**>(&surface_triangle_count_ptr)
+						, reinterpret_cast<void**>(&particle_id_mapping_buffer)
+					);
+						
+					//Marching Cubes
+					for(int i = 0; i < get_model_count(); ++i) {
+						match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &i](auto& particle_buffer) {
+							auto& prev_particle_buffer = get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[rollid][i]);
+							
+							prev_particle_buffer.cellbuckets = prev_particle_buffer.cellbuckets_virtual;
+							prev_particle_buffer.bin_offsets = prev_particle_buffer.bin_offsets_virtual;
+							prev_particle_buffer.cell_particle_counts = prev_particle_buffer.cell_particle_counts_virtual;
+							particle_buffer.particle_bucket_sizes = particle_buffer.particle_bucket_sizes_virtual;
+							particle_buffer.blockbuckets = particle_buffer.blockbuckets_virtual;
+							managed_memory.acquire<MemoryType::DEVICE>(
+								  prev_particle_buffer.acquire()
+								//, grid_blocks[0][i].acquire()
+								, reinterpret_cast<void**>(&prev_particle_buffer.cellbuckets)
+								, reinterpret_cast<void**>(&prev_particle_buffer.bin_offsets)
+								, reinterpret_cast<void**>(&prev_particle_buffer.cell_particle_counts)
+								, reinterpret_cast<void**>(&particle_buffer.particle_bucket_sizes)
+								, reinterpret_cast<void**>(&particle_buffer.blockbuckets)
+							);
+						});
+						
+						//Calculate bounding box
+						std::array<int, 3>* bounding_box_min_device = static_cast<std::array<int, 3>*>(cu_dev.borrow(3 * sizeof(int)));
+						std::array<int, 3>* bounding_box_max_device = static_cast<std::array<int, 3>*>(cu_dev.borrow(3 * sizeof(int)));
+						
+						//Init with max/min
+						//NOTE: cannot use std::numeric_limits<int>::max() cause that sets value to -1. Maybe use thrust to fill arrays?
+						thrust::fill(thrust::device, reinterpret_cast<int*>(bounding_box_min_device), reinterpret_cast<int*>(bounding_box_min_device) + 3, std::numeric_limits<int>::max());
+						thrust::fill(thrust::device, reinterpret_cast<int*>(bounding_box_max_device), reinterpret_cast<int*>(bounding_box_max_device) + 3, std::numeric_limits<int>::min());
+						
+						cu_dev.syncStream<streamIdx::COMPUTE>();
+						
+						//match(particle_bins[rollid][i])([this, &cu_dev, &i, &bounding_box_min_device, &bounding_box_max_device](const auto& particle_buffer) {
+						//	//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+						//	cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, get_bounding_box, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), grid_blocks[0][i], bounding_box_min_device, bounding_box_max_device);
+						//});
+						match(particle_bins[rollid][i])([this, &cu_dev, &i, &bounding_box_min_device, &bounding_box_max_device](const auto& particle_buffer) {
+							//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+							cu_dev.compute_launch({partition_block_count, config::G_BLOCKVOLUME}, get_bounding_box, partitions[rollid], particle_buffer, bounding_box_min_device, bounding_box_max_device);
+						});
+						//cu_dev.compute_launch({partition_block_count, config::G_BLOCKVOLUME}, get_bounding_box, partition_block_count, partitions[rollid], grid_blocks[0][i], bounding_box_min_device, bounding_box_max_device);
+					
+						ivec3 bounding_box_min;
+						ivec3 bounding_box_max;
+						check_cuda_errors(cudaMemcpyAsync(bounding_box_min.data(), bounding_box_min_device, 3 * sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute()));
+						check_cuda_errors(cudaMemcpyAsync(bounding_box_max.data(), bounding_box_max_device, 3 * sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute()));
+						
+						cu_dev.syncStream<streamIdx::COMPUTE>();
+						
+						//Only perceed if bounds are valid
+						if(
+							   (bounding_box_min[0] != std::numeric_limits<int>::max())
+							&& (bounding_box_min[1] != std::numeric_limits<int>::max())
+							&& (bounding_box_min[2] != std::numeric_limits<int>::max())
+							&& (bounding_box_max[0] != std::numeric_limits<int>::min())
+							&& (bounding_box_max[1] != std::numeric_limits<int>::min())
+							&& (bounding_box_max[2] != std::numeric_limits<int>::min())
+						){
+							//Init particle count with 0
+							check_cuda_errors(cudaMemsetAsync(d_particle_count, 0, sizeof(int), cu_dev.stream_compute()));
+							
+							//Generate particle_id_mapping
+							match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count, &particle_id_mapping_buffer](const auto& particle_buffer) {
+								//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+								cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, generate_particle_id_mapping, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), particle_id_mapping_buffer, d_particle_count);
+							});
+							
+							cu_dev.syncStream<streamIdx::COMPUTE>();
+							
+							//Extend to neighbour cells
+							bounding_box_min -= ivec3(static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1, static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1, static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1);
+							bounding_box_max += ivec3(static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1, static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1, static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1);
+							
+							//NOTE: Plus 1 cause both min and max are inclusive
+							const ivec3 marching_cubes_grid_size = ((bounding_box_max - bounding_box_min + ivec3(1, 1, 1)) * MARCHING_CUBES_GRID_SCALING).cast<int>();
+							const vec3 bounding_box_offset = (vec3(grid_blocks[0][i].get_offset()[0], grid_blocks[0][i].get_offset()[1], grid_blocks[0][i].get_offset()[2]) * config::G_BLOCKSIZE + bounding_box_min) * config::G_DX;
+							const size_t marching_cubes_block_count = marching_cubes_grid_size[0] * marching_cubes_grid_size[1] * marching_cubes_grid_size[2];
+							
+							LaunchConfig marching_cubes_launch_config(0, 0);
+							marching_cubes_launch_config.dg = dim3(((marching_cubes_grid_size[0] + 4 - 1) / 4), ((marching_cubes_grid_size[1] + 4 - 1) / 4), ((marching_cubes_grid_size[2] + 4 - 1) / 4));
+							marching_cubes_launch_config.db = dim3(4, 4, 4);
+							
+							//std::cout << "Min: " << bounding_box_min[0] << " " << bounding_box_min[1] << " " << bounding_box_min[2] << std::endl;
+							//std::cout << "Max: " << bounding_box_max[0] << " " << bounding_box_max[1] << " " << bounding_box_max[2] << std::endl;
+							//std::cout << "Size: " << marching_cubes_grid_size[0] << " " << marching_cubes_grid_size[1] << " " << marching_cubes_grid_size[2] << std::endl;
+							//std::cout << "Offset: " << bounding_box_offset[0] << " " << bounding_box_offset[1] << " " << bounding_box_offset[2] << std::endl;
+							
+							//Resize and clear grid
+							if(global_marching_cubes_block_count < marching_cubes_block_count){
+								if(global_marching_cubes_block_count > 0){
+									global_marching_cubes_block_count = std::max(marching_cubes_block_count / global_marching_cubes_block_count, static_cast<size_t>(2)) * global_marching_cubes_block_count;
+								}else{
+									global_marching_cubes_block_count = marching_cubes_block_count;
+								}
+								
+								marching_cubes_grid_buffer.resize(managed_memory_allocator, global_marching_cubes_block_count);
+							}
+							marching_cubes_grid_buffer.reset(marching_cubes_block_count, cu_dev);
+							
+							//Resize particle buffers if we increased the size of active bins
+							if(checked_bin_counts[i] > 0) {
+								surface_particle_buffers[i].resize(managed_memory_allocator, cur_num_active_bins[i]);
+							}
+							
+							cu_dev.syncStream<streamIdx::COMPUTE>();
+							
+							managed_memory.acquire<MemoryType::DEVICE>(
+									marching_cubes_grid_buffer.acquire()
+								  , surface_particle_buffers[i].acquire()
+							);
+							
+							//Clear particle buffer
+							match(particle_bins[rollid][i])([this, &cu_dev, &i](const auto& particle_buffer) {
+								cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, marching_cubes_clear_surface_particle_buffer, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), partitions[(rollid + 1) % BIN_COUNT], surface_particle_buffers[i]);
+							});
+							
+							//Calculate densities
+							match(particle_bins[rollid][i])([this, &cu_dev, &i, &bounding_box_offset, &marching_cubes_grid_size](const auto& particle_buffer) {
+								//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+								cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, marching_cubes_calculate_density, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), marching_cubes_grid_buffer, bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr());
+							});
+							
+							//TODO: Do this before setting grid size to minimize it
+							//Sort out invalid cells
+							uint32_t* removed_cells = static_cast<uint32_t*>(cu_dev.borrow(sizeof(uint32_t)));
+						
+							uint32_t removed_cells_host;
+							do{
+								//Init removed_particles with 0
+								check_cuda_errors(cudaMemsetAsync(removed_cells, 0, sizeof(uint32_t), cu_dev.stream_compute()));
+								
+								cu_dev.syncStream<streamIdx::COMPUTE>();
+								
+								match(particle_bins[rollid][i])([this, &cu_dev, &marching_cubes_launch_config, &bounding_box_min, &bounding_box_offset, &marching_cubes_grid_size, &removed_cells](const auto& particle_buffer) {
+									const float density_threshold = particle_buffer.rho * config::MARCHING_CUBES_DENSITY_THRESHOLD_FACTOR;
+									
+									//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+									cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_sort_out_invalid_cells, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, density_threshold, marching_cubes_grid_buffer, bounding_box_min.data_arr(), bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr(), removed_cells);
+								});
+								
+								check_cuda_errors(cudaMemcpyAsync(&removed_cells_host, removed_cells, sizeof(uint32_t), cudaMemcpyDefault, cu_dev.stream_compute()));
+							
+								cu_dev.syncStream<streamIdx::COMPUTE>();
+							}while(removed_cells_host > 0);
+							
+							//Initialize surface_triangle_count and surface_vertex_count with 0
+							check_cuda_errors(cudaMemsetAsync(surface_vertex_count_ptr, 0, sizeof(uint32_t), cu_dev.stream_compute()));
+							check_cuda_errors(cudaMemsetAsync(surface_triangle_count_ptr, 0, sizeof(uint32_t), cu_dev.stream_compute()));
+								
+							cu_dev.syncStream<streamIdx::COMPUTE>();
+				
+							//Get counts
+							match(particle_bins[rollid][i])([this, &cu_dev, &i, &marching_cubes_launch_config, &bounding_box_min, &bounding_box_offset, &marching_cubes_grid_size, &surface_vertex_count_ptr, &surface_triangle_count_ptr, &particle_id_mapping_buffer](const auto& particle_buffer) {
+								const float density_threshold = particle_buffer.rho * config::MARCHING_CUBES_DENSITY_THRESHOLD_FACTOR;
+								
+								cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_gen_vertices, partitions[(rollid + 1) % BIN_COUNT], particle_buffer, bounding_box_min.data_arr(), bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr(), density_threshold, marching_cubes_grid_buffer, static_cast<uint32_t*>(surface_vertex_count_ptr));
+								cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_gen_faces, partitions[(rollid + 1) % BIN_COUNT], particle_buffer, particle_id_mapping_buffer, surface_particle_buffers[i], bounding_box_min.data_arr(), bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr(), density_threshold, marching_cubes_grid_buffer, static_cast<uint32_t*>(nullptr), static_cast<uint32_t*>(surface_triangle_count_ptr));
+							});
+							
+							cu_dev.syncStream<streamIdx::COMPUTE>();
+								
+							managed_memory.release(
+								  //grid_blocks[0][i].release()
+								  marching_cubes_grid_buffer.release()
+							);
+						}
+						
+						match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &i](auto& particle_buffer) {
+							auto& prev_particle_buffer = get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[rollid][i]);
+							
+							managed_memory.release(
+								  prev_particle_buffer.release()
+								//, grid_blocks[0][i].release()
+								, prev_particle_buffer.cellbuckets_virtual
+								, prev_particle_buffer.bin_offsets_virtual
+								, prev_particle_buffer.cell_particle_counts_virtual
+								, particle_buffer.particle_bucket_sizes_virtual
+								, particle_buffer.blockbuckets_virtual
+							);
+						});
+					}
+					
+					managed_memory.release(
+						  surface_vertex_count
+						, surface_triangle_count
+						, tmps.particle_id_mapping_buffer
+					);
 					
 					timer.tock(fmt::format("GPU[{}] frame {} step {} surface_reconstruction", gpuid, cur_frame, cur_step));
 					
@@ -1938,11 +2141,18 @@ struct OasisSimulator {
 					}
 					timer.tock(fmt::format("GPU[{}] frame {} step {} build_partition_for_particles", gpuid, cur_frame, cur_step));
 				}
+				
+				{
+					auto& cu_dev = Cuda::ref_cuda_context(gpuid);
+					cu_dev.reset_mem();
+				}
+				
 				rollid = static_cast<char>((rollid + 1) % BIN_COUNT);
 				dt	   = next_dt;
 			}
 			IO::flush();
 			output_model();
+			
 			fmt::print(
 				fmt::emphasis::bold | fg(fmt::color::red),
 				"-----------------------------------------------------------"
@@ -2037,7 +2247,6 @@ struct OasisSimulator {
 			fmt::print(fg(fmt::color::red), "total number of particles {}\n", particle_count);
 			
 			//Generate particle_id_mapping
-			
 			match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count, &particle_id_mapping_buffer](const auto& particle_buffer) {
 				//partition_block_count; G_PARTICLE_BATCH_CAPACITY
 				cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, generate_particle_id_mapping, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), particle_id_mapping_buffer, d_particle_count);
@@ -2144,164 +2353,180 @@ struct OasisSimulator {
 				
 				cu_dev.syncStream<streamIdx::COMPUTE>();
 				
-				//Extend to neighbour cells
-				bounding_box_min -= ivec3(static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1, static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1, static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1);
-				bounding_box_max += ivec3(static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1, static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1, static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1);
-				
-				//NOTE: Plus 1 cause both min and max are inclusive
-				const ivec3 marching_cubes_grid_size = ((bounding_box_max - bounding_box_min + ivec3(1, 1, 1)) * MARCHING_CUBES_GRID_SCALING).cast<int>();
-				const vec3 bounding_box_offset = (vec3(grid_blocks[0][i].get_offset()[0], grid_blocks[0][i].get_offset()[1], grid_blocks[0][i].get_offset()[2]) * config::G_BLOCKSIZE + bounding_box_min) * config::G_DX;
-				const size_t marching_cubes_block_count = marching_cubes_grid_size[0] * marching_cubes_grid_size[1] * marching_cubes_grid_size[2];
-				
-				LaunchConfig marching_cubes_launch_config(0, 0);
-				marching_cubes_launch_config.dg = dim3(((marching_cubes_grid_size[0] + 4 - 1) / 4), ((marching_cubes_grid_size[1] + 4 - 1) / 4), ((marching_cubes_grid_size[2] + 4 - 1) / 4));
-				marching_cubes_launch_config.db = dim3(4, 4, 4);
-				
-				std::cout << "Min: " << bounding_box_min[0] << " " << bounding_box_min[1] << " " << bounding_box_min[2] << std::endl;
-				std::cout << "Max: " << bounding_box_max[0] << " " << bounding_box_max[1] << " " << bounding_box_max[2] << std::endl;
-				std::cout << "Size: " << marching_cubes_grid_size[0] << " " << marching_cubes_grid_size[1] << " " << marching_cubes_grid_size[2] << std::endl;
-				std::cout << "Offset: " << bounding_box_offset[0] << " " << bounding_box_offset[1] << " " << bounding_box_offset[2] << std::endl;
-				
-				//Resize and clear grid
-				marching_cubes_grid_buffer.resize(managed_memory_allocator, marching_cubes_block_count);
-				marching_cubes_grid_buffer.reset(marching_cubes_block_count, cu_dev);
-				
-				//Resize particle buffers if we increased the size of active bins
-				if(checked_bin_counts[i] > 0) {
-					surface_particle_buffers[i].resize(managed_memory_allocator, cur_num_active_bins[i]);
-				}
-				
-				cu_dev.syncStream<streamIdx::COMPUTE>();
-				
-				managed_memory.acquire<MemoryType::DEVICE>(
-					    marching_cubes_grid_buffer.acquire()
-					  , surface_particle_buffers[i].acquire()
-				);
-				
-				//Clear particle buffer
-				match(particle_bins[rollid][i])([this, &cu_dev, &i](const auto& particle_buffer) {
-					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, marching_cubes_clear_surface_particle_buffer, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), partitions[(rollid + 1) % BIN_COUNT], surface_particle_buffers[i]);
-				});
-				
-				//Calculate densities
-				match(particle_bins[rollid][i])([this, &cu_dev, &i, &bounding_box_offset, &marching_cubes_grid_size](const auto& particle_buffer) {
-					//partition_block_count; G_PARTICLE_BATCH_CAPACITY
-					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, marching_cubes_calculate_density, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), marching_cubes_grid_buffer, bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr());
-				});
-				
-				//TODO: Do this before setting grid size to minimize it
-				//Sort out invalid cells
-				uint32_t* removed_cells = static_cast<uint32_t*>(cu_dev.borrow(sizeof(uint32_t)));
-			
-				uint32_t removed_cells_host;
-				do{
-					//Init removed_particles with 0
-					check_cuda_errors(cudaMemsetAsync(removed_cells, 0, sizeof(uint32_t), cu_dev.stream_compute()));
+				//Only perceed if bounds are valid
+				if(
+					   (bounding_box_min[0] != std::numeric_limits<int>::max())
+					&& (bounding_box_min[1] != std::numeric_limits<int>::max())
+					&& (bounding_box_min[2] != std::numeric_limits<int>::max())
+					&& (bounding_box_max[0] != std::numeric_limits<int>::min())
+					&& (bounding_box_max[1] != std::numeric_limits<int>::min())
+					&& (bounding_box_max[2] != std::numeric_limits<int>::min())
+				){
+					//Extend to neighbour cells
+					bounding_box_min -= ivec3(static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1, static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1, static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1);
+					bounding_box_max += ivec3(static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1, static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1, static_cast<int>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1);
 					
-					cu_dev.syncStream<streamIdx::COMPUTE>();
+					//NOTE: Plus 1 cause both min and max are inclusive
+					const ivec3 marching_cubes_grid_size = ((bounding_box_max - bounding_box_min + ivec3(1, 1, 1)) * MARCHING_CUBES_GRID_SCALING).cast<int>();
+					const vec3 bounding_box_offset = (vec3(grid_blocks[0][i].get_offset()[0], grid_blocks[0][i].get_offset()[1], grid_blocks[0][i].get_offset()[2]) * config::G_BLOCKSIZE + bounding_box_min) * config::G_DX;
+					const size_t marching_cubes_block_count = marching_cubes_grid_size[0] * marching_cubes_grid_size[1] * marching_cubes_grid_size[2];
 					
-					match(particle_bins[rollid][i])([this, &cu_dev, &marching_cubes_launch_config, &bounding_box_min, &bounding_box_offset, &marching_cubes_grid_size, &removed_cells](const auto& particle_buffer) {
-						const float density_threshold = particle_buffer.rho * config::MARCHING_CUBES_DENSITY_THRESHOLD_FACTOR;
+					LaunchConfig marching_cubes_launch_config(0, 0);
+					marching_cubes_launch_config.dg = dim3(((marching_cubes_grid_size[0] + 4 - 1) / 4), ((marching_cubes_grid_size[1] + 4 - 1) / 4), ((marching_cubes_grid_size[2] + 4 - 1) / 4));
+					marching_cubes_launch_config.db = dim3(4, 4, 4);
+					
+					//std::cout << "Min: " << bounding_box_min[0] << " " << bounding_box_min[1] << " " << bounding_box_min[2] << std::endl;
+					//std::cout << "Max: " << bounding_box_max[0] << " " << bounding_box_max[1] << " " << bounding_box_max[2] << std::endl;
+					//std::cout << "Size: " << marching_cubes_grid_size[0] << " " << marching_cubes_grid_size[1] << " " << marching_cubes_grid_size[2] << std::endl;
+					//std::cout << "Offset: " << bounding_box_offset[0] << " " << bounding_box_offset[1] << " " << bounding_box_offset[2] << std::endl;
+					
+					//Resize and clear grid
+					if(global_marching_cubes_block_count < marching_cubes_block_count){
+						if(global_marching_cubes_block_count > 0){
+							global_marching_cubes_block_count = std::max(marching_cubes_block_count / global_marching_cubes_block_count, static_cast<size_t>(2)) * global_marching_cubes_block_count;
+						}else{
+							global_marching_cubes_block_count = marching_cubes_block_count;
+						}
 						
-						//partition_block_count; G_PARTICLE_BATCH_CAPACITY
-						cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_sort_out_invalid_cells, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, density_threshold, marching_cubes_grid_buffer, bounding_box_min.data_arr(), bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr(), removed_cells);
-					});
+						marching_cubes_grid_buffer.resize(managed_memory_allocator, global_marching_cubes_block_count);
+					}
+					marching_cubes_grid_buffer.reset(marching_cubes_block_count, cu_dev);
 					
-					check_cuda_errors(cudaMemcpyAsync(&removed_cells_host, removed_cells, sizeof(uint32_t), cudaMemcpyDefault, cu_dev.stream_compute()));
-				
+					//Resize particle buffers if we increased the size of active bins
+					if(checked_bin_counts[i] > 0) {
+						surface_particle_buffers[i].resize(managed_memory_allocator, cur_num_active_bins[i]);
+					}
+					
 					cu_dev.syncStream<streamIdx::COMPUTE>();
-				}while(removed_cells_host > 0);
-				
-				//Initialize surface_triangle_count and surface_vertex_count with 0
-				check_cuda_errors(cudaMemsetAsync(surface_vertex_count_ptr, 0, sizeof(uint32_t), cu_dev.stream_compute()));
-				check_cuda_errors(cudaMemsetAsync(surface_triangle_count_ptr, 0, sizeof(uint32_t), cu_dev.stream_compute()));
-					
-				cu_dev.syncStream<streamIdx::COMPUTE>();
-	
-				//Get counts
-				match(particle_bins[rollid][i])([this, &cu_dev, &i, &marching_cubes_launch_config, &bounding_box_min, &bounding_box_offset, &marching_cubes_grid_size, &surface_vertex_count_ptr, &surface_triangle_count_ptr, &particle_id_mapping_buffer](const auto& particle_buffer) {
-					const float density_threshold = particle_buffer.rho * config::MARCHING_CUBES_DENSITY_THRESHOLD_FACTOR;
-					
-					cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_gen_vertices, partitions[(rollid + 1) % BIN_COUNT], particle_buffer, bounding_box_min.data_arr(), bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr(), density_threshold, marching_cubes_grid_buffer, static_cast<uint32_t*>(surface_vertex_count_ptr));
-					cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_gen_faces, partitions[(rollid + 1) % BIN_COUNT], particle_buffer, particle_id_mapping_buffer, surface_particle_buffers[i], bounding_box_min.data_arr(), bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr(), density_threshold, marching_cubes_grid_buffer, static_cast<uint32_t*>(nullptr), static_cast<uint32_t*>(surface_triangle_count_ptr));
-				});
-				
-				cu_dev.syncStream<streamIdx::COMPUTE>();
-				
-				//Adjust buffers sizes if necessary
-				uint32_t surface_vertex_count_host;
-				uint32_t surface_triangle_count_host;
-				check_cuda_errors(cudaMemcpyAsync(&surface_vertex_count_host, surface_vertex_count_ptr, sizeof(uint32_t), cudaMemcpyDefault, cu_dev.stream_compute()));
-				check_cuda_errors(cudaMemcpyAsync(&surface_triangle_count_host, surface_triangle_count_ptr, sizeof(uint32_t), cudaMemcpyDefault, cu_dev.stream_compute()));
-				
-				cu_dev.syncStream<streamIdx::COMPUTE>();
-				
-				surface_triangle_count_host /= 3;
-				
-				//std::cout << surface_vertex_count_host << " " << surface_triangle_count_host << std::endl;
-				if(surface_triangle_count_host > 0){
-					if(max_surface_vertex_count < surface_vertex_count_host){
-						//managed_memory_allocator.deallocate(surface_vertex_buffer, sizeof(float) * config::NUM_DIMENSIONS * max_surface_vertex_count);
-						//surface_vertex_buffer = reinterpret_cast<float*>(managed_memory_allocator.allocate(sizeof(float) * config::NUM_DIMENSIONS * surface_vertex_count_host));
-						max_surface_vertex_count = surface_vertex_count_host;
-					}
-					
-					if(max_surface_triangle_count < surface_triangle_count_host){
-						managed_memory_allocator.deallocate(surface_triangle_buffer, sizeof(uint32_t) * 3 * max_surface_triangle_count);
-						surface_triangle_buffer = reinterpret_cast<uint32_t*>(managed_memory_allocator.allocate(sizeof(uint32_t) * 3 * surface_triangle_count_host));
-						max_surface_triangle_count = surface_triangle_count_host;
-					}
-					
-					//surface_vertex_transfer_host_buffer.resize(surface_vertex_count_host);
-					surface_triangle_transfer_host_buffer.resize(surface_triangle_count_host);
-					
-					void* surface_vertex_buffer_ptr = surface_vertex_buffer;
-					void* surface_triangle_buffer_ptr = surface_triangle_buffer;
 					
 					managed_memory.acquire<MemoryType::DEVICE>(
-						  reinterpret_cast<void**>(&surface_vertex_buffer_ptr)
-						, reinterpret_cast<void**>(&surface_triangle_buffer_ptr)
+							marching_cubes_grid_buffer.acquire()
+						  , surface_particle_buffers[i].acquire()
 					);
 					
-					//Clear buffers
-					//check_cuda_errors(cudaMemsetAsync(surface_vertex_buffer_ptr, 0.0f, sizeof(float) * config::NUM_DIMENSIONS * surface_vertex_count_host, cu_dev.stream_compute()));
-					check_cuda_errors(cudaMemsetAsync(surface_triangle_buffer_ptr, 0, sizeof(uint32_t) * 3 * surface_triangle_count_host, cu_dev.stream_compute()));
+					//Clear particle buffer
+					match(particle_bins[rollid][i])([this, &cu_dev, &i](const auto& particle_buffer) {
+						cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, marching_cubes_clear_surface_particle_buffer, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), partitions[(rollid + 1) % BIN_COUNT], surface_particle_buffers[i]);
+					});
 					
-					//Reset counts to 0
-					check_cuda_errors(cudaMemsetAsync(surface_triangle_count_ptr, 0, sizeof(uint32_t), cu_dev.stream_compute()));
+					//Calculate densities
+					match(particle_bins[rollid][i])([this, &cu_dev, &i, &bounding_box_offset, &marching_cubes_grid_size](const auto& particle_buffer) {
+						//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+						cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, marching_cubes_calculate_density, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), marching_cubes_grid_buffer, bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr());
+					});
+					
+					//TODO: Do this before setting grid size to minimize it
+					//Sort out invalid cells
+					uint32_t* removed_cells = static_cast<uint32_t*>(cu_dev.borrow(sizeof(uint32_t)));
+				
+					uint32_t removed_cells_host;
+					do{
+						//Init removed_particles with 0
+						check_cuda_errors(cudaMemsetAsync(removed_cells, 0, sizeof(uint32_t), cu_dev.stream_compute()));
+						
+						cu_dev.syncStream<streamIdx::COMPUTE>();
+						
+						match(particle_bins[rollid][i])([this, &cu_dev, &marching_cubes_launch_config, &bounding_box_min, &bounding_box_offset, &marching_cubes_grid_size, &removed_cells](const auto& particle_buffer) {
+							const float density_threshold = particle_buffer.rho * config::MARCHING_CUBES_DENSITY_THRESHOLD_FACTOR;
+							
+							//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+							cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_sort_out_invalid_cells, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, density_threshold, marching_cubes_grid_buffer, bounding_box_min.data_arr(), bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr(), removed_cells);
+						});
+						
+						check_cuda_errors(cudaMemcpyAsync(&removed_cells_host, removed_cells, sizeof(uint32_t), cudaMemcpyDefault, cu_dev.stream_compute()));
+					
+						cu_dev.syncStream<streamIdx::COMPUTE>();
+					}while(removed_cells_host > 0);
+					
+					//Initialize surface_triangle_count and surface_vertex_count with 0
 					check_cuda_errors(cudaMemsetAsync(surface_vertex_count_ptr, 0, sizeof(uint32_t), cu_dev.stream_compute()));
-					
-					//Calculate triangulation
-					match(particle_bins[rollid][i])([this, &cu_dev, &i, &marching_cubes_launch_config, &bounding_box_min, &bounding_box_offset, &marching_cubes_grid_size, &surface_vertex_count_ptr, &surface_triangle_count_ptr, &surface_vertex_buffer_ptr, &surface_triangle_buffer_ptr, &particle_id_mapping_buffer](const auto& particle_buffer) {
+					check_cuda_errors(cudaMemsetAsync(surface_triangle_count_ptr, 0, sizeof(uint32_t), cu_dev.stream_compute()));
+						
+					cu_dev.syncStream<streamIdx::COMPUTE>();
+		
+					//Get counts
+					match(particle_bins[rollid][i])([this, &cu_dev, &i, &marching_cubes_launch_config, &bounding_box_min, &bounding_box_offset, &marching_cubes_grid_size, &surface_vertex_count_ptr, &surface_triangle_count_ptr, &particle_id_mapping_buffer](const auto& particle_buffer) {
 						const float density_threshold = particle_buffer.rho * config::MARCHING_CUBES_DENSITY_THRESHOLD_FACTOR;
 						
 						cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_gen_vertices, partitions[(rollid + 1) % BIN_COUNT], particle_buffer, bounding_box_min.data_arr(), bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr(), density_threshold, marching_cubes_grid_buffer, static_cast<uint32_t*>(surface_vertex_count_ptr));
-						cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_gen_faces, partitions[(rollid + 1) % BIN_COUNT], particle_buffer, particle_id_mapping_buffer, surface_particle_buffers[i], bounding_box_min.data_arr(), bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr(), density_threshold, marching_cubes_grid_buffer, static_cast<uint32_t*>(surface_triangle_buffer_ptr), static_cast<uint32_t*>(surface_triangle_count_ptr));
+						cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_gen_faces, partitions[(rollid + 1) % BIN_COUNT], particle_buffer, particle_id_mapping_buffer, surface_particle_buffers[i], bounding_box_min.data_arr(), bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr(), density_threshold, marching_cubes_grid_buffer, static_cast<uint32_t*>(nullptr), static_cast<uint32_t*>(surface_triangle_count_ptr));
 					});
 					
 					cu_dev.syncStream<streamIdx::COMPUTE>();
 					
-					//Create particle properties from triangulation
-					
-					
-					//Copy surface to host
-					//check_cuda_errors(cudaMemcpyAsync(surface_vertex_transfer_host_buffer.data(), surface_vertex_buffer_ptr, config::NUM_DIMENSIONS * sizeof(float) * (surface_vertex_count_host), cudaMemcpyDefault, cu_dev.stream_compute()));
-					check_cuda_errors(cudaMemcpyAsync(surface_triangle_transfer_host_buffer.data(), surface_triangle_buffer_ptr, 3 * sizeof(uint32_t) * (surface_triangle_count_host), cudaMemcpyDefault, cu_dev.stream_compute()));
+					//Adjust buffers sizes if necessary
+					uint32_t surface_vertex_count_host;
+					uint32_t surface_triangle_count_host;
+					check_cuda_errors(cudaMemcpyAsync(&surface_vertex_count_host, surface_vertex_count_ptr, sizeof(uint32_t), cudaMemcpyDefault, cu_dev.stream_compute()));
+					check_cuda_errors(cudaMemcpyAsync(&surface_triangle_count_host, surface_triangle_count_ptr, sizeof(uint32_t), cudaMemcpyDefault, cu_dev.stream_compute()));
 					
 					cu_dev.syncStream<streamIdx::COMPUTE>();
 					
+					surface_triangle_count_host /= 3;
+					
+					//std::cout << surface_vertex_count_host << " " << surface_triangle_count_host << std::endl;
+					if(surface_triangle_count_host > 0){
+						if(max_surface_vertex_count < surface_vertex_count_host){
+							//managed_memory_allocator.deallocate(surface_vertex_buffer, sizeof(float) * config::NUM_DIMENSIONS * max_surface_vertex_count);
+							//surface_vertex_buffer = reinterpret_cast<float*>(managed_memory_allocator.allocate(sizeof(float) * config::NUM_DIMENSIONS * surface_vertex_count_host));
+							max_surface_vertex_count = surface_vertex_count_host;
+						}
+						
+						if(max_surface_triangle_count < surface_triangle_count_host){
+							managed_memory_allocator.deallocate(surface_triangle_buffer, sizeof(uint32_t) * 3 * max_surface_triangle_count);
+							surface_triangle_buffer = reinterpret_cast<uint32_t*>(managed_memory_allocator.allocate(sizeof(uint32_t) * 3 * surface_triangle_count_host));
+							max_surface_triangle_count = surface_triangle_count_host;
+						}
+						
+						//surface_vertex_transfer_host_buffer.resize(surface_vertex_count_host);
+						surface_triangle_transfer_host_buffer.resize(surface_triangle_count_host);
+						
+						//void* surface_vertex_buffer_ptr = surface_vertex_buffer;
+						void* surface_triangle_buffer_ptr = surface_triangle_buffer;
+						
+						managed_memory.acquire<MemoryType::DEVICE>(
+							  //reinterpret_cast<void**>(&surface_vertex_buffer_ptr)
+							  reinterpret_cast<void**>(&surface_triangle_buffer_ptr)
+						);
+						
+						//Clear buffers
+						//check_cuda_errors(cudaMemsetAsync(surface_vertex_buffer_ptr, 0.0f, sizeof(float) * config::NUM_DIMENSIONS * surface_vertex_count_host, cu_dev.stream_compute()));
+						check_cuda_errors(cudaMemsetAsync(surface_triangle_buffer_ptr, 0, sizeof(uint32_t) * 3 * surface_triangle_count_host, cu_dev.stream_compute()));
+						
+						//Reset counts to 0
+						check_cuda_errors(cudaMemsetAsync(surface_triangle_count_ptr, 0, sizeof(uint32_t), cu_dev.stream_compute()));
+						check_cuda_errors(cudaMemsetAsync(surface_vertex_count_ptr, 0, sizeof(uint32_t), cu_dev.stream_compute()));
+						
+						//Calculate triangulation
+						match(particle_bins[rollid][i])([this, &cu_dev, &i, &marching_cubes_launch_config, &bounding_box_min, &bounding_box_offset, &marching_cubes_grid_size, &surface_vertex_count_ptr, &surface_triangle_count_ptr, &surface_triangle_buffer_ptr, &particle_id_mapping_buffer](const auto& particle_buffer) {
+							const float density_threshold = particle_buffer.rho * config::MARCHING_CUBES_DENSITY_THRESHOLD_FACTOR;
+							
+							cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_gen_vertices, partitions[(rollid + 1) % BIN_COUNT], particle_buffer, bounding_box_min.data_arr(), bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr(), density_threshold, marching_cubes_grid_buffer, static_cast<uint32_t*>(surface_vertex_count_ptr));
+							cu_dev.compute_launch(std::move(LaunchConfig(marching_cubes_launch_config)), marching_cubes_gen_faces, partitions[(rollid + 1) % BIN_COUNT], particle_buffer, particle_id_mapping_buffer, surface_particle_buffers[i], bounding_box_min.data_arr(), bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr(), density_threshold, marching_cubes_grid_buffer, static_cast<uint32_t*>(surface_triangle_buffer_ptr), static_cast<uint32_t*>(surface_triangle_count_ptr));
+						});
+						
+						cu_dev.syncStream<streamIdx::COMPUTE>();
+						
+						//Create particle properties from triangulation
+						
+						
+						//Copy surface to host
+						//check_cuda_errors(cudaMemcpyAsync(surface_vertex_transfer_host_buffer.data(), surface_vertex_buffer_ptr, config::NUM_DIMENSIONS * sizeof(float) * (surface_vertex_count_host), cudaMemcpyDefault, cu_dev.stream_compute()));
+						check_cuda_errors(cudaMemcpyAsync(surface_triangle_transfer_host_buffer.data(), surface_triangle_buffer_ptr, 3 * sizeof(uint32_t) * (surface_triangle_count_host), cudaMemcpyDefault, cu_dev.stream_compute()));
+						
+						cu_dev.syncStream<streamIdx::COMPUTE>();
+						
+						managed_memory.release(
+							  //surface_vertex_buffer
+							  surface_triangle_buffer
+						);
+					}
+						
 					managed_memory.release(
-						  surface_vertex_buffer
-						, surface_triangle_buffer
+						  //grid_blocks[0][i].release()
+						  marching_cubes_grid_buffer.release()
 					);
 				}
-					
-				managed_memory.release(
-					  //grid_blocks[0][i].release()
-					  marching_cubes_grid_buffer.release()
-					, surface_vertex_count
-					, surface_triangle_count
-				);
 			}
 			#endif
 
@@ -2371,8 +2596,10 @@ struct OasisSimulator {
 				auto& prev_particle_buffer = get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[rollid][i]);
 			
 				managed_memory.release(
-					  surface_particle_buffers[i].release()
+					  (surface_particle_buffers[i].is_locked() ? surface_particle_buffers[i].release() : nullptr)
 					, prev_particle_buffer.release()
+					, surface_vertex_count
+					, surface_triangle_count
 					, particle_id_mapping_buffer
 					, surface_transfer_device_buffer
 					, prev_particle_buffer.cellbuckets_virtual
@@ -2618,7 +2845,7 @@ struct OasisSimulator {
 				cu_dev.syncStream<streamIdx::COMPUTE>();
 			}
 			cu_dev.syncStream<streamIdx::COMPUTE>();
-
+			
 			//Check size
 			if(partition_block_count > config::G_MAX_ACTIVE_BLOCK) {
 				std::cerr << "Too much active blocks: " << partition_block_count << std::endl;
@@ -2783,7 +3010,9 @@ struct OasisSimulator {
 
 			//Initialize the grid and advection buckets
 			for(int i = 0; i < get_model_count(); ++i) {
-				//Clear the grid
+				//Resize and clear the grid
+				//NOTE: Resize not necessary cause grid is initialized with mayimum capacity
+				//grid_blocks[0][i].resize(managed_memory_allocator, neighbor_block_count);
 				grid_blocks[0][i].reset(neighbor_block_count, cu_dev);
 				
 				match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &i](auto& particle_buffer) {

@@ -41,7 +41,29 @@ __forceinline__ __device__ void compute_stress<float, MaterialE::FIXED_COROTATED
 	std::array<float, 3> S = {};
 	std::array<float, 9> V = {};
 	math::svd(F[0], F[3], F[6], F[1], F[4], F[7], F[2], F[5], F[8], U[0], U[3], U[6], U[1], U[4], U[7], U[2], U[5], U[8], S[0], S[1], S[2], V[0], V[3], V[6], V[1], V[4], V[7], V[2], V[5], V[8]);
+	
+	//FIXME: Check if we can do this wihout damaging physic too much
+	//Too much deviation is bad.
+	//TODO: Maybe make this 1e-5 a parameter
+	bool changed_S = false;
+	if((1.0 - std::abs(S[0])) > 1e-5){
+		changed_S = true;
+		S[0] = std::copysign(1.0f, S[0]);
+	}
+	if((1.0 - std::abs(S[1])) > 1e-5){
+		changed_S = true;
+		S[1] = std::copysign(1.0f, S[1]);
+	}
+	if((1.0 - std::abs(S[2])) > 1e-5){
+		changed_S = true;
+		S[2] = std::copysign(1.0f, S[2]);
+	}
+	if(changed_S) {
+		matmul_mat_diag_mat_t_3d(F, U, S, V);
+	}
+	
 	float J				= S[0] * S[1] * S[2];
+
 	float scaled_mu		= 2.0f * mu;
 	float scaled_lambda = lambda * (J - 1.0f);
 	vec<float, 3> P_hat;

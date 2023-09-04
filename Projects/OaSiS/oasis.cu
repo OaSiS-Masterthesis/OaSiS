@@ -205,6 +205,10 @@ void parse_scene(const std::string& fn, std::unique_ptr<mn::OasisSimulator>& ben
 									grid_offset[d] = model["grid_offset"].GetArray()[d].GetFloat();
 								}
 							}
+							
+							//offset and span relative to grid size
+							offset /=  mn::config::GRID_BLOCK_SPACING_INV;
+							span /=  mn::config::GRID_BLOCK_SPACING_INV;
 						
 							auto positions = mn::read_sdf(model["file"].GetString(), mn::config::MODEL_PPC, mn::config::G_DX, mn::config::G_DOMAIN_SIZE, offset, span);
 							mn::IO::insert_job([&]() {

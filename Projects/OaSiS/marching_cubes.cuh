@@ -9,7 +9,7 @@
 namespace mn {
 //NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic, readability-magic-numbers, readability-identifier-naming, misc-definitions-in-headers) CUDA does not yet support std::span; Common names for physical formulas; Cannot declare __global__ functions inline
 
-constexpr float MARCHING_CUBES_GRID_BLOCK_SPACING_INV = 30.0f;
+constexpr float MARCHING_CUBES_GRID_BLOCK_SPACING_INV = 20.0f;
 constexpr float MARCHING_CUBES_DX_INV = (MARCHING_CUBES_GRID_BLOCK_SPACING_INV * (1 << config::DOMAIN_BITS));
 constexpr float MARCHING_CUBES_DX = 1.f / MARCHING_CUBES_DX_INV;
 constexpr size_t MARCHING_CUBES_GRID_SCALING = const_ceil<size_t, float>(config::G_DX / MARCHING_CUBES_DX);
@@ -339,7 +339,7 @@ __forceinline__ __device__ int marching_cubes_get_cell_minima(const Partition pr
 								const ivec3 global_base_index_minimum = get_cell_id<0>(pos_minimum.data_arr(), {0.0f, 0.0f, 0.0f}, {MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV});
 								
 								//Get position relative to grid cell
-								const vec3 local_pos_minimum = pos_minimum - global_base_index_minimum * MARCHING_CUBES_DX;
+								const vec3 local_pos_minimum = pos_minimum - marching_cubes_cell_id * MARCHING_CUBES_DX;
 								
 								const vec3 diffs_minimum[6]{
 									  local_pos_minimum - vec3(0.0f, 0.5f, 0.5f) * MARCHING_CUBES_DX
@@ -368,15 +368,24 @@ __forceinline__ __device__ int marching_cubes_get_cell_minima(const Partition pr
 									, std::sqrt(diffs_minimum[5][0] * diffs_minimum[5][0] + diffs_minimum[5][1] * diffs_minimum[5][1] + diffs_minimum[5][2] * diffs_minimum[5][2])
 								};
 								
-								if(distances_from_face_center_minimum[dd] <= distances_from_face_center[dd]){
+								//printf("%.28f %.28f %.28f # %.28f %.28f %.28f\n", local_pos[0], local_pos[1], local_pos[2], local_pos_minimum[0], local_pos_minimum[1], local_pos_minimum[2]);
+								
+								if(distances_from_face_center_minimum[dd] < distances_from_face_center[dd]){
 									continue;
+								}else if(distances_from_face_center_minimum[dd] == distances_from_face_center[dd]){
+									//Tie breaker for strict ordering
+									if(pos_minimum[0] < pos[0]){
+										continue;
+									}else if(pos_minimum[0] == pos[0] && pos_minimum[1] < pos[1]){
+										continue;
+									}else if(pos_minimum[0] == pos[0] && pos_minimum[1] == pos[1] && pos_minimum[2] < pos[2]){
+										continue;
+									}//Otherwise, if all equal it does not matter cause the positions match or
 								}
 								
 							}
 							
-							if(marching_cubes_cell_id[0] == 8 && marching_cubes_cell_id[1] == 7 && marching_cubes_cell_id[2] == 11){
-								printf("O %d %d %d # %d %d %d # %d # %.28f %.28f %.28f # %.28f %.28f # %d\n", marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], global_base_index_0[0], global_base_index_0[1], global_base_index_0[2], dd, distances_from_face_center[dd], distances_from_face[dd], distances_from_axes[dd / 2], MARCHING_CUBES_MAXIMUM_AXIS_DISTANCE * MARCHING_CUBES_DX, 0.5f * MARCHING_CUBES_DX, marching_cubes_convert_id<3, 2 + 3>(prev_partition, particle_id, (blockid_offset + 2).data_arr()));
-							}
+							//printf("O %d %d %d # %d %d %d # %d # %.28f %.28f %.28f # %.28f %.28f # %d\n", marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], global_base_index_0[0], global_base_index_0[1], global_base_index_0[2], dd, distances_from_face_center[dd], distances_from_face[dd], distances_from_axes[dd / 2], MARCHING_CUBES_MAXIMUM_AXIS_DISTANCE * MARCHING_CUBES_DX, 0.5f * MARCHING_CUBES_DX, marching_cubes_convert_id<3, 2 + 3>(prev_partition, particle_id, (blockid_offset + 2).data_arr()));
 							
 							//Sort out minima that are too far away from face as this may cause degeneration (e.g. self-intersections)
 							if(distances_from_axes[dd / 2] > MARCHING_CUBES_MAXIMUM_AXIS_DISTANCE * MARCHING_CUBES_DX){
@@ -435,7 +444,7 @@ __global__ void marching_cubes_gen_vertices(const Partition prev_partition, cons
 	bool inside=(f0>thresh);
 	
 	if(inside){
-		printf("A %d %d %d # %d %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), bounding_box_min[0] + static_cast<int>(x / MARCHING_CUBES_GRID_SCALING), bounding_box_min[1] + static_cast<int>(y / MARCHING_CUBES_GRID_SCALING), bounding_box_min[2] + static_cast<int>(z / MARCHING_CUBES_GRID_SCALING));
+		//printf("A %d %d %d # %d %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), bounding_box_min[0] + static_cast<int>(x / MARCHING_CUBES_GRID_SCALING), bounding_box_min[1] + static_cast<int>(y / MARCHING_CUBES_GRID_SCALING), bounding_box_min[2] + static_cast<int>(z / MARCHING_CUBES_GRID_SCALING));
 	}
 	
 	if (x<grid_size[0]-1) {
@@ -468,7 +477,7 @@ __global__ void marching_cubes_gen_vertices(const Partition prev_partition, cons
 
 			marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x, y, z, grid_size)) = marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[minima_index], global_grid_blockid_offset.data_arr()) + 1;//index_x
 			
-			printf("X %d %d %d # %d %d %d # %d %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, minima[minima_index], marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
+			//printf("X %d %d %d # %d %d %d # %d %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, minima[minima_index], marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
 			
 			/*
 			marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x, y, z, grid_size))=vidx+1;//index_x
@@ -511,7 +520,7 @@ __global__ void marching_cubes_gen_vertices(const Partition prev_partition, cons
 			
 			marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y, z, grid_size)) = marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[minima_index], global_grid_blockid_offset.data_arr()) + 1;//index_y
 			
-			printf("Y %d %d %d # %d %d %d # %d %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, minima[minima_index], marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
+			//printf("Y %d %d %d # %d %d %d # %d %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, minima[minima_index], marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
 			
 			/*
 			marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y, z, grid_size))=vidx+1;
@@ -554,7 +563,7 @@ __global__ void marching_cubes_gen_vertices(const Partition prev_partition, cons
 			
 			marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z, grid_size)) = marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[minima_index], global_grid_blockid_offset.data_arr()) + 1;//index_z
 			
-			printf("Z %d %d %d # %d %d %d # %d %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, minima[minima_index], marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
+			//printf("Z %d %d %d # %d %d %d # %d %d %d\n", static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], minima_index, minima[minima_index], marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z, grid_size)) - 1);
 			
 			/*
 			marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z, grid_size))=vidx+1;//index_z
@@ -584,7 +593,7 @@ __forceinline__ __device__ uint32_t marching_cubes_fetch_edge_data(const Partiti
 		ids.first = advection_source_blockno;
 		ids.second = source_pidib;
 		
-		printf("H %d # %d %d # %d\n", particle_id - 1, advection_source_blockno, source_pidib, particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno] * config::G_BIN_CAPACITY + source_pidib]);
+		//printf("H %d # %d %d # %d\n", particle_id - 1, advection_source_blockno, source_pidib, particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno] * config::G_BIN_CAPACITY + source_pidib]);
 
 		return particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno] * config::G_BIN_CAPACITY + source_pidib] + 1;
 	}else{
@@ -931,10 +940,6 @@ __global__ void marching_cubes_gen_faces(Partition prev_partition, ParticleBuffe
 				const int8_t *triangles=triangle_table[mask];
 				for (;tricount<15;tricount+=3) if (triangles[tricount]<0) break;
 				
-				if(x == 151 && y == 151 && z == 211){
-					printf("TEST0.3\n");
-				}
-				
 				for (int i=0;i<5;++i) {
 					bool adjacent_triangle = false;
 					
@@ -1099,6 +1104,7 @@ __global__ void marching_cubes_gen_faces(Partition prev_partition, ParticleBuffe
 		;
 	}
 	
+	/*
 	for(size_t triangle_index = 0; triangle_index < cell_adjacent_triangles_count; ++triangle_index){
 		printf("J0 %d %d %d # %d # %d %d %d # %d %d # %d %d # %d %d\n"
 			, static_cast<int>(x)
@@ -1133,6 +1139,7 @@ __global__ void marching_cubes_gen_faces(Partition prev_partition, ParticleBuffe
 			, cell_triangle_ids[triangle_index][2].second
 		);
 	}
+	*/
 	
 	const float cotan_clamp_min_rad = 1.0f / std::tan(3.0f * (180.0f / static_cast<float>(M_PI)));
 	const float cotan_clamp_max_rad = 1.0f / std::tan(177.0f * (180.0f / static_cast<float>(M_PI)));
@@ -1244,7 +1251,6 @@ __global__ void marching_cubes_gen_faces(Partition prev_partition, ParticleBuffe
 								//If particle is a triangle vertex it is part of the triangle
 								if(current_triangle[0] == global_particle_id || current_triangle[1] == global_particle_id || current_triangle[2] == global_particle_id){
 									on_triangle_vertex = true;
-									printf("I %d\n", global_particle_id);
 									
 									if(current_triangle[0] == global_particle_id){
 										contact_index = 0;
@@ -1324,6 +1330,7 @@ __global__ void marching_cubes_gen_faces(Partition prev_partition, ParticleBuffe
 									//Normal
 									summed_normal += angle * face_normal;
 									
+									/*
 									printf("M %d %d %d # %d %d %d # %d # %.28f %.28f %.28f # %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n"
 										, static_cast<int>(x)
 										, static_cast<int>(y)
@@ -1346,6 +1353,7 @@ __global__ void marching_cubes_gen_faces(Partition prev_partition, ParticleBuffe
 										, triangle_positions[2][1]
 										, triangle_positions[2][2]
 									);
+									*/
 									
 									//Gauss curvature
 									summed_face_area += face_area * (1.0f / 3.0f);
@@ -1537,7 +1545,8 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 			
 			marching_cubes_get_cell_minima(prev_partition, particle_buffer, bounding_box_offset_arr, global_grid_blockid.data_arr(), global_grid_cellid.data_arr(), marching_cubes_cell_id.data_arr(), reinterpret_cast<std::array<int, 6>*>(&minima));
 			
-			printf("P %d %d %d # %d %d %d # %d %d %d %d %d %d\n"
+			/*
+			printf("P %d %d %d # %d %d %d # %d %d %d %d %d %d # %d %d %d %d %d %d\n"
 				, marching_cubes_cell_id[0]
 				, marching_cubes_cell_id[1]
 				, marching_cubes_cell_id[2]
@@ -1550,7 +1559,14 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 				, minima[3]
 				, minima[4]
 				, minima[5]
+				, marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[0], {0, 0, 0})
+				, marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[1], {0, 0, 0})
+				, marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[2], {0, 0, 0})
+				, marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[3], {0, 0, 0})
+				, marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[4], {0, 0, 0})
+				, marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[5], {0, 0, 0})
 			);
+			*/
 			
 			const vec3 normals[6] {
 				  vec3(1.0f, 0.0f, 0.0f) //xx
@@ -1673,6 +1689,7 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 										}
 										merge_participant[i] = true;
 										merge_participant[j] = true;
+										/*
 										printf("A %d %d %d # %d %d %d # %d # %d %d %d %d %d %d # %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n"
 											, marching_cubes_cell_id[0]
 											, marching_cubes_cell_id[1]
@@ -1695,6 +1712,7 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 											, normal[1]
 											, normal[2]
 										);
+										*/
 									}
 								}
 							}
@@ -1719,6 +1737,7 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 					value = marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size));
 				}while(value != atomic_cas(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(marching_cubes_cell_id[0], marching_cubes_cell_id[1], marching_cubes_cell_id[2], grid_size)), value, 0.0f));
 				atomicAdd(&local_removed_cells, 1);
+				/*
 				printf("S %d %d %d # %d %d %d # %d # %d %d %d %d %d %d\n"
 					, marching_cubes_cell_id[0]
 					, marching_cubes_cell_id[1]
@@ -1734,6 +1753,7 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 					, merge_counts[4]
 					, merge_counts[5]
 				);
+				*/
 			}
 		}else{
 			//Just set value to 0 to be safe

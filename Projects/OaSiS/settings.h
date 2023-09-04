@@ -62,7 +62,7 @@ namespace config {
 	constexpr float CFL			= 0.5f;
 
 	// background_grid
-	constexpr float GRID_BLOCK_SPACING_INV = 1.0f;
+	constexpr float GRID_BLOCK_SPACING_INV = 5.0f;
 
 	constexpr int BLOCK_BITS			 = 2;
 	constexpr int DOMAIN_BITS			 = 8;

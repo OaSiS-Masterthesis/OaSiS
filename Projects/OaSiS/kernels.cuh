@@ -31,7 +31,7 @@ __global__ void activate_blocks(uint32_t particle_count, ParticleArray particle_
 	//Get block id by particle pos
 	const ivec3 coord	= get_cell_id<2>({particle_array.val(_0, particle_id), particle_array.val(_1, particle_id), particle_array.val(_2, particle_id)}, grid.get_offset()) - 1;
 	const ivec3 blockid = coord / static_cast<int>(config::G_BLOCKSIZE);
-
+	
 	//Create block in partition
 	partition.insert(blockid);
 }
@@ -113,7 +113,7 @@ __global__ void cell_bucket_to_block(const int* cell_particle_counts, const int*
 __global__ void initial_cell_bucket_to_block(const int* cell_particle_counts, int* cellbuckets, int* particle_bucket_sizes, int* buckets) {
 	const int cellno		  = static_cast<int>(threadIdx.x) & (config::G_BLOCKVOLUME - 1);
 	const int particle_counts = cell_particle_counts[blockIdx.x * config::G_BLOCKVOLUME + cellno];
-
+	
 	for(int particle_id_in_cell = 0; particle_id_in_cell < config::G_MAX_PARTICLES_IN_CELL; particle_id_in_cell++) {
 		if(particle_id_in_cell < particle_counts) {
 			//Each thread gets its index in the blocks bucket
@@ -963,6 +963,9 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 		contrib[7]				 = source_particle_bin.val(_11, source_pidib % config::G_BIN_CAPACITY);
 		contrib[8]				 = source_particle_bin.val(_12, source_pidib % config::G_BIN_CAPACITY);
 		matrix_matrix_multiplication_3d(dws.data_arr(), contrib, F.data_arr());
+
+		ComputeStressIntermediate compute_stress_tmp = {};
+		compute_stress<float, MaterialE::FIXED_COROTATED>((data.mass / particle_buffer.rho), particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
 		
 		StoreParticleDataIntermediate store_particle_data_tmp = {};
 		store_particle_data_tmp.mass = data.mass;
@@ -970,9 +973,6 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 		store_particle_data_tmp.F														= F.data_arr();
 
 		store_particle_data<MaterialE::FIXED_COROTATED>(next_particle_buffer, src_blockno, particle_id_in_block, store_particle_data_tmp);
-
-		ComputeStressIntermediate compute_stress_tmp = {};
-		compute_stress<float, MaterialE::FIXED_COROTATED>((data.mass / particle_buffer.rho), particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
 	}
 }
 
@@ -1101,17 +1101,18 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 		contrib[7]				 = source_particle_bin.val(_11, source_pidib % config::G_BIN_CAPACITY);
 		contrib[8]				 = source_particle_bin.val(_12, source_pidib % config::G_BIN_CAPACITY);
 		matrix_matrix_multiplication_3d(dws.data_arr(), contrib, F.data_arr());
+
+		//TODO: Rename if we use different stress model
+		ComputeStressIntermediate compute_stress_tmp = {};
+		compute_stress<float, MaterialE::FIXED_COROTATED>((data.mass / particle_buffer.rho), particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
 		
 		StoreParticleDataIntermediate store_particle_data_tmp = {};
 		store_particle_data_tmp.mass = data.mass;
 		store_particle_data_tmp.pos													= data.pos;
 		store_particle_data_tmp.F														= F.data_arr();
+		store_particle_data_tmp.J = data.J;
 
 		store_particle_data<MaterialE::FIXED_COROTATED_GHOST>(next_particle_buffer, src_blockno, particle_id_in_block, store_particle_data_tmp);
-
-		//TODO: Rename if we use different stress model
-		ComputeStressIntermediate compute_stress_tmp = {};
-		compute_stress<float, MaterialE::FIXED_COROTATED>((data.mass / particle_buffer.rho), particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
 	}
 }
 
@@ -1148,7 +1149,7 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 	if(particle_bucket_size == 0) {
 		return;
 	}
-
+	
 	//Load data from grid to shared memory
 	for(int base = static_cast<int>(threadIdx.x); base < NUM_VI_IN_ARENA; base += static_cast<int>(blockDim.x)) {
 		const char local_block_id = static_cast<char>(base / NUM_VI_PER_BLOCK);
@@ -1178,7 +1179,7 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 		g2pbuffer[channelid][static_cast<size_t>(static_cast<size_t>(cx) + (local_block_id & 4 ? config::G_BLOCKSIZE : 0))][static_cast<size_t>(static_cast<size_t>(cy) + (local_block_id & 2 ? config::G_BLOCKSIZE : 0))][static_cast<size_t>(static_cast<size_t>(cz) + (local_block_id & 1 ? config::G_BLOCKSIZE : 0))] = val;
 	}
 	__syncthreads();
-
+	
 	//Clear return buffer
 	for(int base = static_cast<int>(threadIdx.x); base < NUM_M_VI_IN_ARENA; base += static_cast<int>(blockDim.x)) {
 		int loc		 = base;
@@ -1193,7 +1194,7 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 		p2gbuffer[loc >> ARENABITS][x][y][z] = 0.0f;
 	}
 	__syncthreads();
-
+	
 	//Perform update
 	for(int particle_id_in_block = static_cast<int>(threadIdx.x); particle_id_in_block < particle_bucket_size; particle_id_in_block += static_cast<int>(blockDim.x)) {
 		//Fetch index of the advection source
@@ -2942,7 +2943,7 @@ __global__ void get_bounding_box(Partition partition, ParticleBuffer particle_bu
 		const ivec3 blockid			= partition.active_keys[blockIdx.x];
 		const ivec3 cellid = blockid * config::G_BLOCKSIZE + ivec3(static_cast<int>((cellno / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE), static_cast<int>((cellno / config::G_BLOCKSIZE) % config::G_BLOCKSIZE), static_cast<int>(cellno % config::G_BLOCKSIZE));
 		
-		printf("B %d %d %d\n", cellid[0], cellid[1], cellid[2]);
+		//printf("B %d %d %d # %d\n", cellid[0], cellid[1], cellid[2], particle_counts);
 		
 		atomicMin(reinterpret_cast<int*>(bounding_box_min), cellid[0]);
 		atomicMin(reinterpret_cast<int*>(bounding_box_min) + 1, cellid[1]);
