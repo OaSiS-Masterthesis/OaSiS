@@ -12,7 +12,7 @@
 			"constitutive": "jfluid",
 			"volume": 7.4505806e-9,
 			"rho": 1e3,
-			"bulk_modulus": 4e4,
+			"bulk_modulus": 2.2e4,
 			"gamma": 7.15,
 			"viscosity": 0.01,
 			"offset": [
@@ -42,7 +42,7 @@
 			"constitutive": "fixed_corotated_ghost",
 			"volume": 7.4505806e-9,
 			"rho": 1e3,
-			"youngs_modulus": 1e7,
+			"youngs_modulus": 1e5,
 			"poisson_ratio": 0.4,
 			"offset": [
 				0.1,

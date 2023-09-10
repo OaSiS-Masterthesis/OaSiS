@@ -198,7 +198,7 @@ struct ParticleBuffer<MaterialE::J_FLUID> : ParticleBufferImpl<MaterialE::J_FLUI
 	float rho		= config::DENSITY;
 	float volume	= (1.0f / (1u << config::DOMAIN_BITS) / (1u << config::DOMAIN_BITS) / (1u << config::DOMAIN_BITS) / config::MODEL_PPC);
 	float mass		= (config::DENSITY / (1u << config::DOMAIN_BITS) / (1u << config::DOMAIN_BITS) / (1u << config::DOMAIN_BITS) / config::MODEL_PPC);
-	float bulk		= 4e4;
+	float bulk		= 4e4;//Probably in bar
 	float gamma		= 7.15f;//Penalize large deviations from incompressibility
 	float viscosity = 0.01f;
 
