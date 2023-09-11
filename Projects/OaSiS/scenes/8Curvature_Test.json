@@ -1,0 +1,34 @@
+{
+	"simulation": {
+		"gpuid": 0,
+		"fps": 1200,
+		"frames": 120,
+		"default_dt": 5e-6
+	},
+	"models": [
+		{
+			"type": "particle",
+			"file": "bullet.sdf",
+			"constitutive": "fixed_corotated_ghost",
+			"volume": 7.4505806e-9,
+			"rho": 1e3,
+			"youngs_modulus": 1e5,
+			"poisson_ratio": 0.4,
+			"offset": [
+				0.1,
+				0.04,
+				0.1
+			],
+			"span": [
+				0.01,
+				0.01,
+				0.01
+			],
+			"velocity": [
+				0.0,
+				0.0,
+				0.0
+			]
+		}
+	]
+}

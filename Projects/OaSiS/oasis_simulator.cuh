@@ -1065,6 +1065,8 @@ struct OasisSimulator {
 						iq_solve_velocity_columns.fill(0);
 						iq_solve_velocity_values.fill(0.0f);
 						
+						std::cout << "TEST0" << std::endl;
+						
 						//Init rows and columns
 						size_t* lhs_num_blocks_per_row_host;
 						size_t* solve_velocity_num_blocks_per_row_host;
@@ -1078,6 +1080,8 @@ struct OasisSimulator {
 						cu_dev.compute_launch({partition_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::clear_iq_system<iq::SOLVE_VELOCITY_MATRIX_SIZE_X, iq::SOLVE_VELOCITY_MATRIX_SIZE_Y, iq::NUM_ROWS_PER_BLOCK, iq::NUM_COLUMNS_PER_BLOCK, 3, Partition<1>>, solve_velocity_num_blocks_per_row_host, solve_velocity_block_offsets_per_row_host, static_cast<uint32_t>(partition_block_count), static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_solve_velocity_rows.get_data(), iq_solve_velocity_columns.get_data(), iq_solve_velocity_values.get_data());
 						
 						cu_dev.syncStream<streamIdx::COMPUTE>();
+						
+						std::cout << "TEST1" << std::endl;
 						
 						//Set last active row + 1 == number nonzero elements
 						const int lhs_number_of_nonzeros = static_cast<int>(iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
@@ -1094,6 +1098,8 @@ struct OasisSimulator {
 						cu_dev.compute_launch({exterior_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::fill_empty_rows<iq::SOLVE_VELOCITY_MATRIX_SIZE_Y, iq::NUM_ROWS_PER_BLOCK, 3, Partition<1>>, static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_solve_velocity_rows.get_data());
 						
 						cu_dev.syncStream<streamIdx::COMPUTE>();
+						
+						std::cout << "TEST2" << std::endl;
 						
 						//Set last value of rows
 						//FIXME: Not sure why, but memcpy does not seem to work correctly
@@ -1136,7 +1142,7 @@ struct OasisSimulator {
 								, reinterpret_cast<void**>(&next_particle_buffer_fluid.blockbuckets)
 							);
 							
-							cu_dev.compute_launch({partition_block_count, iq::BLOCK_SIZE}, iq::create_iq_system, static_cast<uint32_t>(exterior_block_count), dt, particle_buffer_solid, particle_buffer_fluid, get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]), get<typename std::decay_t<decltype(particle_buffer_fluid)>>(particle_bins[(rollid + 1) % BIN_COUNT][fluid_id]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_lhs_rows.get_const_data(), iq_lhs_columns.get_const_data(), iq_lhs_values.get_data(), iq_rhs_array.get_data(), iq_solve_velocity_rows.get_const_data(), iq_solve_velocity_columns.get_const_data(), iq_solve_velocity_values.get_data());
+							cu_dev.compute_launch({partition_block_count, iq::BLOCK_SIZE}, iq::create_iq_system, static_cast<uint32_t>(exterior_block_count), dt, particle_buffer_solid, particle_buffer_fluid, next_particle_buffer_solid, next_particle_buffer_fluid, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_lhs_rows.get_const_data(), iq_lhs_columns.get_const_data(), iq_lhs_values.get_data(), iq_rhs_array.get_data(), iq_solve_velocity_rows.get_const_data(), iq_solve_velocity_columns.get_const_data(), iq_solve_velocity_values.get_data());
 							
 							managed_memory.release(
 								  particle_buffer_solid.release()
@@ -1155,6 +1161,8 @@ struct OasisSimulator {
 						});
 						
 						ginkgo_executor->synchronize();
+						
+						std::cout << "TEST3" << std::endl;
 						
 						//TODO: If making this non-const, move array views to prevent copying?
 						const std::shared_ptr<const gko::matrix::Csr<float, int>> iq_lhs = gko::share(
@@ -1301,16 +1309,22 @@ struct OasisSimulator {
 						std::cout << std::endl;
 						*/
 						
+						std::cout << "TEST4" << std::endl;
+						
 						
 						//IQ-System solve
 						// Create solver
 						ginkgo_executor->synchronize();
 						std::unique_ptr<gko::solver::Bicgstab<float>> iq_solver = iq_solver_factory->generate(iq_lhs);
 						ginkgo_executor->synchronize();
+						
+						std::cout << "TEST5" << std::endl;
 
 						// Solve system
 						iq_solver->apply(iq_rhs, iq_result);
 						ginkgo_executor->synchronize();
+						
+						std::cout << "TEST6" << std::endl;
 						
 						//Update velocity and ghost matrix strain
 						//v_s,t+1 = v_s,t + (- dt * M_s^-1 * G_s * p_g,t+1 + dt * M_s^-1 * H_s^T * h,t+1)
@@ -1320,6 +1334,8 @@ struct OasisSimulator {
 						iq_solve_velocity->apply(iq_result, iq_solve_velocity_result);
 						
 						ginkgo_executor->synchronize();
+						
+						std::cout << "TEST7" << std::endl;
 						
 						//Update velocity and strain
 						match(particle_bins[rollid][solid_id])([this, &cu_dev, &solid_id, &fluid_id, &iq_solve_velocity_result, &iq_result](auto& particle_buffer_solid) {

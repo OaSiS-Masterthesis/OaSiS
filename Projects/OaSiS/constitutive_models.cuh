@@ -44,20 +44,23 @@ __forceinline__ __device__ void compute_stress<float, MaterialE::FIXED_COROTATED
 	
 	//FIXME: Check if we can do this wihout damaging physic too much
 	//Too much deviation is bad.
-	//TODO: Maybe make this 1e-5 a parameter
+	//TODO: Maybe make this 1e-2 a parameter
 	bool changed_S = false;
-	if((1.0 - std::abs(S[0])) > 1e-5){
+	/*
+	if((1.0 - std::abs(S[0])) > 1e-2){
 		changed_S = true;
 		S[0] = std::copysign(1.0f, S[0]);
 	}
-	if((1.0 - std::abs(S[1])) > 1e-5){
+	if((1.0 - std::abs(S[1])) > 1e-2){
 		changed_S = true;
 		S[1] = std::copysign(1.0f, S[1]);
 	}
-	if((1.0 - std::abs(S[2])) > 1e-5){
+	if((1.0 - std::abs(S[2])) > 1e-2){
 		changed_S = true;
 		S[2] = std::copysign(1.0f, S[2]);
 	}
+	*/
+	
 	if(changed_S) {
 		matmul_mat_diag_mat_t_3d(F, U, S, V);
 	}
