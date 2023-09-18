@@ -312,7 +312,7 @@ struct OasisSimulator {
 			//Maximum 100 iterations
 			std::shared_ptr<gko::stop::Iteration::Factory> iter_stop = gko::share(
 				gko::stop::Iteration::build()
-				.with_max_iters(100u)
+				.with_max_iters(10u)
 				.on(ginkgo_executor)
 			);
 			
@@ -334,11 +334,59 @@ struct OasisSimulator {
 
 			//Incomplete cholesky for smoothing
 			//TODO: Maybe use different smoother
+			/*
 			std::shared_ptr<gko::preconditioner::Ic<gko::solver::LowerTrs<float>>::Factory> ic_gen = gko::share(
 				gko::preconditioner::Ic<gko::solver::LowerTrs<float>>::build()
 				.with_factorization_factory(
 					gko::factorization::Ic<float, int>::build()
 					.with_skip_sorting(true) //We know that our matrix is sorted
+					.on(ginkgo_executor)
+				)
+				.with_l_solver_factory(
+					gko::solver::LowerTrs<float, int>::build()
+					.with_algorithm(gko::solver::trisolve_algorithm::syncfree) //Use Ginkgo implementation
+					.on(ginkgo_executor)
+				)
+				.on(ginkgo_executor)
+			);
+			*/
+			
+			/*
+			std::shared_ptr<gko::preconditioner::Ic<gko::solver::Idr<float>>::Factory> ic_gen = gko::share(
+				gko::preconditioner::Ic<gko::solver::Idr<float>>::build()
+				.with_factorization_factory(
+					gko::factorization::Ic<float, int>::build()
+					.with_skip_sorting(true) //We know that our matrix is sorted
+					.on(ginkgo_executor)
+				)
+				.with_l_solver_factory(
+					gko::solver::Idr<float>::build()
+					.with_deterministic(false) //Deterministic happens on CPU and is therefore slow
+					.with_complex_subspace(true) //Complex subspace causes faster convergation
+					.with_kappa(0.7f)
+					.with_subspace_dim(2u)
+					.with_criteria(gko::stop::Iteration::build().with_max_iters(1u).on(ginkgo_executor))
+					.on(ginkgo_executor)
+				)
+				.on(ginkgo_executor)
+			);
+			*/
+			
+			std::shared_ptr<gko::preconditioner::Ic<gko::solver::Gmres<float>>::Factory> ic_gen = gko::share(
+				gko::preconditioner::Ic<gko::solver::Gmres<float>>::build()
+				.with_factorization_factory(
+					gko::factorization::Ic<float, int>::build()
+					.with_skip_sorting(true) //We know that our matrix is sorted
+					.on(ginkgo_executor)
+				)
+				.with_l_solver_factory(
+					gko::solver::Gmres<float>::build()
+					.with_krylov_dim(0u)
+					.with_flexible(false)
+					.with_criteria(
+						  gko::stop::Iteration::build().with_max_iters(10u).on(ginkgo_executor)
+						, gko::stop::ResidualNorm<float>::build().with_baseline(gko::stop::mode::rhs_norm).with_reduction_factor(tolerance).on(ginkgo_executor)
+					)
 					.on(ginkgo_executor)
 				)
 				.on(ginkgo_executor)
@@ -356,8 +404,8 @@ struct OasisSimulator {
 				gko::multigrid::Pgm<float, int>::build()
 				.with_max_iterations(15u)
 				.with_max_unassigned_ratio(0.05f)
-				.with_deterministic(true) //Ensure same result at different runs
-				.with_skip_sorting (true) //We know that our matrix is sorted
+				.with_deterministic(false) //Deterministic might happen on CPU and is therefore slow
+				.with_skip_sorting(true) //We know that our matrix is sorted
 				.on(ginkgo_executor)
 			);
 			
@@ -373,8 +421,8 @@ struct OasisSimulator {
 			//Default level_selector, smoother_selector
 			std::shared_ptr<gko::LinOpFactory> multigrid_gen = gko::solver::Multigrid::build()
 				.with_cycle(gko::solver::multigrid::cycle::w) //Use w-cycle
-				.with_max_levels(10u) //Max level count
-				.with_min_coarse_rows(static_cast<size_t>(config::G_BLOCKVOLUME)) //Minimum number of rows; Set to Blockvolum, otherwise nothing is solved if we have only one block
+				.with_max_levels(1u) //Max level count
+				.with_min_coarse_rows(static_cast<size_t>(config::G_BLOCKVOLUME)) //Minimum number of rows; Set to Blockvolume, otherwise nothing is solved if we have only one block
 				.with_pre_smoother(smoother_gen)
 				.with_post_uses_pre(true) //Use same smoother for pre and post smoothing
 				.with_mid_case(gko::solver::multigrid::mid_smooth_type::both) //Mid smoothing keeps original behaviour
@@ -389,7 +437,7 @@ struct OasisSimulator {
 			iq_solver_factory = gko::share(
 				gko::solver::Bicgstab<float>::build()
 				.with_criteria(iter_stop, tol_stop)
-				.with_preconditioner(multigrid_gen)
+				//.with_preconditioner(multigrid_gen)
 				.on(ginkgo_executor)
 			);
 		}
@@ -1368,7 +1416,7 @@ struct OasisSimulator {
 						
 						cu_dev.syncStream<streamIdx::COMPUTE>();
 						
-						/*
+						
 						std::vector<float> printout_tmp4(3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
 						std::vector<float> printout_tmp5(iq::LHS_MATRIX_SIZE_Y * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
 						
@@ -1388,7 +1436,7 @@ struct OasisSimulator {
 							}
 							std::cout << std::endl;
 						}
-						*/
+						
 						
 						
 					}

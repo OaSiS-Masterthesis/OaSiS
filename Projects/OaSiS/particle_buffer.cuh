@@ -19,7 +19,7 @@ using ParticleBinDomain	   = AlignedDomain<char, config::G_BIN_CAPACITY>;
 using ParticleBufferDomain = CompactDomain<int, config::G_MAX_PARTICLE_BIN>;
 using ParticleArrayDomain  = CompactDomain<int, config::G_MAX_PARTICLE_NUM>;
 //NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables, readability-identifier-naming) Check is buggy and reporst variable errors fro template arguments
-using particle_bin4_  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, ParticleBinDomain, attrib_layout::SOA, f32_, f32_, f32_, f32_, f32_>;														///< mass, J, pos
+using particle_bin4_  = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, ParticleBinDomain, attrib_layout::SOA, f32_, f32_, f32_, f32_, f32_>;														///< mass, pos, J
 using particle_bin12_ = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, ParticleBinDomain, attrib_layout::SOA, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_>;		///< mass, pos, F
 using particle_bin13_ = Structural<StructuralType::DENSE, Decorator<StructuralAllocationPolicy::FULL_ALLOCATION, StructuralPaddingPolicy::SUM_POW2_ALIGN>, ParticleBinDomain, attrib_layout::SOA, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_, f32_>;///< mass, pos, F, logJp
 //NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables, readability-identifier-naming)
@@ -198,9 +198,9 @@ struct ParticleBuffer<MaterialE::J_FLUID> : ParticleBufferImpl<MaterialE::J_FLUI
 	float rho		= config::DENSITY;
 	float volume	= (1.0f / (1u << config::DOMAIN_BITS) / (1u << config::DOMAIN_BITS) / (1u << config::DOMAIN_BITS) / config::MODEL_PPC);
 	float mass		= (config::DENSITY / (1u << config::DOMAIN_BITS) / (1u << config::DOMAIN_BITS) / (1u << config::DOMAIN_BITS) / config::MODEL_PPC);
-	float bulk		= 4e4;//Probably in bar
+	float bulk		= 4e4;//Probably in GPa? Not sure, but GPa seems to work
 	float gamma		= 7.15f;//Penalize large deviations from incompressibility
-	float viscosity = 0.01f;
+	float viscosity = 0.01f;//Probably also in Pa? Not sure, but Pa seems to work
 
 	void update_parameters(float density, float vol, float b, float g, float v) {
 		rho		  = density;

@@ -11,7 +11,7 @@
 #define PRINT_CELL_OVERFLOW 0//TODO: Move to another place
 
 //NOLINTNEXTLINE(cppcoreguidelines-macro-usage) Macro usage necessary here for preprocessor if
-#define FIXED_COROTATED_GHOST_ENABLE_STRAIN_UPDATE 0//TODO: Move to another place
+#define FIXED_COROTATED_GHOST_ENABLE_STRAIN_UPDATE 1//TODO: Move to another place
 
 namespace mn {
 
@@ -147,7 +147,7 @@ struct CustomDeviceAllocator {			   // hide the global one
 	}
 };
 
-using managed_memory_type = ManagedMemory<CustomDeviceAllocator, (static_cast<size_t>(7) << 30), (static_cast<size_t>(0) << 30)>;
+using managed_memory_type = ManagedMemory<CustomDeviceAllocator, (static_cast<size_t>(13) << 30), (static_cast<size_t>(0) << 30)>;
 
 }// namespace mn
 

@@ -900,6 +900,9 @@ template<>
 __forceinline__ __device__ void calculate_contribution_and_store_particle_data<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer, const ParticleBuffer<MaterialE::J_FLUID> next_particle_buffer, int advection_source_blockno, int source_pidib, int src_blockno, int particle_id_in_block, Duration dt, const std::array<float, 9>& A, std::array<float, 9>& contrib, CalculateContributionAndStoreParticleDataIntermediate& data) {
 	(void) advection_source_blockno;
 	(void) source_pidib;
+	
+	//TODO: Make this a parameter or something
+	const float bulk_viscosity = particle_buffer.bulk * 1.0f;//bulk_viscosity = bulk_modulus * relaxation_time
 
 	//Update determinante of deformation gradiant
 	//Divergence of velocity multiplied with time and transfered to global space
@@ -914,8 +917,12 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 	//TODO: What is calculated here?
 	{
 		float voln	   = data.J * (data.mass / particle_buffer.rho);
-		float pressure = particle_buffer.bulk * (powf(data.J, -particle_buffer.gamma) - 1.f);
-		//? - stress; stress = pressure * identity;
+		//Values from ]0; 0.1^-gamma - 1]
+		float pressure = (bulk_viscosity  - (2.0f / 3.0f) * particle_buffer.viscosity) * (powf(data.J, -particle_buffer.gamma) - 1.f);
+		
+		//NOTE: See also: https://en.wikipedia.org/wiki/Viscous_stress_tensor
+		//NOTE: Stress of compressible Navier-Stokes flow
+		//(viscose_stress + pressure_stress) * volume = (2 * viscosity * strain_rate_tensor + pressure_stress) * volume; stress = -pressure * identity; strain_rate_tensor = 0.5 * (A * (4 / dx^2)) * (A * (4 / dx^2))^T
 		{
 			contrib[0] = ((A[0] + A[0]) * config::G_D_INV * particle_buffer.viscosity - pressure) * voln;
 			contrib[1] = (A[1] + A[3]) * config::G_D_INV * particle_buffer.viscosity * voln;
@@ -929,6 +936,20 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 			contrib[7] = (A[7] + A[5]) * config::G_D_INV * particle_buffer.viscosity * voln;
 			contrib[8] = ((A[8] + A[8]) * config::G_D_INV * particle_buffer.viscosity - pressure) * voln;
 		}
+		
+		/*{
+			contrib[0] = (((A[0] + A[0]) * config::G_D_INV - (2.0f / 3.0f) * data.J) * particle_buffer.viscosity + bulk_viscosity * data.J) * voln;
+			contrib[1] = (A[1] + A[3]) * config::G_D_INV * particle_buffer.viscosity * voln;
+			contrib[2] = (A[2] + A[6]) * config::G_D_INV * particle_buffer.viscosity * voln;
+
+			contrib[3] = (A[3] + A[1]) * config::G_D_INV * particle_buffer.viscosity * voln;
+			contrib[4] = (((A[4] + A[4]) * config::G_D_INV - (2.0f / 3.0f) * data.J) * particle_buffer.viscosity + bulk_viscosity * data.J) * voln;
+			contrib[5] = (A[5] + A[7]) * config::G_D_INV * particle_buffer.viscosity * voln;
+
+			contrib[6] = (A[6] + A[2]) * config::G_D_INV * particle_buffer.viscosity * voln;
+			contrib[7] = (A[7] + A[5]) * config::G_D_INV * particle_buffer.viscosity * voln;
+			contrib[8] = (((A[8] + A[8]) * config::G_D_INV - (2.0f / 3.0f) * data.J) * particle_buffer.viscosity + bulk_viscosity * data.J) * voln;
+		}*/
 	}
 
 	//Write back particle data
