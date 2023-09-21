@@ -2,7 +2,7 @@
 	"simulation": {
 		"gpuid": 0,
 		"fps": 1200,
-		"frames": 12000,
+		"frames": 240,
 		"default_dt": 5e-6
 	},
 	"models": [
@@ -21,9 +21,9 @@
 				0.5
 			],
 			"span": [
-				5.0,
-				5.0,
-				5.0
+				10.0,
+				10.0,
+				10.0
 			],
 			"velocity": [
 				0.0,

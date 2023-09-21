@@ -22,6 +22,8 @@ constexpr size_t MARCHING_CUBES_INTERPOLATION_DEGREE = 1;//MARCHING_CUBES_GRID_S
 //Controls maximum distance from face == maximum distance from normal marching cubes vertex
 constexpr float MARCHING_CUBES_MAXIMUM_AXIS_DISTANCE = 0.5f;//FIXME: Set to corrent value (something lower than 0.25
 
+constexpr float MARCHING_CUBES_NEAREST_THRESHOLD = 1.0;//TODO: Set to correct value
+
 using MarchingCubesGridBufferDomain  = CompactDomain<int, MARCHING_CUBES_MAX_ACTIVE_BLOCK>;
 
 //NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables, readability-identifier-naming) Check is buggy and reports variable errors for template arguments
@@ -163,7 +165,7 @@ __forceinline__ __device__ int marching_cubes_convert_id(const Partition prev_pa
 //TODO: Maybe consider mass when calculationg nearest
 //minima: x-, x+, y-, y+, z-, z+
 template<typename Partition, typename ParticleBuffer>
-__forceinline__ __device__ int marching_cubes_get_cell_minima(const Partition prev_partition, const ParticleBuffer particle_buffer, const std::array<float, 3> bounding_box_offset_arr, const std::array<int, 3> global_grid_blockid_arr, const std::array<int, 3> global_grid_cellid_arr, const std::array<int, 3> marching_cubes_cell_id_arr, std::array<int, 6>* minima){
+__forceinline__ __device__ int marching_cubes_get_cell_minima(const Partition prev_partition, const ParticleBuffer particle_buffer, const std::array<float, 3> bounding_box_offset_arr, const std::array<int, 3> global_grid_blockid_arr, const std::array<int, 3> global_grid_cellid_arr, const std::array<int, 3> marching_cubes_cell_id_arr, std::array<int, 6>* minima, const std::array<int, 6>* prev_minima){
 	const vec3 bounding_box_offset {bounding_box_offset_arr[0], bounding_box_offset_arr[1], bounding_box_offset_arr[2]};
 	const ivec3 global_grid_blockid {global_grid_blockid_arr[0], global_grid_blockid_arr[1], global_grid_blockid_arr[2]};
 	const ivec3 global_grid_cellid {global_grid_cellid_arr[0], global_grid_cellid_arr[1], global_grid_cellid_arr[2]};
@@ -370,17 +372,28 @@ __forceinline__ __device__ int marching_cubes_get_cell_minima(const Partition pr
 								
 								//printf("%.28f %.28f %.28f # %.28f %.28f %.28f\n", local_pos[0], local_pos[1], local_pos[2], local_pos_minimum[0], local_pos_minimum[1], local_pos_minimum[2]);
 								
-								if(distances_from_face_center_minimum[dd] < distances_from_face_center[dd]){
-									continue;
-								}else if(distances_from_face_center_minimum[dd] == distances_from_face_center[dd]){
-									//Tie breaker for strict ordering
-									if(pos_minimum[0] < pos[0]){
-										continue;
-									}else if(pos_minimum[0] == pos[0] && pos_minimum[1] < pos[1]){
-										continue;
-									}else if(pos_minimum[0] == pos[0] && pos_minimum[1] == pos[1] && pos_minimum[2] < pos[2]){
-										continue;
-									}//Otherwise, if all equal it does not matter cause the positions match or
+								if(std::abs(distances_from_face_center_minimum[dd] - distances_from_face_center[dd]) < MARCHING_CUBES_NEAREST_THRESHOLD){
+									/*
+									//Tie breaker for conservative
+									if(prev_minima != nullptr){
+										//Keep previous minimum on tie
+										if((*prev_minima)[dd] == last_minimum){
+											continue;
+										}
+									}*/
+									
+									//If prev_minima is current, don't apply other tie breakers
+									//if(prev_minima == nullptr || (*prev_minima)[dd] != marching_cubes_convert_id<3, 2 + 3>(prev_partition, particle_id, (blockid_offset + 2).data_arr())){
+									
+										//Tie breaker for strict ordering
+										if(pos_minimum[0] < pos[0]){
+											continue;
+										}else if(pos_minimum[0] == pos[0] && pos_minimum[1] < pos[1]){
+											continue;
+										}else if(pos_minimum[0] == pos[0] && pos_minimum[1] == pos[1] && pos_minimum[2] < pos[2]){
+											continue;
+										}//Otherwise, if all equal it does not matter cause the positions match
+									//}
 								}
 								
 							}
@@ -427,7 +440,7 @@ with z=1
 edges 8-11 go in +z direction from vertex 0-3
 */
 template<typename Partition, typename ParticleBuffer, typename MarchingCubesGrid>
-__global__ void marching_cubes_gen_vertices(const Partition prev_partition, const ParticleBuffer particle_buffer, const std::array<int, 3> bounding_box_min_arr, const std::array<float, 3> bounding_box_offset_arr, const std::array<int, 3> grid_size, const float thresh, MarchingCubesGrid marching_cubes_grid, uint32_t* __restrict__ vertex_count) {
+__global__ void marching_cubes_gen_vertices(const Partition prev_partition, const ParticleBuffer particle_buffer, const ParticleBuffer next_particle_buffer, const std::array<int, 3> bounding_box_min_arr, const std::array<float, 3> bounding_box_offset_arr, const std::array<int, 3> grid_size, const float thresh, MarchingCubesGrid marching_cubes_grid, uint32_t* __restrict__ vertex_count) {
 	uint32_t x = blockIdx.x * blockDim.x + threadIdx.x;
 	uint32_t y = blockIdx.y * blockDim.y + threadIdx.y;
 	uint32_t z = blockIdx.z * blockDim.z + threadIdx.z;
@@ -472,8 +485,10 @@ __global__ void marching_cubes_gen_vertices(const Partition prev_partition, cons
 			const ivec3 global_grid_blockid = global_grid_cellid / config::G_BLOCKSIZE;
 			const ivec3 global_grid_blockid_offset = global_grid_blockid - current_global_grid_blockid;
 			
+			int prev_minima[6];
 			int minima[6];
-			marching_cubes_get_cell_minima(prev_partition, particle_buffer, bounding_box_offset_arr, global_grid_blockid.data_arr(), global_grid_cellid.data_arr(), marching_cubes_cell_id.data_arr(), reinterpret_cast<std::array<int, 6>*>(&minima));
+			marching_cubes_get_cell_minima(prev_partition, next_particle_buffer, bounding_box_offset_arr, global_grid_blockid.data_arr(), global_grid_cellid.data_arr(), marching_cubes_cell_id.data_arr(), reinterpret_cast<std::array<int, 6>*>(&prev_minima), nullptr);
+			marching_cubes_get_cell_minima(prev_partition, particle_buffer, bounding_box_offset_arr, global_grid_blockid.data_arr(), global_grid_cellid.data_arr(), marching_cubes_cell_id.data_arr(), reinterpret_cast<std::array<int, 6>*>(&minima), reinterpret_cast<std::array<int, 6>*>(&prev_minima));
 
 			marching_cubes_grid.val(_1, marching_cubes_calculate_offset(x, y, z, grid_size)) = marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[minima_index], global_grid_blockid_offset.data_arr()) + 1;//index_x
 			
@@ -515,8 +530,10 @@ __global__ void marching_cubes_gen_vertices(const Partition prev_partition, cons
 			const ivec3 global_grid_blockid = global_grid_cellid / config::G_BLOCKSIZE;
 			const ivec3 global_grid_blockid_offset = global_grid_blockid - current_global_grid_blockid;
 			
+			int prev_minima[6];
 			int minima[6];
-			marching_cubes_get_cell_minima(prev_partition, particle_buffer, bounding_box_offset_arr, global_grid_blockid.data_arr(), global_grid_cellid.data_arr(), marching_cubes_cell_id.data_arr(), reinterpret_cast<std::array<int, 6>*>(&minima));
+			marching_cubes_get_cell_minima(prev_partition, next_particle_buffer, bounding_box_offset_arr, global_grid_blockid.data_arr(), global_grid_cellid.data_arr(), marching_cubes_cell_id.data_arr(), reinterpret_cast<std::array<int, 6>*>(&prev_minima), nullptr);
+			marching_cubes_get_cell_minima(prev_partition, particle_buffer, bounding_box_offset_arr, global_grid_blockid.data_arr(), global_grid_cellid.data_arr(), marching_cubes_cell_id.data_arr(), reinterpret_cast<std::array<int, 6>*>(&minima), reinterpret_cast<std::array<int, 6>*>(&prev_minima));
 			
 			marching_cubes_grid.val(_2, marching_cubes_calculate_offset(x, y, z, grid_size)) = marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[minima_index], global_grid_blockid_offset.data_arr()) + 1;//index_y
 			
@@ -558,8 +575,10 @@ __global__ void marching_cubes_gen_vertices(const Partition prev_partition, cons
 			const ivec3 global_grid_blockid = global_grid_cellid / config::G_BLOCKSIZE;
 			const ivec3 global_grid_blockid_offset = global_grid_blockid - current_global_grid_blockid;
 			
+			int prev_minima[6];
 			int minima[6];
-			marching_cubes_get_cell_minima(prev_partition, particle_buffer, bounding_box_offset_arr, global_grid_blockid.data_arr(), global_grid_cellid.data_arr(), marching_cubes_cell_id.data_arr(), reinterpret_cast<std::array<int, 6>*>(&minima));
+			marching_cubes_get_cell_minima(prev_partition, next_particle_buffer, bounding_box_offset_arr, global_grid_blockid.data_arr(), global_grid_cellid.data_arr(), marching_cubes_cell_id.data_arr(), reinterpret_cast<std::array<int, 6>*>(&prev_minima), nullptr);
+			marching_cubes_get_cell_minima(prev_partition, particle_buffer, bounding_box_offset_arr, global_grid_blockid.data_arr(), global_grid_cellid.data_arr(), marching_cubes_cell_id.data_arr(), reinterpret_cast<std::array<int, 6>*>(&minima), reinterpret_cast<std::array<int, 6>*>(&prev_minima));
 			
 			marching_cubes_grid.val(_3, marching_cubes_calculate_offset(x, y, z, grid_size)) = marching_cubes_convert_id<2 + 3, 3 + 3>(prev_partition, minima[minima_index], global_grid_blockid_offset.data_arr()) + 1;//index_z
 			
@@ -1513,7 +1532,7 @@ __global__ void marching_cubes_calculate_density(Partition partition, Partition 
 //TODO: Somehow use that several marching cubes cells lie in the same gridcell => several minima in one run, but not too much for shared memory
 //NOTE: Atomic loading and storing memory. This does not mean that one invocation is enough, but only, that invalid neighbouring cells might directly be removed
 template<typename Partition, typename ParticleBuffer, typename MarchingCubesGrid>
-__global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, const float thresh, MarchingCubesGrid marching_cubes_grid, const std::array<int, 3> bounding_box_min_arr, const std::array<float, 3> bounding_box_offset_arr, const std::array<int, 3> grid_size, uint32_t* removed_cells) {
+__global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, const float thresh, MarchingCubesGrid marching_cubes_grid, const std::array<int, 3> bounding_box_min_arr, const std::array<float, 3> bounding_box_offset_arr, const std::array<int, 3> grid_size, uint32_t* removed_cells) {
 	const ivec3 bounding_box_min {bounding_box_min_arr[0], bounding_box_min_arr[1], bounding_box_min_arr[2]};
 	const vec3 bounding_box_offset {bounding_box_offset_arr[0], bounding_box_offset_arr[1], bounding_box_offset_arr[2]};
 	
@@ -1541,9 +1560,11 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 		
 		if(inside){
 			//x-, x+, y-, y+, z-, z+
+			int prev_minima[6];
 			int minima[6];
 			
-			marching_cubes_get_cell_minima(prev_partition, particle_buffer, bounding_box_offset_arr, global_grid_blockid.data_arr(), global_grid_cellid.data_arr(), marching_cubes_cell_id.data_arr(), reinterpret_cast<std::array<int, 6>*>(&minima));
+			marching_cubes_get_cell_minima(prev_partition, next_particle_buffer, bounding_box_offset_arr, global_grid_blockid.data_arr(), global_grid_cellid.data_arr(), marching_cubes_cell_id.data_arr(), reinterpret_cast<std::array<int, 6>*>(&prev_minima), nullptr);
+			marching_cubes_get_cell_minima(prev_partition, particle_buffer, bounding_box_offset_arr, global_grid_blockid.data_arr(), global_grid_cellid.data_arr(), marching_cubes_cell_id.data_arr(), reinterpret_cast<std::array<int, 6>*>(&minima), reinterpret_cast<std::array<int, 6>*>(&prev_minima));
 			
 			/*
 			printf("P %d %d %d # %d %d %d # %d %d %d %d %d %d # %d %d %d %d %d %d\n"
