@@ -1243,6 +1243,7 @@ __forceinline__ __device__ void alpha_shapes_finalize_particles(const ParticleBu
 		particle_bin.val(_3, particle_id_in_bin) = normal[2] / normal_length;
 		particle_bin.val(_4, particle_id_in_bin) = mean_curvature;
 		particle_bin.val(_5, particle_id_in_bin) = gauss_curvature;
+		particle_bin.val(_6, particle_id_in_bin) = summed_area;//FIXME: Ensure this is 0 for points that are not triangle vertices
 	}
 }
 
@@ -3584,7 +3585,9 @@ __global__ void alpha_shapes_clear_surface_particle_buffer(const ParticleBuffer<
 		particle_bin.val(_4, particle_id_in_block % config::G_BIN_CAPACITY) = 0.0f;
 		//gauss_curvature/summed_laplacian
 		particle_bin.val(_5, particle_id_in_block % config::G_BIN_CAPACITY) = 0.0f;
+		//face_area
 		particle_bin.val(_6, particle_id_in_block % config::G_BIN_CAPACITY) = 0.0f;
+		//temporary
 		particle_bin.val(_7, particle_id_in_block % config::G_BIN_CAPACITY) = 0.0f;
 	}
 }

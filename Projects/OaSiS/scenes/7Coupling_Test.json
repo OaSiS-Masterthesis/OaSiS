@@ -17,7 +17,7 @@
 			"viscosity": 1e-2,
 			"offset": [
 				0.1,
-				0.045,
+				0.06,
 				0.1
 			],
 			"grid_offset": [

@@ -194,11 +194,18 @@ __forceinline__ __device__ void store_data_solid(const ParticleBuffer<MaterialTy
 template<MaterialE MaterialTypeSolid>
 __forceinline__ __device__ void store_data_neigbours_solid(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, float* gradient_solid, const float W1_0, const float delta_w_2, const FetchParticleBufferDataIntermediate& data);
 
+template<MaterialE MaterialTypeSolid>
+__forceinline__ __device__ void store_data_neigbours_coupling_solid(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, float* coupling_solid, const float W_2, const float W1_0, const float area, const float normal);
+
 template<MaterialE MaterialTypeFluid>
 __forceinline__ __device__ void store_data_fluid(const ParticleBuffer<MaterialTypeFluid> particle_buffer_solid, const FetchParticleBufferDataIntermediate& data);
 
 template<MaterialE MaterialTypeFluid>
 __forceinline__ __device__ void store_data_neigbours_fluid(const ParticleBuffer<MaterialTypeFluid> particle_buffer_solid, float* gradient_fluid, float* boundary_fluid, const float W_1, const float W1_0, const float delta_w_1, const FetchParticleBufferDataIntermediate& data);
+
+template<MaterialE MaterialTypeFluid>
+__forceinline__ __device__ void store_data_neigbours_coupling_fluid(const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, float* coupling_fluid, const float W_1, const float W1_0, const float area, const float normal);
+
 
 template<>
 __forceinline__ __device__ void store_data_solid<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer_solid, float* scaling_solid, float* pressure_solid_nominator, float* pressure_solid_denominator, const float W_0, const float W_2, const FetchParticleBufferDataIntermediate& data){
@@ -259,6 +266,33 @@ __forceinline__ __device__ void store_data_neigbours_solid<MaterialE::FIXED_CORO
 		atomicAdd(gradient_solid, -(data.mass / particle_buffer_solid.rho) * data.J * W1_0 * delta_w_2);
 	}
 }
+								
+template<>
+__forceinline__ __device__ void store_data_neigbours_coupling_solid<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer_solid, float* coupling_solid, const float W_2, const float W1_0, const float area, const float normal){
+	printf("Material type not supported for coupling as solid.");
+}
+
+template<>
+__forceinline__ __device__ void store_data_neigbours_coupling_solid<MaterialE::FIXED_COROTATED>(const ParticleBuffer<MaterialE::FIXED_COROTATED> particle_buffer_solid, float* coupling_solid, const float W_2, const float W1_0, const float area, const float normal){
+	printf("Material type not supported for coupling as solid.");
+}
+
+template<>
+__forceinline__ __device__ void store_data_neigbours_coupling_solid<MaterialE::SAND>(const ParticleBuffer<MaterialE::SAND> particle_buffer_solid, float* coupling_solid, const float W_2, const float W1_0, const float area, const float normal){
+	printf("Material type not supported for coupling as solid.");
+}
+
+template<>
+__forceinline__ __device__ void store_data_neigbours_coupling_solid<MaterialE::NACC>(const ParticleBuffer<MaterialE::NACC> particle_buffer_solid, float* coupling_solid, const float W_2, const float W1_0, const float area, const float normal){
+	printf("Material type not supported for coupling as solid.");
+}
+
+template<>
+__forceinline__ __device__ void store_data_neigbours_coupling_solid<MaterialE::FIXED_COROTATED_GHOST>(const ParticleBuffer<MaterialE::FIXED_COROTATED_GHOST> particle_buffer_solid, float* coupling_solid, const float W_2, const float W1_0, const float area, const float normal){
+	if(coupling_solid != nullptr){
+		atomicAdd(coupling_solid, area * W_2 * W1_0 * normal);
+	}
+}
 
 template<>
 __forceinline__ __device__ void store_data_fluid<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer_fluid, const FetchParticleBufferDataIntermediate& data){			
@@ -313,6 +347,33 @@ __forceinline__ __device__ void store_data_neigbours_fluid<MaterialE::NACC>(cons
 
 template<>
 __forceinline__ __device__ void store_data_neigbours_fluid<MaterialE::FIXED_COROTATED_GHOST>(const ParticleBuffer<MaterialE::FIXED_COROTATED_GHOST> particle_buffer_fluid, float* gradient_fluid, float* boundary_fluid, const float W_1, const float W1_0, const float delta_w_1, const FetchParticleBufferDataIntermediate& data){
+	printf("Material type not supported for coupling as fluid.");
+}
+
+template<>
+__forceinline__ __device__ void store_data_neigbours_coupling_fluid<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer_fluid, float* coupling_fluid, const float W_1, const float W1_0, const float area, const float normal){
+	if(coupling_fluid != nullptr){
+		atomicAdd(coupling_fluid, area * W_1 * W1_0 * normal);
+	}
+}
+
+template<>
+__forceinline__ __device__ void store_data_neigbours_coupling_fluid<MaterialE::FIXED_COROTATED>(const ParticleBuffer<MaterialE::FIXED_COROTATED> particle_buffer_fluid, float* coupling_fluid, const float W_1, const float W1_0, const float area, const float normal){
+	printf("Material type not supported for coupling as fluid.");
+}
+
+template<>
+__forceinline__ __device__ void store_data_neigbours_coupling_fluid<MaterialE::SAND>(const ParticleBuffer<MaterialE::SAND> particle_buffer_fluid, float* coupling_fluid, const float W_1, const float W1_0, const float area, const float normal){
+	printf("Material type not supported for coupling as fluid.");
+}
+
+template<>
+__forceinline__ __device__ void store_data_neigbours_coupling_fluid<MaterialE::NACC>(const ParticleBuffer<MaterialE::NACC> particle_buffer_fluid, float* coupling_fluid, const float W_1, const float W1_0, const float area, const float normal){
+	printf("Material type not supported for coupling as fluid.");
+}
+
+template<>
+__forceinline__ __device__ void store_data_neigbours_coupling_fluid<MaterialE::FIXED_COROTATED_GHOST>(const ParticleBuffer<MaterialE::FIXED_COROTATED_GHOST> particle_buffer_fluid, float* coupling_fluid, const float W_1, const float W1_0, const float area, const float normal){
 	printf("Material type not supported for coupling as fluid.");
 }
 
@@ -628,7 +689,220 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 }
 
 template<typename Partition, typename Grid, MaterialE MaterialTypeSolid, MaterialE MaterialTypeFluid>
-__global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition partition, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, const int* iq_lhs_rows, const int* iq_lhs_columns, float* iq_lhs_values, float* iq_rhs, const int* iq_solve_velocity_rows, const int* iq_solve_velocity_columns, float* iq_solve_velocity_values) {
+__forceinline__ __device__ void aggregate_data_coupling(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Grid grid_solid, const SurfaceParticleBuffer surface_particle_buffer, const int current_blockno, const ivec3 current_blockid, const ivec3 block_cellid, const int particle_id_in_block, const int column_start, const int column_end, float* coupling_solid, float* coupling_fluid) {
+	const int column_range = column_end - column_start;
+	
+	//Fetch index of the advection source
+	int advection_source_blockno;
+	int source_pidib;
+	{
+		//Fetch advection (direction at high bits, particle in in cell at low bits)
+		const int advect = next_particle_buffer_solid.blockbuckets[current_blockno * config::G_PARTICLE_NUM_PER_BLOCK + particle_id_in_block];
+
+		//Retrieve the direction (first stripping the particle id by division)
+		ivec3 offset;
+		dir_components<3>(advect / config::G_PARTICLE_NUM_PER_BLOCK, offset.data_arr());
+
+		//Retrieve the particle id by AND for lower bits
+		source_pidib = advect & (config::G_PARTICLE_NUM_PER_BLOCK - 1);
+
+		//Get global index by adding blockid and offset
+		const ivec3 global_advection_index = current_blockid + offset;
+
+		//Get block_no from partition
+		advection_source_blockno = prev_partition.query(global_advection_index);
+	}
+
+	auto surface_particle_bin = surface_particle_buffer.ch(_0, particle_buffer_solid.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
+	const int surface_particle_id_in_bin = source_pidib  % config::G_BIN_CAPACITY;
+
+	//Fetch position and determinant of deformation gradient
+	FetchParticleBufferDataIntermediate fetch_particle_buffer_tmp = {};
+	fetch_particle_buffer_data<MaterialTypeSolid>(particle_buffer_solid, advection_source_blockno, source_pidib, fetch_particle_buffer_tmp);
+	//const float mass = fetch_particle_buffer_tmp.mass;
+	vec3 pos {fetch_particle_buffer_tmp.pos[0], fetch_particle_buffer_tmp.pos[1], fetch_particle_buffer_tmp.pos[2]};
+	//float J	 = fetch_particle_buffer_tmp.J;
+	
+	vec3 normal;
+	const SurfacePointType point_type = *reinterpret_cast<SurfacePointType*>(&surface_particle_bin.val(_0, surface_particle_id_in_bin));
+	normal[0] = surface_particle_bin.val(_1, surface_particle_id_in_bin);
+	normal[1] = surface_particle_bin.val(_2, surface_particle_id_in_bin);
+	normal[2] = surface_particle_bin.val(_3, surface_particle_id_in_bin);
+	const float area = surface_particle_bin.val(_6, surface_particle_id_in_bin);
+	
+	//Get position of grid cell
+	const ivec3 global_base_index_solid_0 = get_cell_id<0>(pos.data_arr(), grid_solid.get_offset());
+	const ivec3 global_base_index_solid_2 = get_cell_id<2>(pos.data_arr(), grid_solid.get_offset());
+
+	//Get position relative to grid cell
+	const vec3 local_pos_solid_0 = pos - (global_base_index_solid_0 + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
+	const vec3 local_pos_solid_2 = pos - (global_base_index_solid_2 + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
+
+	//Calculate weights
+	vec3x3 weight_solid_0;
+	vec3x3 weight_solid_2;
+	
+	vec3x3 weight_fluid_0;
+	vec3x3 weight_fluid_1;
+	
+	#pragma unroll 3
+	for(int dd = 0; dd < 3; ++dd) {
+		const std::array<float, INTERPOLATION_DEGREE_SOLID_PRESSURE + 1> current_weight_solid_0 = bspline_weight<float, INTERPOLATION_DEGREE_SOLID_PRESSURE>(local_pos_solid_0[dd]);
+		for(int i = 0; i < INTERPOLATION_DEGREE_SOLID_PRESSURE + 1; ++i){
+			weight_solid_0(dd, i)		  = current_weight_solid_0[i];
+		}
+		for(int i = INTERPOLATION_DEGREE_SOLID_PRESSURE + 1; i < 3; ++i){
+			weight_solid_0(dd, i)		  = 0.0f;
+		}
+		
+		const std::array<float, INTERPOLATION_DEGREE_SOLID_VELOCITY + 1> current_weight_solid_2 = bspline_weight<float, INTERPOLATION_DEGREE_SOLID_VELOCITY>(local_pos_solid_2[dd]);
+		for(int i = 0; i < INTERPOLATION_DEGREE_SOLID_VELOCITY + 1; ++i){
+			weight_solid_2(dd, i)		  = current_weight_solid_2[i];
+		}
+		for(int i = INTERPOLATION_DEGREE_SOLID_VELOCITY + 1; i < 3; ++i){
+			weight_solid_2(dd, i)		  = 0.0f;
+		}
+		
+		const std::array<float, INTERPOLATION_DEGREE_FLUID_PRESSURE + 1> current_weight_fluid_0 = bspline_weight<float, INTERPOLATION_DEGREE_FLUID_PRESSURE>(local_pos_solid_0[dd]);
+		for(int i = 0; i < INTERPOLATION_DEGREE_FLUID_PRESSURE + 1; ++i){
+			weight_fluid_0(dd, i)		  = current_weight_fluid_0[i];
+		}
+		for(int i = INTERPOLATION_DEGREE_FLUID_PRESSURE + 1; i < 3; ++i){
+			weight_fluid_0(dd, i)		  = 0.0f;
+		}
+		
+		const std::array<float, INTERPOLATION_DEGREE_FLUID_VELOCITY + 1> current_weight_fluid_1 = bspline_weight<float, INTERPOLATION_DEGREE_FLUID_VELOCITY>(local_pos_solid_2[dd]);
+		for(int i = 0; i < INTERPOLATION_DEGREE_FLUID_VELOCITY + 1; ++i){
+			weight_fluid_1(dd, i)		  = current_weight_fluid_1[i];
+		}
+		for(int i = INTERPOLATION_DEGREE_FLUID_VELOCITY + 1; i < 3; ++i){
+			weight_fluid_1(dd, i)		  = 0.0f;
+		}
+	}
+	
+	//Get near fluid particles
+	bool has_neighbours = false;
+	for(int grid_x = -1; grid_x <= 1; ++grid_x){
+		for(int grid_y = -1; grid_y <= 1; ++grid_y){
+			for(int grid_z = -1; grid_z <= 1; ++grid_z){
+				const ivec3 cell_offset {grid_x, grid_y, grid_z};
+				const ivec3 current_cellid = global_base_index_solid_2 + cell_offset;
+				const ivec3 current_blockid = current_cellid / static_cast<int>(config::G_BLOCKSIZE);
+				const int current_blockno_fluid = prev_partition.query(current_blockid);
+				
+				//Skip empty blocks
+				if(current_blockno_fluid == -1){
+					continue;
+				}
+				
+				for(int particle_id_in_block_fluid = 0; particle_id_in_block_fluid <  next_particle_buffer_fluid.particle_bucket_sizes[current_blockno_fluid]; particle_id_in_block_fluid++) {
+					//Fetch index of the advection source
+					int advection_source_blockno_fluid;
+					int source_pidib_fluid;
+					{
+						//Fetch advection (direction at high bits, particle in in cell at low bits)
+						const int advect = next_particle_buffer_fluid.blockbuckets[current_blockno_fluid * config::G_PARTICLE_NUM_PER_BLOCK + particle_id_in_block_fluid];
+
+						//Retrieve the direction (first stripping the particle id by division)
+						ivec3 offset;
+						dir_components<3>(advect / config::G_PARTICLE_NUM_PER_BLOCK, offset.data_arr());
+
+						//Retrieve the particle id by AND for lower bits
+						source_pidib_fluid = advect & (config::G_PARTICLE_NUM_PER_BLOCK - 1);
+
+						//Get global index by adding blockid and offset
+						const ivec3 global_advection_index = current_blockid + offset;
+
+						//Get block_no from partition
+						advection_source_blockno_fluid = prev_partition.query(global_advection_index);
+					}
+
+					//Fetch position and determinant of deformation gradient
+					FetchParticleBufferDataIntermediate fetch_particle_buffer_tmp = {};
+					fetch_particle_buffer_data<MaterialTypeFluid>(particle_buffer_fluid, advection_source_blockno_fluid, source_pidib_fluid, fetch_particle_buffer_tmp);
+					//const float mass_fluid = fetch_particle_buffer_tmp.mass;
+					vec3 pos_fluid {fetch_particle_buffer_tmp.pos[0], fetch_particle_buffer_tmp.pos[1], fetch_particle_buffer_tmp.pos[2]};
+					//float J_fluid	 = fetch_particle_buffer_tmp.J;
+					
+					const vec3 diff = pos - pos_fluid;
+					const float distance = std::sqrt(diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]);
+					
+					if(distance <= 0.5f * config::G_DX){
+						has_neighbours = true;
+						break;
+					}
+				}
+			}
+		}
+	}
+	
+	//Only percede if we have an interface
+	//FIXME: Currently only handling outer points
+	if(has_neighbours && point_type == SurfacePointType::OUTER_POINT){
+	
+		//Store data
+		//Note: Weights are 0 if outside of interpolation degree/radius around particles cell
+		//Foreach node in the block we add values accoring to particle kernel, also handling all neighbours of the particles cell
+		for(char i = -static_cast<char>(INTERPOLATION_DEGREE_MAX); i < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; i++) {
+			for(char j = -static_cast<char>(INTERPOLATION_DEGREE_MAX); j < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; j++) {
+				for(char k = -static_cast<char>(INTERPOLATION_DEGREE_MAX); k < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; k++) {
+					const ivec3 local_id = (global_base_index_solid_2 - block_cellid) + ivec3(i, j, k);
+					//Only handle for nodes in current block
+					if(
+						   (local_id[0] >= 0 && local_id[0] < config::G_BLOCKSIZE)
+						&& (local_id[1] >= 0 && local_id[1] < config::G_BLOCKSIZE)
+						&& (local_id[2] >= 0 && local_id[2] < config::G_BLOCKSIZE)
+					){
+						//Weight
+						const float W_0 = weight_solid_0(0, std::abs(i)) * weight_solid_0(1, std::abs(j)) * weight_solid_0(2, std::abs(k));
+						const float W_2 = weight_solid_2(0, std::abs(i)) * weight_solid_2(1, std::abs(j)) * weight_solid_2(2, std::abs(k));
+						
+						const float W_1_fluid = weight_fluid_1(0, std::abs(i)) * weight_fluid_1(1, std::abs(j)) * weight_fluid_1(2, std::abs(k));
+						
+						for(size_t alpha = 0; alpha < 3; ++alpha){
+							//Handle all neighbours
+							for(char i1 = -static_cast<char>(INTERPOLATION_DEGREE_MAX); i1 < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; i1++) {
+								for(char j1 = -static_cast<char>(INTERPOLATION_DEGREE_MAX); j1 < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; j1++) {
+									for(char k1 = -static_cast<char>(INTERPOLATION_DEGREE_MAX); k1 < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; k1++) {
+										const ivec3 neighbour_local_offset {i1, j1, k1};
+										const ivec3 neighbour_kernel_offset = ivec3(i, j, k) + neighbour_local_offset;
+										const ivec3 neighbour_absolute_kernel_offset {std::abs(i1), std::abs(j1), std::abs(k1)};
+										const ivec3 neighbour_absolute_local_offset = neighbour_local_offset + ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));
+										
+										const int column = neighbour_absolute_local_offset[0] * ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1)) + neighbour_absolute_local_offset[1] * (2 * INTERPOLATION_DEGREE_MAX + 1) + neighbour_absolute_local_offset[2];
+										//Only handle for neighbours of neighbour
+										if(
+											   (column >= column_start && column < column_end)
+											&& (neighbour_absolute_kernel_offset[0] < INTERPOLATION_DEGREE_MAX)
+											&& (neighbour_absolute_kernel_offset[1] < INTERPOLATION_DEGREE_MAX)
+											&& (neighbour_absolute_kernel_offset[2] < INTERPOLATION_DEGREE_MAX)
+										){
+											const int local_column = column - column_start;
+											
+											const float W1_0 = weight_solid_0(0, neighbour_absolute_kernel_offset[0]) * weight_solid_0(1, neighbour_absolute_kernel_offset[1]) * weight_solid_0(2, neighbour_absolute_kernel_offset[2]);
+											
+											const float W_0_fluid = weight_fluid_0(0, neighbour_absolute_kernel_offset[0]) * weight_fluid_0(1, neighbour_absolute_kernel_offset[1]) * weight_fluid_0(2, neighbour_absolute_kernel_offset[2]);
+											
+											
+											float* current_coupling_solid = (coupling_solid == nullptr ? nullptr : &(coupling_solid[(3 * config::G_BLOCKSIZE * config::G_BLOCKSIZE * column_range) * local_id[0] + (3 * config::G_BLOCKSIZE * column_range) * local_id[1] + (3 * column_range) * local_id[2] + 3 * local_column + alpha]));
+											float* current_coupling_fluid = (coupling_fluid == nullptr ? nullptr : &(coupling_fluid[(3 * config::G_BLOCKSIZE * config::G_BLOCKSIZE * column_range) * local_id[0] + (3 * config::G_BLOCKSIZE * column_range) * local_id[1] + (3 * column_range) * local_id[2] + 3 * local_column + alpha]));
+
+											store_data_neigbours_coupling_solid(particle_buffer_solid, current_coupling_solid, W_2, W1_0, area, normal[alpha]);
+											store_data_neigbours_coupling_fluid(particle_buffer_fluid, current_coupling_fluid, W_1_fluid, W_0_fluid, area, normal[alpha]);
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+template<typename Partition, typename Grid, MaterialE MaterialTypeSolid, MaterialE MaterialTypeFluid>
+__global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition partition, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, const SurfaceParticleBuffer surface_particle_buffer_solid, const SurfaceParticleBuffer surface_particle_buffer_fluid, const int* iq_lhs_rows, const int* iq_lhs_columns, float* iq_lhs_values, float* iq_rhs, const int* iq_solve_velocity_rows, const int* iq_solve_velocity_columns, float* iq_solve_velocity_values) {
 	constexpr size_t KERNEL_SIZE = INTERPOLATION_DEGREE_MAX / config::G_BLOCKSIZE;
 	
 	const size_t base_row = NUM_ROWS_PER_BLOCK * blockIdx.x;
@@ -883,6 +1157,70 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 		}
 	}
 	
+	for(int column = 0; column < NUM_COLUMNS_PER_BLOCK; ++column){
+		__shared__ float coupling_solid[3 * config::G_BLOCKVOLUME];
+		__shared__ float coupling_fluid[3 * config::G_BLOCKVOLUME];
+		
+		//Clear memory
+		for(size_t i = 0; i < config::G_BLOCKVOLUME; ++i){
+			for(size_t j = 0; j < 3; ++j){
+				if(get_thread_index<BLOCK_SIZE, (3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * NUM_COLUMNS_PER_BLOCK * i + 3 * column + j) == threadIdx.x){
+					coupling_solid[3 * i + j] = 0.0f;
+					coupling_fluid[3 * i + j] = 0.0f;
+				}
+			}
+		}
+		__syncthreads();
+		
+		//TODO: Maybe only load neighbour cells not neighbour blocks
+		for(int grid_x = -static_cast<int>(KERNEL_SIZE); grid_x <= static_cast<int>(KERNEL_SIZE); ++grid_x){
+			for(int grid_y = -static_cast<int>(KERNEL_SIZE); grid_y <= static_cast<int>(KERNEL_SIZE); ++grid_y){
+				for(int grid_z = -static_cast<int>(KERNEL_SIZE); grid_z <= static_cast<int>(KERNEL_SIZE); ++grid_z){
+					const ivec3 block_offset {grid_x, grid_y, grid_z};
+					const ivec3 current_blockid = blockid + block_offset;
+					const int current_blockno = prev_partition.query(current_blockid);
+					
+					//Skip empty blocks
+					if(current_blockno == -1){
+						continue;
+					}
+					
+					
+					for(int particle_id_in_block = static_cast<int>(threadIdx.x); particle_id_in_block < next_particle_buffer_solid.particle_bucket_sizes[current_blockno]; particle_id_in_block += static_cast<int>(blockDim.x)) {
+						aggregate_data_coupling(
+							  particle_buffer_solid
+							, particle_buffer_fluid
+							, next_particle_buffer_solid
+							, next_particle_buffer_fluid
+							, prev_partition
+							, grid_solid
+							, surface_particle_buffer_solid
+							, current_blockno
+							, current_blockid
+							, block_cellid
+							, particle_id_in_block
+							, column
+							, column + 1
+							, &(coupling_solid[0])
+							, &(coupling_fluid[0])
+						);
+					}
+				}
+			}
+		}
+		__syncthreads();
+		
+		//Spread data
+		for(size_t i = 0; i < config::G_BLOCKVOLUME; ++i){
+			for(size_t j = 0; j < 3; ++j){
+				if(get_thread_index<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * NUM_COLUMNS_PER_BLOCK * i + 3 * column + j) == threadIdx.x){
+					coupling_solid_local[get_thread_offset<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * NUM_COLUMNS_PER_BLOCK * i + 3 * column + j)] += coupling_solid[3 * i + j];
+					coupling_fluid_local[get_thread_offset<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * NUM_COLUMNS_PER_BLOCK * i + 3 * column + j)] += coupling_fluid[3 * i + j];
+				}
+			}
+		}
+	}
+	
 	for(int i = 0; i < (3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE; ++i){
 		if(mass_solid_local[i] > 0.0f && mass_fluid_local[i] > 0.0f){
 			printf("ABC3 %d %d # %.28f %.28f\n", static_cast<int>(threadIdx.x), i, mass_solid_local[i], mass_fluid_local[i]);
@@ -1054,7 +1392,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 						const int column_index = iq_lhs_rows[row_index] + j * NUM_COLUMNS_PER_BLOCK + column;
 						
 						if(a[i][lhs_block_offsets_per_row[i][j]] != 0.0f){
-							//printf("ABC0 %d %d %d # %d %d\n", static_cast<int>(i), static_cast<int>(j), static_cast<int>(lhs_block_offsets_per_row[i][j]), row_index, column_index);
+							//printf("IQ_LHS %d %d %d # %d %d # %.28f\n", static_cast<int>(i), static_cast<int>(j), static_cast<int>(lhs_block_offsets_per_row[i][j]), row_index, column_index, a[i][lhs_block_offsets_per_row[i][j]]);
 						}
 						
 						atomicAdd(&(iq_lhs_values[column_index]), a[i][lhs_block_offsets_per_row[i][j]]);
@@ -1069,7 +1407,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 							const int column_index = iq_solve_velocity_rows[row_index] + j * NUM_COLUMNS_PER_BLOCK + column;
 							
 							if(solve_velocity[k][i][solve_velocity_block_offsets_per_row[i][j]] != 0.0f){
-								//printf("ABC0 %d %d %d %d # %d %d\n", static_cast<int>(i), static_cast<int>(j), static_cast<int>(solve_velocity_block_offsets_per_row[i][j]), k, row_index, column_index);
+								//printf("Solve_LHS %d %d %d # %d %d # %d # %.28f\n", static_cast<int>(i), static_cast<int>(j), static_cast<int>(solve_velocity_block_offsets_per_row[i][j]), row_index, column_index, k, solve_velocity[k][i][solve_velocity_block_offsets_per_row[i][j]]);
 							}
 							
 							atomicAdd(&(iq_solve_velocity_values[column_index]), solve_velocity[k][i][solve_velocity_block_offsets_per_row[i][j]]);
@@ -1102,7 +1440,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 				const int row_index = i * NUM_ROWS_PER_BLOCK * num_blocks + base_row + row;
 				
 				if(b[i] != 0.0f){
-					//printf("ABC1 %d %d\n", static_cast<int>(i), row_index);
+					//printf("IQ_RHS %d %d # %.28f\n", static_cast<int>(i), row_index, b[i]);
 				}
 				
 				if(isnan(b[i])){

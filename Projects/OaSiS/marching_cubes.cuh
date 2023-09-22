@@ -109,7 +109,9 @@ __global__ void marching_cubes_clear_surface_particle_buffer(const ParticleBuffe
 		particle_bin.val(_4, particle_id_in_block % config::G_BIN_CAPACITY) = 0.0f;
 		//gauss_curvature
 		particle_bin.val(_5, particle_id_in_block % config::G_BIN_CAPACITY) = 0.0f;
+		//face_area
 		particle_bin.val(_6, particle_id_in_block % config::G_BIN_CAPACITY) = 0.0f;
+		//temporary
 		particle_bin.val(_7, particle_id_in_block % config::G_BIN_CAPACITY) = 0.0f;
 	}
 }
@@ -1216,6 +1218,7 @@ __global__ void marching_cubes_gen_faces(Partition prev_partition, ParticleBuffe
 						float summed_angles = 0.0f;
 						
 						//If triangles were generated near the current cell, classify particles based on it.
+						bool is_triangle_vertex = false;
 						if(cell_triangles_count + cell_adjacent_triangles_count > 0){
 							bool outer = false;
 							size_t count_intersections = 0;
@@ -1270,6 +1273,7 @@ __global__ void marching_cubes_gen_faces(Partition prev_partition, ParticleBuffe
 								//If particle is a triangle vertex it is part of the triangle
 								if(current_triangle[0] == global_particle_id || current_triangle[1] == global_particle_id || current_triangle[2] == global_particle_id){
 									on_triangle_vertex = true;
+									is_triangle_vertex = true;
 									
 									if(current_triangle[0] == global_particle_id){
 										contact_index = 0;
@@ -1450,6 +1454,7 @@ __global__ void marching_cubes_gen_faces(Partition prev_partition, ParticleBuffe
 						surface_particle_bin.val(_3, surface_particle_id_in_bin) = summed_normal[2] / normal_length;
 						surface_particle_bin.val(_4, surface_particle_id_in_bin) = mean_curvature;
 						surface_particle_bin.val(_5, surface_particle_id_in_bin) = gauss_curvature;
+						surface_particle_bin.val(_6, surface_particle_id_in_bin) = (is_triangle_vertex ? summed_face_area : 0.0f);
 					}
 				}
 			}
