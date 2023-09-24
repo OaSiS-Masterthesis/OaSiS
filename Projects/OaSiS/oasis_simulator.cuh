@@ -1357,16 +1357,21 @@ struct OasisSimulator {
 						std::cout << std::endl;
 						*/
 						
+						std::cout << "TEST0" << std::endl;
 						
 						//IQ-System solve
 						// Create solver
 						ginkgo_executor->synchronize();
 						std::unique_ptr<gko::solver::Bicgstab<float>> iq_solver = iq_solver_factory->generate(iq_lhs);
 						ginkgo_executor->synchronize();
+						
+						std::cout << "TEST1" << std::endl;
 
 						// Solve system
 						iq_solver->apply(iq_rhs, iq_result);
 						ginkgo_executor->synchronize();
+						
+						std::cout << "TEST2" << std::endl;
 						
 						//Update velocity and ghost matrix strain
 						//v_s,t+1 = v_s,t + (- dt * M_s^-1 * G_s * p_g,t+1 + dt * M_s^-1 * H_s^T * h,t+1)
@@ -1376,6 +1381,28 @@ struct OasisSimulator {
 						iq_solve_velocity->apply(iq_result, iq_solve_velocity_result);
 						
 						ginkgo_executor->synchronize();
+						
+						std::cout << "TEST3" << std::endl;
+						
+						std::vector<float> printout_tmp4(3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						std::vector<float> printout_tmp5(iq::LHS_MATRIX_SIZE_Y * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						
+						cudaMemcpyAsync(printout_tmp4.data(), iq_solve_velocity_result->get_const_values(), sizeof(float) * 3 * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp5.data(), iq_result->get_const_values(), sizeof(float) * iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
+						
+						cudaDeviceSynchronize();
+						
+						std::cout << std::endl;
+						for(size_t j = 0; j < 3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME; ++j){
+							std::cout << printout_tmp4[j] << " ";
+						}
+						std::cout << std::endl;
+						for(size_t k = 0; k < iq::LHS_MATRIX_SIZE_Y; ++k){
+							for(size_t j = 0; j < iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME; ++j){
+								std::cout << printout_tmp5[k * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + j] << " ";
+							}
+							std::cout << std::endl;
+						}
 						
 						//Update velocity and strain
 						match(particle_bins[rollid][solid_id])([this, &cu_dev, &solid_id, &fluid_id, &iq_solve_velocity_result, &iq_result](auto& particle_buffer_solid) {
@@ -1408,29 +1435,7 @@ struct OasisSimulator {
 						
 						cu_dev.syncStream<streamIdx::COMPUTE>();
 						
-						
-						std::vector<float> printout_tmp4(3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
-						std::vector<float> printout_tmp5(iq::LHS_MATRIX_SIZE_Y * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
-						
-						cudaMemcpyAsync(printout_tmp4.data(), iq_solve_velocity_result->get_const_values(), sizeof(float) * 3 * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
-						cudaMemcpyAsync(printout_tmp5.data(), iq_result->get_const_values(), sizeof(float) * iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
-						
-						cudaDeviceSynchronize();
-						
-						std::cout << std::endl;
-						for(size_t j = 0; j < 3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME; ++j){
-							std::cout << printout_tmp4[j] << " ";
-						}
-						std::cout << std::endl;
-						for(size_t k = 0; k < iq::LHS_MATRIX_SIZE_Y; ++k){
-							for(size_t j = 0; j < iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME; ++j){
-								std::cout << printout_tmp5[k * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + j] << " ";
-							}
-							std::cout << std::endl;
-						}
-						
-						
-						
+						std::cout << "TEST4" << std::endl;
 					}
 					
 					timer.tock(fmt::format("GPU[{}] frame {} step {} IQ solve", gpuid, cur_frame, cur_step));
