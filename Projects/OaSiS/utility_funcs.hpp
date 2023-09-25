@@ -130,12 +130,12 @@ constexpr std::array<float, 4> bspline_gradient_weight<float, 3>(float p)
 
 template <size_t Degree, typename std::enable_if<(Degree <= 1), bool>::type = true>
 constexpr ivec3 get_cell_id(const std::array<float, 3>& position, const std::array<float, 3>& relative_offset, const std::array<float, 3>& inv_spacing = {config::G_DX_INV, config::G_DX_INV, config::G_DX_INV}) {
-	return ivec3(static_cast<int>(std::floor(position[0] * inv_spacing[0] - relative_offset[0] * config::G_BLOCKSIZE)), static_cast<int>(std::floor(position[1] * inv_spacing[1] - relative_offset[1] * config::G_BLOCKSIZE)), static_cast<int>(std::floor(position[2] * inv_spacing[2] - relative_offset[2] * config::G_BLOCKSIZE)));
+	return ivec3(static_cast<int>(std::floor(position[0] * inv_spacing[0] - relative_offset[0])), static_cast<int>(std::floor(position[1] * inv_spacing[1] - relative_offset[1])), static_cast<int>(std::floor(position[2] * inv_spacing[2] - relative_offset[2])));
 }
 
 template <size_t Degree, typename std::enable_if<(Degree > 1), bool>::type = true>
 constexpr ivec3 get_cell_id(const std::array<float, 3>& position, const std::array<float, 3>& relative_offset, const std::array<float, 3>& inv_spacing = {config::G_DX_INV, config::G_DX_INV, config::G_DX_INV}) {
-	return ivec3(static_cast<int>(std::floor(position[0] * inv_spacing[0] - relative_offset[0] * config::G_BLOCKSIZE - 0.5f * (Degree - 1))), static_cast<int>(std::floor(position[1] * inv_spacing[1] - relative_offset[1] * config::G_BLOCKSIZE - 0.5f * (Degree - 1))), static_cast<int>(std::floor(position[2] * inv_spacing[2] - relative_offset[2] * config::G_BLOCKSIZE - 0.5f * (Degree - 1))));
+	return ivec3(static_cast<int>(std::floor(position[0] * inv_spacing[0] - relative_offset[0] - 0.5f * (Degree - 1))), static_cast<int>(std::floor(position[1] * inv_spacing[1] - relative_offset[1] - 0.5f * (Degree - 1))), static_cast<int>(std::floor(position[2] * inv_spacing[2] - relative_offset[2] - 0.5f * (Degree - 1))));
 }
 
 template<size_t SideLength>

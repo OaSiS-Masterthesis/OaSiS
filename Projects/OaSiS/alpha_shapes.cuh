@@ -3251,7 +3251,7 @@ __global__ void alpha_shapes(const ParticleBuffer<MaterialType> particle_buffer,
 	
 	//TODO: Actually we only need to handle blocks in radius of sqrt(alpha) around box
 	//Filter by max distance; This cannot affect particles of current cell
-	const vec3 cell_center = (cellid + 2.0f + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;//0->2.0 1->3.0 ...; 1.5 is lower bound of block 0, 5.5 is lower bound of block 1, ...; 1.5 is lower bound of cell 0, 2.5 is lower bound of cell 1, ...
+	const vec3 cell_center = (cellid + 2.0f + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2])) * config::G_DX;//0->2.0 1->3.0 ...; 1.5 is lower bound of block 0, 5.5 is lower bound of block 1, ...; 1.5 is lower bound of cell 0, 2.5 is lower bound of cell 1, ...
 	int thread_particle_count = alpha_shapes_get_thread_count<ALPHA_SHAPES_BLOCK_SIZE, ALPHA_SHAPES_MAX_PARTICLE_COUNT_PER_THREAD>(threadIdx.x, tmp_particle_bucket_size);
 	for(int particle_id = 0; particle_id < thread_particle_count; particle_id++) {
 		const std::array<float, 3> particle_position_arr = alpha_shapes_get_particle_position(particle_buffer, prev_partition, particle_indices[particle_id], blockid);

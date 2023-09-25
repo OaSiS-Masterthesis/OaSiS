@@ -312,7 +312,7 @@ struct OasisSimulator {
 			//Maximum 100 iterations
 			std::shared_ptr<gko::stop::Iteration::Factory> iter_stop = gko::share(
 				gko::stop::Iteration::build()
-				.with_max_iters(10u)
+				.with_max_iters(1000u)
 				.on(ginkgo_executor)
 			);
 			
@@ -966,7 +966,7 @@ struct OasisSimulator {
 							
 							//NOTE: Plus 1 cause both min and max are inclusive
 							const ivec3 marching_cubes_grid_size = ((bounding_box_max - bounding_box_min + ivec3(1, 1, 1)) * MARCHING_CUBES_GRID_SCALING).cast<int>();
-							const vec3 bounding_box_offset = (vec3(grid_blocks[0][i].get_offset()[0], grid_blocks[0][i].get_offset()[1], grid_blocks[0][i].get_offset()[2]) * config::G_BLOCKSIZE + bounding_box_min) * config::G_DX;
+							const vec3 bounding_box_offset = (vec3(grid_blocks[0][i].get_offset()[0], grid_blocks[0][i].get_offset()[1], grid_blocks[0][i].get_offset()[2]) + bounding_box_min) * config::G_DX;
 							const size_t marching_cubes_block_count = marching_cubes_grid_size[0] * marching_cubes_grid_size[1] * marching_cubes_grid_size[2];
 							
 							LaunchConfig marching_cubes_launch_config(0, 0);
@@ -2430,7 +2430,7 @@ struct OasisSimulator {
 					
 					//NOTE: Plus 1 cause both min and max are inclusive
 					const ivec3 marching_cubes_grid_size = ((bounding_box_max - bounding_box_min + ivec3(1, 1, 1)) * MARCHING_CUBES_GRID_SCALING).cast<int>();
-					const vec3 bounding_box_offset = (vec3(grid_blocks[0][i].get_offset()[0], grid_blocks[0][i].get_offset()[1], grid_blocks[0][i].get_offset()[2]) * config::G_BLOCKSIZE + bounding_box_min) * config::G_DX;
+					const vec3 bounding_box_offset = (vec3(grid_blocks[0][i].get_offset()[0], grid_blocks[0][i].get_offset()[1], grid_blocks[0][i].get_offset()[2]) + bounding_box_min) * config::G_DX;
 					const size_t marching_cubes_block_count = marching_cubes_grid_size[0] * marching_cubes_grid_size[1] * marching_cubes_grid_size[2];
 					
 					LaunchConfig marching_cubes_launch_config(0, 0);

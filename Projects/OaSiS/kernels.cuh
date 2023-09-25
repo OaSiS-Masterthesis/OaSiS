@@ -437,7 +437,7 @@ __global__ void rasterize(uint32_t particle_counts, const ParticleArray particle
 	const ivec3 global_base_index = get_cell_id<2>(global_pos.data_arr(), grid.get_offset());
 
 	//Calculate position relative to grid cell
-	const vec3 local_pos = global_pos - (global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
+	const vec3 local_pos = global_pos - (global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2])) * config::G_DX;
 
 	//Calc kernel
 	vec<std::array<float, 3>, 3> dws;
@@ -1252,7 +1252,7 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 			ivec3 global_base_index = get_cell_id<2>(pos.data_arr(), grid.get_offset());
 
 			//Get position relative to grid cell
-			vec3 local_pos = pos - (global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
+			vec3 local_pos = pos - (global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2])) * config::G_DX;
 
 			//Save global_base_index
 			ivec3 base_index = global_base_index;
@@ -1329,7 +1329,7 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 			ivec3 new_global_base_index = get_cell_id<2>(pos.data_arr(), grid.get_offset());
 
 			//Update local position
-			local_pos = pos - (new_global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
+			local_pos = pos - (new_global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2])) * config::G_DX;
 			
 			//Store index and movement direction
 			{
@@ -1505,7 +1505,7 @@ __global__ void particle_shell_collision(Duration dt, ParticleBuffer<MaterialTyp
 		ivec3 global_base_index = get_cell_id<2>(pos.data_arr(), grid.get_offset());
 
 		//Get position relative to grid cell
-		vec3 local_pos = pos - (global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
+		vec3 local_pos = pos - (global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2])) * config::G_DX;
 
 		//Save global_base_index
 		ivec3 base_index = global_base_index;
@@ -2254,7 +2254,7 @@ __global__ void grid_to_shell(Duration dt, Duration new_dt, const ParticleBuffer
 		ivec3 global_base_index = get_cell_id<2>(pos.data_arr(), grid.get_offset());
 
 		//Get position relative to grid cell
-		vec3 local_pos = pos - (global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
+		vec3 local_pos = pos - (global_base_index + vec3(grid.get_offset()[0], grid.get_offset()[1], grid.get_offset()[2])) * config::G_DX;
 
 		//Save global_base_index
 		ivec3 base_index = global_base_index;
@@ -2402,9 +2402,9 @@ __forceinline__ __device__ float spawn_new_particles(ParticleBuffer<MaterialType
 		//TODO: Different way to calculate this?
 		//NOTE: 0.0 is excluded by curand_uniform so we take 0.5 - curand_uniform to get range [-0.5; 0.5[;
 		const vec3 particle_pos {
-			  (static_cast<float>(new_global_base_index[0] + 1) + grid.get_offset()[0] * config::G_BLOCKSIZE + (0.5f - curand_uniform(&random_state))) * config::G_DX
-			, (static_cast<float>(new_global_base_index[1] + 1) + grid.get_offset()[1] * config::G_BLOCKSIZE + (0.5f - curand_uniform(&random_state))) * config::G_DX
-			, (static_cast<float>(new_global_base_index[2] + 1) + grid.get_offset()[2] * config::G_BLOCKSIZE + (0.5f - curand_uniform(&random_state))) * config::G_DX
+			  (static_cast<float>(new_global_base_index[0] + 1) + grid.get_offset()[0] + (0.5f - curand_uniform(&random_state))) * config::G_DX
+			, (static_cast<float>(new_global_base_index[1] + 1) + grid.get_offset()[1] + (0.5f - curand_uniform(&random_state))) * config::G_DX
+			, (static_cast<float>(new_global_base_index[2] + 1) + grid.get_offset()[2] + (0.5f - curand_uniform(&random_state))) * config::G_DX
 		};
 
 		//TODO: Ensure particle_pos is in the right cell. Or calc cell by particle pos and store momentum in the right place
@@ -2662,7 +2662,7 @@ __global__ void shell_to_grid(Duration dt, Duration new_dt, int partition_block_
 		ivec3 new_global_base_index = get_cell_id<2>(extrapolated_pos.data_arr(), next_grid.get_offset());
 
 		//Get position relative to grid cell
-		const vec3 local_pos = extrapolated_pos - (new_global_base_index + vec3(next_grid.get_offset()[0], next_grid.get_offset()[1], next_grid.get_offset()[2]) * config::G_BLOCKSIZE) * config::G_DX;
+		const vec3 local_pos = extrapolated_pos - (new_global_base_index + vec3(next_grid.get_offset()[0], next_grid.get_offset()[1], next_grid.get_offset()[2])) * config::G_DX;
 
 		//Calculate weights and mask global index
 		vec3x3 dws;
