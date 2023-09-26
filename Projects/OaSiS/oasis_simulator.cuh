@@ -194,6 +194,7 @@ struct OasisSimulator {
 	float max_vels;
 	int partition_block_count;
 	int neighbor_block_count;
+	int total_neighbor_block_count;
 	int exterior_block_count;///< num blocks
 	std::vector<int> bincount									 = {};
 	std::vector<uint32_t> particle_counts						 = {};///< num particles
@@ -249,6 +250,7 @@ struct OasisSimulator {
 		, max_vels()
 		, partition_block_count()
 		, neighbor_block_count()
+		, total_neighbor_block_count()
 		, exterior_block_count()
 		//, surface_vertex_buffer(nullptr)
 		, surface_triangle_buffer(nullptr)
@@ -312,7 +314,7 @@ struct OasisSimulator {
 			//Maximum 100 iterations
 			std::shared_ptr<gko::stop::Iteration::Factory> iter_stop = gko::share(
 				gko::stop::Iteration::build()
-				.with_max_iters(1000u)
+				.with_max_iters(10u)
 				.on(ginkgo_executor)
 			);
 			
@@ -1084,6 +1086,9 @@ struct OasisSimulator {
 					
 					timer.tick();
 					
+					//All active blocks and neighbours (and a bit more). All neighbours of these blocks do also exist (exterior_block_count with each block having 4 cells being suifficient for a kernel up to 4)
+					const int coupling_block_count = total_neighbor_block_count;
+					
 					for(int i = 0; i < solid_fluid_couplings.size(); ++i){
 						const int solid_id = solid_fluid_couplings[i][0];
 						const int fluid_id = solid_fluid_couplings[i][1];
@@ -1093,14 +1098,14 @@ struct OasisSimulator {
 						iq_result_array.resize_and_reset(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
 						
 						iq_lhs_rows.resize_and_reset(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1);
-						iq_lhs_columns.resize_and_reset(iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
-						iq_lhs_values.resize_and_reset(iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						iq_lhs_columns.resize_and_reset(iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						iq_lhs_values.resize_and_reset(iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
 						
 						iq_solve_velocity_result_array.resize_and_reset(3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
 						
 						iq_solve_velocity_rows.resize_and_reset(3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1);
-						iq_solve_velocity_columns.resize_and_reset(3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
-						iq_solve_velocity_values.resize_and_reset(3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						iq_solve_velocity_columns.resize_and_reset(3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						iq_solve_velocity_values.resize_and_reset(3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
 						
 						iq_rhs_array.fill(0.0f);
 						iq_result_array.fill(0.0f);
@@ -1124,18 +1129,18 @@ struct OasisSimulator {
 						cudaGetSymbolAddress(reinterpret_cast<void**>(&solve_velocity_num_blocks_per_row_host), iq::solve_velocity_num_blocks_per_row);
 						cudaGetSymbolAddress(reinterpret_cast<void**>(&lhs_block_offsets_per_row_host), iq::lhs_block_offsets_per_row);
 						cudaGetSymbolAddress(reinterpret_cast<void**>(&solve_velocity_block_offsets_per_row_host), iq::solve_velocity_block_offsets_per_row);
-						cu_dev.compute_launch({partition_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::clear_iq_system<iq::LHS_MATRIX_SIZE_X, iq::LHS_MATRIX_SIZE_Y, iq::NUM_ROWS_PER_BLOCK, iq::NUM_COLUMNS_PER_BLOCK, 1, Partition<1>>, lhs_num_blocks_per_row_host, lhs_block_offsets_per_row_host, static_cast<uint32_t>(partition_block_count), static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_lhs_rows.get_data(), iq_lhs_columns.get_data(), iq_lhs_values.get_data());
-						cu_dev.compute_launch({partition_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::clear_iq_system<iq::SOLVE_VELOCITY_MATRIX_SIZE_X, iq::SOLVE_VELOCITY_MATRIX_SIZE_Y, iq::NUM_ROWS_PER_BLOCK, iq::NUM_COLUMNS_PER_BLOCK, 3, Partition<1>>, solve_velocity_num_blocks_per_row_host, solve_velocity_block_offsets_per_row_host, static_cast<uint32_t>(partition_block_count), static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_solve_velocity_rows.get_data(), iq_solve_velocity_columns.get_data(), iq_solve_velocity_values.get_data());
+						cu_dev.compute_launch({coupling_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::clear_iq_system<iq::LHS_MATRIX_SIZE_X, iq::LHS_MATRIX_SIZE_Y, iq::NUM_ROWS_PER_BLOCK, iq::NUM_COLUMNS_PER_BLOCK, 1, Partition<1>>, lhs_num_blocks_per_row_host, lhs_block_offsets_per_row_host, static_cast<uint32_t>(coupling_block_count), static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_lhs_rows.get_data(), iq_lhs_columns.get_data(), iq_lhs_values.get_data());
+						cu_dev.compute_launch({coupling_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::clear_iq_system<iq::SOLVE_VELOCITY_MATRIX_SIZE_X, iq::SOLVE_VELOCITY_MATRIX_SIZE_Y, iq::NUM_ROWS_PER_BLOCK, iq::NUM_COLUMNS_PER_BLOCK, 3, Partition<1>>, solve_velocity_num_blocks_per_row_host, solve_velocity_block_offsets_per_row_host, static_cast<uint32_t>(coupling_block_count), static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_solve_velocity_rows.get_data(), iq_solve_velocity_columns.get_data(), iq_solve_velocity_values.get_data());
 						
 						cu_dev.syncStream<streamIdx::COMPUTE>();
 						
 						//Set last active row + 1 == number nonzero elements
-						const int lhs_number_of_nonzeros = static_cast<int>(iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
-						const int solve_velocity_number_of_nonzeros = static_cast<int>(3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
-						//cudaMemsetAsync((iq_lhs_rows.get_data() + ((iq::LHS_MATRIX_SIZE_Y - 1) * exterior_block_count + partition_block_count) * config::G_BLOCKVOLUME), lhs_number_of_nonzeros, sizeof(int), cu_dev.stream_compute());
-						//cudaMemsetAsync((iq_solve_velocity_rows.get_data() + 3 * ((iq::SOLVE_VELOCITY_MATRIX_SIZE_Y - 1) * exterior_block_count + partition_block_count) * config::G_BLOCKVOLUME), solve_velocity_number_of_nonzeros, sizeof(int), cu_dev.stream_compute());
-						cudaMemcpyAsync((iq_lhs_rows.get_data() + ((iq::LHS_MATRIX_SIZE_Y - 1) * exterior_block_count + partition_block_count) * config::G_BLOCKVOLUME), &lhs_number_of_nonzeros, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute());
-						cudaMemcpyAsync((iq_solve_velocity_rows.get_data() + 3 * ((iq::SOLVE_VELOCITY_MATRIX_SIZE_Y - 1) * exterior_block_count + partition_block_count) * config::G_BLOCKVOLUME), &solve_velocity_number_of_nonzeros, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute());
+						const int lhs_number_of_nonzeros = static_cast<int>(iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						const int solve_velocity_number_of_nonzeros = static_cast<int>(3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						//cudaMemsetAsync((iq_lhs_rows.get_data() + ((iq::LHS_MATRIX_SIZE_Y - 1) * exterior_block_count + coupling_block_count) * config::G_BLOCKVOLUME), lhs_number_of_nonzeros, sizeof(int), cu_dev.stream_compute());
+						//cudaMemsetAsync((iq_solve_velocity_rows.get_data() + 3 * ((iq::SOLVE_VELOCITY_MATRIX_SIZE_Y - 1) * exterior_block_count + coupling_block_count) * config::G_BLOCKVOLUME), solve_velocity_number_of_nonzeros, sizeof(int), cu_dev.stream_compute());
+						cudaMemcpyAsync((iq_lhs_rows.get_data() + ((iq::LHS_MATRIX_SIZE_Y - 1) * exterior_block_count + coupling_block_count) * config::G_BLOCKVOLUME), &lhs_number_of_nonzeros, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync((iq_solve_velocity_rows.get_data() + 3 * ((iq::SOLVE_VELOCITY_MATRIX_SIZE_Y - 1) * exterior_block_count + coupling_block_count) * config::G_BLOCKVOLUME), &solve_velocity_number_of_nonzeros, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute());
 						
 						cu_dev.syncStream<streamIdx::COMPUTE>();
 						
@@ -1144,8 +1149,6 @@ struct OasisSimulator {
 						cu_dev.compute_launch({exterior_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::fill_empty_rows<iq::SOLVE_VELOCITY_MATRIX_SIZE_Y, iq::NUM_ROWS_PER_BLOCK, 3, Partition<1>>, static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_solve_velocity_rows.get_data());
 						
 						cu_dev.syncStream<streamIdx::COMPUTE>();
-						
-						std::cout << "TEST2" << std::endl;
 						
 						//Set last value of rows
 						//FIXME: Not sure why, but memcpy does not seem to work correctly
@@ -1163,7 +1166,7 @@ struct OasisSimulator {
 						cu_dev.syncStream<streamIdx::COMPUTE>();
 						
 						//IQ-System create
-						match(particle_bins[rollid][solid_id], particle_bins[rollid][fluid_id])([this, &cu_dev, &solid_id, &fluid_id](auto& particle_buffer_solid, auto& particle_buffer_fluid) {
+						match(particle_bins[rollid][solid_id], particle_bins[rollid][fluid_id])([this, &cu_dev, &coupling_block_count, &solid_id, &fluid_id](auto& particle_buffer_solid, auto& particle_buffer_fluid) {
 							auto& next_particle_buffer_solid = get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]);
 							auto& next_particle_buffer_fluid = get<typename std::decay_t<decltype(particle_buffer_fluid)>>(particle_bins[(rollid + 1) % BIN_COUNT][fluid_id]);
 							
@@ -1190,7 +1193,7 @@ struct OasisSimulator {
 								, reinterpret_cast<void**>(&next_particle_buffer_fluid.blockbuckets)
 							);
 							
-							cu_dev.compute_launch({partition_block_count, iq::BLOCK_SIZE}, iq::create_iq_system, static_cast<uint32_t>(exterior_block_count), dt, particle_buffer_solid, particle_buffer_fluid, next_particle_buffer_solid, next_particle_buffer_fluid, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], surface_particle_buffers[solid_id], surface_particle_buffers[fluid_id], iq_lhs_rows.get_const_data(), iq_lhs_columns.get_const_data(), iq_lhs_values.get_data(), iq_rhs_array.get_data(), iq_solve_velocity_rows.get_const_data(), iq_solve_velocity_columns.get_const_data(), iq_solve_velocity_values.get_data());
+							cu_dev.compute_launch({coupling_block_count, iq::BLOCK_SIZE}, iq::create_iq_system, static_cast<uint32_t>(exterior_block_count), dt, particle_buffer_solid, particle_buffer_fluid, next_particle_buffer_solid, next_particle_buffer_fluid, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], surface_particle_buffers[solid_id], surface_particle_buffers[fluid_id], iq_lhs_rows.get_const_data(), iq_lhs_columns.get_const_data(), iq_lhs_values.get_data(), iq_rhs_array.get_data(), iq_solve_velocity_rows.get_const_data(), iq_solve_velocity_columns.get_const_data(), iq_solve_velocity_values.get_data());
 							
 							managed_memory.release(
 								  particle_buffer_solid.release()
@@ -1259,13 +1262,13 @@ struct OasisSimulator {
 						
 						
 						std::vector<int> printout_tmp0(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1);
-						std::vector<int> printout_tmp1(iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
-						std::vector<float> printout_tmp2(iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						std::vector<int> printout_tmp1(iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						std::vector<float> printout_tmp2(iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
 						std::vector<float> printout_tmp3(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
 						
 						cudaMemcpyAsync(printout_tmp0.data(), iq_lhs->get_const_row_ptrs(), sizeof(int) * iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1, cudaMemcpyDefault, cu_dev.stream_compute());
-						cudaMemcpyAsync(printout_tmp1.data(), iq_lhs->get_const_col_idxs(), sizeof(int) * iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK, cudaMemcpyDefault, cu_dev.stream_compute());
-						cudaMemcpyAsync(printout_tmp2.data(), iq_lhs->get_const_values(), sizeof(float) * iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp1.data(), iq_lhs->get_const_col_idxs(), sizeof(int) * iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp2.data(), iq_lhs->get_const_values(), sizeof(float) * iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK, cudaMemcpyDefault, cu_dev.stream_compute());
 						cudaMemcpyAsync(printout_tmp3.data(), iq_rhs_array.get_const_data(), sizeof(float) * iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
 						
 						cudaDeviceSynchronize();
@@ -1275,7 +1278,7 @@ struct OasisSimulator {
 							std::cout << printout_tmp0[j] << " ";
 						}
 						std::cout << std::endl;
-						for(size_t j = 0; j < iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK; ++j){
+						for(size_t j = 0; j < iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK; ++j){
 							std::cout << printout_tmp1[j] << " ";
 						}
 						std::cout << std::endl;
@@ -1315,12 +1318,12 @@ struct OasisSimulator {
 						
 						/*
 						std::vector<int> printout_tmp0(3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1);
-						std::vector<int> printout_tmp1(3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
-						std::vector<float> printout_tmp2(3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						std::vector<int> printout_tmp1(3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						std::vector<float> printout_tmp2(3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
 						
 						cudaMemcpyAsync(printout_tmp0.data(), iq_solve_velocity->get_const_row_ptrs(), sizeof(int) * 3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1, cudaMemcpyDefault, cu_dev.stream_compute());
-						cudaMemcpyAsync(printout_tmp1.data(), iq_solve_velocity->get_const_col_idxs(), sizeof(int) * 3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK, cudaMemcpyDefault, cu_dev.stream_compute());
-						cudaMemcpyAsync(printout_tmp2.data(), iq_solve_velocity->get_const_values(), sizeof(float) * 3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp1.data(), iq_solve_velocity->get_const_col_idxs(), sizeof(int) * 3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp2.data(), iq_solve_velocity->get_const_values(), sizeof(float) * 3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK, cudaMemcpyDefault, cu_dev.stream_compute());
 						
 						cudaDeviceSynchronize();
 						
@@ -1329,7 +1332,7 @@ struct OasisSimulator {
 							std::cout << printout_tmp0[j] << " ";
 						}
 						std::cout << std::endl;
-						for(size_t j = 0; j < 3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK; ++j){
+						for(size_t j = 0; j < 3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK; ++j){
 							std::cout << printout_tmp1[j] << " ";
 						}
 						std::cout << std::endl;
@@ -1384,8 +1387,8 @@ struct OasisSimulator {
 						
 						std::cout << "TEST3" << std::endl;
 						
-						std::vector<float> printout_tmp4(3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
-						std::vector<float> printout_tmp5(iq::LHS_MATRIX_SIZE_Y * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * partition_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						std::vector<float> printout_tmp4(3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						std::vector<float> printout_tmp5(iq::LHS_MATRIX_SIZE_Y * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
 						
 						cudaMemcpyAsync(printout_tmp4.data(), iq_solve_velocity_result->get_const_values(), sizeof(float) * 3 * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
 						cudaMemcpyAsync(printout_tmp5.data(), iq_result->get_const_values(), sizeof(float) * iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
@@ -1405,7 +1408,7 @@ struct OasisSimulator {
 						}
 						
 						//Update velocity and strain
-						match(particle_bins[rollid][solid_id])([this, &cu_dev, &solid_id, &fluid_id, &iq_solve_velocity_result, &iq_result](auto& particle_buffer_solid) {
+						match(particle_bins[rollid][solid_id])([this, &cu_dev, &coupling_block_count, &solid_id, &fluid_id, &iq_solve_velocity_result, &iq_result](auto& particle_buffer_solid) {
 							auto& next_particle_buffer_solid = get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]);
 							
 							particle_buffer_solid.bin_offsets = particle_buffer_solid.bin_offsets_virtual;
@@ -1420,7 +1423,7 @@ struct OasisSimulator {
 								, reinterpret_cast<void**>(&next_particle_buffer_solid.particle_bucket_sizes)
 								, reinterpret_cast<void**>(&next_particle_buffer_solid.blockbuckets)
 							);
-							cu_dev.compute_launch({partition_block_count, iq::BLOCK_SIZE}, iq::update_velocity_and_strain, particle_buffer_solid, get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_solve_velocity_result->get_const_values(), iq_solve_velocity_result->get_const_values() + 3 * exterior_block_count * config::G_BLOCKVOLUME, iq_result->get_const_values());
+							cu_dev.compute_launch({coupling_block_count, iq::BLOCK_SIZE}, iq::update_velocity_and_strain, particle_buffer_solid, get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_solve_velocity_result->get_const_values(), iq_solve_velocity_result->get_const_values() + 3 * exterior_block_count * config::G_BLOCKVOLUME, iq_result->get_const_values());
 						
 							managed_memory.release(
 								  particle_buffer_solid.release()
@@ -2107,6 +2110,20 @@ struct OasisSimulator {
 					//Check size
 					if(neighbor_block_count > config::G_MAX_ACTIVE_BLOCK) {
 						std::cerr << "Too much neighbour blocks: " << neighbor_block_count << std::endl;
+						std::abort();
+					}
+					
+					//Activate blocks before active blocks
+					//floor(partition_block_count/G_PARTICLE_BATCH_CAPACITY); G_PARTICLE_BATCH_CAPACITY
+					cu_dev.compute_launch({(partition_block_count + config::G_PARTICLE_BATCH_CAPACITY - 1) / config::G_PARTICLE_BATCH_CAPACITY, config::G_PARTICLE_BATCH_CAPACITY}, register_prev_neighbor_blocks, static_cast<uint32_t>(partition_block_count), partitions[(rollid + 1) % BIN_COUNT]);
+
+					//Retrieve total count
+					check_cuda_errors(cudaMemcpyAsync(&total_neighbor_block_count, partitions[(rollid + 1) % BIN_COUNT].count, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute()));
+					cu_dev.syncStream<streamIdx::COMPUTE>();
+
+					//Check size
+					if(total_neighbor_block_count > config::G_MAX_ACTIVE_BLOCK) {
+						std::cerr << "Too much total neighbour blocks: " << total_neighbor_block_count << std::endl;
 						std::abort();
 					}
 
@@ -3023,6 +3040,20 @@ struct OasisSimulator {
 			//Check size
 			if(neighbor_block_count > config::G_MAX_ACTIVE_BLOCK) {
 				std::cerr << "Too much neighbour blocks: " << neighbor_block_count << std::endl;
+				std::abort();
+			}
+			
+			//Activate blocks before active blocks
+			//floor(partition_block_count/G_PARTICLE_BATCH_CAPACITY); G_PARTICLE_BATCH_CAPACITY
+			cu_dev.compute_launch({(partition_block_count + config::G_PARTICLE_BATCH_CAPACITY - 1) / config::G_PARTICLE_BATCH_CAPACITY, config::G_PARTICLE_BATCH_CAPACITY}, register_prev_neighbor_blocks, static_cast<uint32_t>(partition_block_count), partitions[(rollid + 1) % BIN_COUNT]);
+
+			//Retrieve total count
+			check_cuda_errors(cudaMemcpyAsync(&total_neighbor_block_count, partitions[(rollid + 1) % BIN_COUNT].count, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute()));
+			cu_dev.syncStream<streamIdx::COMPUTE>();
+
+			//Check size
+			if(total_neighbor_block_count > config::G_MAX_ACTIVE_BLOCK) {
+				std::cerr << "Too much total neighbour blocks: " << total_neighbor_block_count << std::endl;
 				std::abort();
 			}
 

@@ -396,6 +396,24 @@ __global__ void register_neighbor_blocks(uint32_t block_count, Partition partiti
 }
 
 template<typename Partition>
+__global__ void register_prev_neighbor_blocks(uint32_t block_count, Partition partition) {
+	const uint32_t blockno = blockIdx.x * blockDim.x + threadIdx.x;
+	if(blockno >= block_count) {
+		return;
+	}
+
+	//Activate neighbour blocks
+	const auto blockid = partition.active_keys[blockno];
+	for(char i = -1; i < 0; ++i) {
+		for(char j = -1; j < 0; ++j) {
+			for(char k = -1; k < 0; ++k) {
+				partition.insert(ivec3 {blockid[0] + i, blockid[1] + j, blockid[2] + k});
+			}
+		}
+	}
+}
+
+template<typename Partition>
 __global__ void register_exterior_blocks(uint32_t block_count, Partition partition) {
 	const uint32_t blockno = blockIdx.x * blockDim.x + threadIdx.x;
 	if(blockno >= block_count) {
