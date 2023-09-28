@@ -125,6 +125,9 @@ __global__ void clear_iq_system(const size_t* num_blocks_per_row, const std::arr
 			const int neighbour_cellno = NumRowsPerBlock * neighbour_blockno + (config::G_BLOCKSIZE * config::G_BLOCKSIZE) * neighbour_celloffset[0] + config::G_BLOCKSIZE * neighbour_celloffset[1] + neighbour_celloffset[2];
 			
 			neighbour_cellnos[column] = neighbour_cellno;
+			//if(neighbour_cellno < 0){
+			//	printf("ERROR %d %d %d # %d %d %d # %d %d %d # %d # %d\n", static_cast<int>(blockIdx.x), static_cast<int>(row), static_cast<int>(column), cellid[0], cellid[1], cellid[2], neighbour_cellid[0], neighbour_cellid[1], neighbour_cellid[2], neighbour_blockno, neighbour_cellno);
+			//}
 		}
 		
 		//Sort columns
@@ -162,7 +165,7 @@ __global__ void fill_empty_rows(const uint32_t num_blocks, const Partition parti
 				
 				if(own_value == 0){
 					//TODO: Use more efficient way, like maybe binary search
-					//NOTE: We are using atomic load/store to ensure operations are atomic. It does not matter wheter they are correctly ordered as if we don't see the single write that might occure we are heading to the next memory locations till we either find a write or a original value
+					//NOTE: We are using atomic load/store to ensure operations are atomic. It does not matter wether they are correctly ordered as if we don't see the single write that might occure we are heading to the next memory locations till we either find a write or a original value
 					int value;
 					for(int next_row_offset = 0; next_row_offset <= (row_offset * NumDimensionsPerRow * NumRowsPerBlock * num_blocks + NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension); ++next_row_offset){
 						//Atomic load
@@ -1395,12 +1398,48 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 		}
 	}
 	
-	//Index of the column with same index as row
+	//Column that represents (row, row)
 	constexpr size_t IDENTIITY_NEIGHBOUR_INDEX = (INTERPOLATION_DEGREE_MAX * ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1)) + INTERPOLATION_DEGREE_MAX * (2 * INTERPOLATION_DEGREE_MAX + 1) + INTERPOLATION_DEGREE_MAX);
 	
 	//Store data in matrix
 	for(int row = 0; row < NUM_ROWS_PER_BLOCK; ++row) {
 		const ivec3 local_id {static_cast<int>((row / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE), static_cast<int>((row / config::G_BLOCKSIZE) % config::G_BLOCKSIZE), static_cast<int>(row % config::G_BLOCKSIZE)};
+		
+		//Generate cell mapping
+		//Local cells are indexed by offset, global cells are sorted by cellno
+		int lhs_column_indices[NUM_COLUMNS_PER_BLOCK];
+		int solve_velocity_column_indices[NUM_COLUMNS_PER_BLOCK];
+		for(size_t column = 0; column < NUM_COLUMNS_PER_BLOCK; ++column){
+			const ivec3 row_cellid = block_cellid + local_id;
+			const ivec3 neighbour_local_id = ivec3(static_cast<int>((column / ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1))) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>((column / (2 * INTERPOLATION_DEGREE_MAX + 1)) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>(column % (2 * INTERPOLATION_DEGREE_MAX + 1))) - ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));
+			const ivec3 neighbour_cellid = row_cellid + neighbour_local_id;
+			const ivec3 neighbour_blockid = neighbour_cellid / static_cast<int>(config::G_BLOCKSIZE);
+			
+			const ivec3 neighbour_base_cellid = neighbour_blockid * static_cast<int>(config::G_BLOCKSIZE);
+			const ivec3 neighbour_celloffset = neighbour_cellid - neighbour_base_cellid;
+			
+			const int neighbour_blockno = partition.query(neighbour_blockid);
+			const int neighbour_cellno = NUM_ROWS_PER_BLOCK * neighbour_blockno + (config::G_BLOCKSIZE * config::G_BLOCKSIZE) * neighbour_celloffset[0] + config::G_BLOCKSIZE * neighbour_celloffset[1] + neighbour_celloffset[2];
+			
+			solve_velocity_column_indices[column] = -1;
+			for(size_t lhs_column = 0; lhs_column < NUM_COLUMNS_PER_BLOCK; ++lhs_column){
+				if(neighbour_cellno == iq_lhs_columns[iq_lhs_rows[base_row + row] + lhs_column]){
+					lhs_column_indices[column] = lhs_column;
+				}
+				if(neighbour_cellno == iq_solve_velocity_columns[iq_solve_velocity_rows[3 * base_row + 3 * row] + lhs_column]){
+					solve_velocity_column_indices[column] = lhs_column;
+				}
+			}
+			
+			if(solve_velocity_column_indices[column] == -1){
+				const ivec3 row_cellid = block_cellid + local_id;
+				
+				printf("ERROR0 %d %d # %d %d # %d %d %d # %d %d %d\n", static_cast<int>(3 * base_row + 3 * row), neighbour_cellno, iq_solve_velocity_rows[3 * base_row + 3 * row], iq_solve_velocity_rows[3 * base_row + 3 * row + 1], row_cellid[0], row_cellid[1], row_cellid[2], neighbour_cellid[0], neighbour_cellid[1], neighbour_cellid[2]);
+				for(size_t lhs_column = 0; lhs_column < NUM_COLUMNS_PER_BLOCK; ++lhs_column){
+					printf("ERROR1 %d %d # %d\n", static_cast<int>(3 * base_row + 3 * row), neighbour_cellno, iq_solve_velocity_columns[iq_solve_velocity_rows[3 * base_row + 3 * row] + lhs_column]);
+				}
+			}
+		}
 		
 		__shared__ float current_mass_solid[3];
 		__shared__ float current_scaling_solid;
@@ -1437,10 +1476,6 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 				current_coupling_solid_row[i] = coupling_solid_local[get_thread_offset<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * NUM_COLUMNS_PER_BLOCK * row + 3 * IDENTIITY_NEIGHBOUR_INDEX + i)];
 				current_coupling_fluid_row[i] = coupling_fluid_local[get_thread_offset<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * NUM_COLUMNS_PER_BLOCK * row + 3 * IDENTIITY_NEIGHBOUR_INDEX + i)];
 			}
-		}
-		
-		for(size_t column = 0; column < NUM_COLUMNS_PER_BLOCK; ++column){
-			
 		}
 		
 		for(size_t column = 0; column < NUM_COLUMNS_PER_BLOCK; ++column){
@@ -1520,6 +1555,9 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 						a_transposed[0][0] = dt.count() * gradient_by_mass_solid;
 						a_transposed[0][3] = -dt.count() * gradient_and_coupling_by_mass_solid;
 						a_transposed[3][3] += dt.count() * coupling_by_mass_solid;
+					}else{
+						a_transposed[0][0] = 0.0f;
+						a_transposed[0][3] = 0.0f;
 					}
 				}else{
 					a[0][0] = scaling_solid / dt.count();
@@ -1556,6 +1594,12 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 						a_transposed[2][2] = dt.count() * boundary_by_mass;
 						a_transposed[2][3] = dt.count() * boundary_and_coupling_by_mass_fluid;
 						a_transposed[3][3] += dt.count() * coupling_by_mass_fluid;
+					}else{
+						a_transposed[1][1] = 0.0f;
+						a_transposed[1][2] = 0.0f;
+						a_transposed[1][3] = 0.0f;
+						a_transposed[2][2] = 0.0f;
+						a_transposed[2][3] = 0.0f;
 					}
 				}else{
 					a[1][1] = 0.0f;
@@ -1619,44 +1663,72 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 					const int row_index = i * NUM_ROWS_PER_BLOCK * num_blocks + base_row + row;
 					for(size_t j = 0; j < lhs_num_blocks_per_row[i]; ++j){
 						
-						const int column_index = iq_lhs_rows[row_index] + j * NUM_COLUMNS_PER_BLOCK + column;
+						const int column_index = iq_lhs_rows[row_index] + j * NUM_COLUMNS_PER_BLOCK + lhs_column_indices[column];
 						
 						if(a[i][lhs_block_offsets_per_row[i][j]] != 0.0f){
 							//printf("IQ_LHS %d %d # %d %d %d # %.28f # %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n", row_index, column_index, static_cast<int>(i), static_cast<int>(j), static_cast<int>(lhs_block_offsets_per_row[i][j]), a[i][lhs_block_offsets_per_row[i][j]], gradient_by_mass_solid, current_gradient_solid_row[0], current_gradient_solid_row[1], current_gradient_solid_row[2], current_gradient_solid_column[0], current_gradient_solid_column[1], current_gradient_solid_column[2]);
+							//printf("IQ_LHS %d %d # %d %d # %d # %.28f # %.28f\n", row_index, iq_lhs_columns[column_index], static_cast<int>(i), static_cast<int>(lhs_block_offsets_per_row[i][j]), static_cast<int>(column), a[i][lhs_block_offsets_per_row[i][j]], a_transposed[i][lhs_block_offsets_per_row[i][j]]);
 						}
 						
 						atomicAdd(&(iq_lhs_values[column_index]), a[i][lhs_block_offsets_per_row[i][j]]);
 					}
 				}
 				
-				//Store at index (blockid + column, blockid + row), adding it to existing value
-				for(size_t i = 0; i < LHS_MATRIX_SIZE_Y; ++i){
-					const ivec3 row_cellid = block_cellid + local_id;
-					const ivec3 offset = ivec3(static_cast<int>((column / ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1))) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>((column / (2 * INTERPOLATION_DEGREE_MAX + 1)) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>(column % (2 * INTERPOLATION_DEGREE_MAX + 1))) - ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));;
-					
-					const ivec3 column_cellid = row_cellid + offset;
-					
-					const ivec3 column_blockid = column_cellid / static_cast<int>(config::G_BLOCKSIZE);
-					
-					const ivec3 column_base_cellid = column_blockid * static_cast<int>(config::G_BLOCKSIZE);
-					const ivec3 column_celloffset = column_cellid - column_base_cellid;
-					
-					const int column_blockno = partition.query(column_blockid);
-					const int column_cellno = NUM_ROWS_PER_BLOCK * column_blockno + (config::G_BLOCKSIZE * config::G_BLOCKSIZE) * column_celloffset[0] + config::G_BLOCKSIZE * column_celloffset[1] + column_celloffset[2];
-					
-					const ivec3 absolute_row_offset = -offset + ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));		
-					const int row_column_number = absolute_row_offset[0] * ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1)) + absolute_row_offset[1] * (2 * INTERPOLATION_DEGREE_MAX + 1) + absolute_row_offset[2];
-					
-					const int row_index = i * NUM_ROWS_PER_BLOCK * num_blocks + column_cellno;
-					for(size_t j = 0; j < lhs_num_blocks_per_row[i]; ++j){
-						
-						const int column_index = iq_lhs_rows[row_index] + j * NUM_COLUMNS_PER_BLOCK + row_column_number;
-						
-						if(a_transposed[i][lhs_block_offsets_per_row[i][j]] != 0.0f){
-							//printf("IQ_LHS %d %d # %d %d %d # %.28f # %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n", row_index, column_index, static_cast<int>(i), static_cast<int>(j), static_cast<int>(lhs_block_offsets_per_row[i][j]), a_transposed[i][lhs_block_offsets_per_row[i][j]], gradient_by_mass_solid, current_gradient_solid_row[0], current_gradient_solid_row[1], current_gradient_solid_row[2], current_gradient_solid_column[0], current_gradient_solid_column[1], current_gradient_solid_column[2]);
+				//Skip columns that are empty. These might be neighbours of neighbours which should always have zero values stored.
+				{
+					const int column_cellno = iq_lhs_columns[iq_lhs_rows[base_row + row] + lhs_column_indices[column]];
+					if(column_cellno < NUM_ROWS_PER_BLOCK * num_blocks && (iq_lhs_rows[column_cellno + 1] - iq_lhs_rows[column_cellno]) > 0){
+						//Generate cell mapping
+						//Local cells are indexed by offset, global cells are sorted by cellno
+						int row_column_number = -1;
+						for(size_t lhs_column = 0; lhs_column < NUM_COLUMNS_PER_BLOCK; ++lhs_column){
+							if((base_row + row) == iq_lhs_columns[iq_lhs_rows[column_cellno] + lhs_column]){
+								row_column_number = lhs_column;
+								break;
+							}
 						}
 						
-						atomicAdd(&(iq_lhs_values[column_index]), a_transposed[i][lhs_block_offsets_per_row[i][j]]);
+						/*if(row_column_number == -1){
+							const ivec3 row_cellid = block_cellid + local_id;
+							
+							const ivec3 column_local_id {static_cast<int>((column_cellno / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE), static_cast<int>((column_cellno / config::G_BLOCKSIZE) % config::G_BLOCKSIZE), static_cast<int>(column_cellno % config::G_BLOCKSIZE)};
+							const int column_blockno = column_cellno / static_cast<int>(config::G_BLOCKVOLUME);
+							const ivec3 column_blockid = partition.active_keys[column_blockno];
+							const ivec3 column_cellid = column_blockid * static_cast<int>(config::G_BLOCKSIZE) + column_local_id;
+							
+							printf("ERROR1 %d %d # %d %d %d # %d %d %d # %d %d %d\n", static_cast<int>(base_row + row), column_cellno, iq_lhs_rows[column_cellno], iq_lhs_rows[column_cellno + 1], lhs_column_indices[column], row_cellid[0], row_cellid[1], row_cellid[2], column_cellid[0], column_cellid[1], column_cellid[2]);
+							for(size_t lhs_column = 0; lhs_column < NUM_COLUMNS_PER_BLOCK; ++lhs_column){
+								printf("ERROR1 %d %d # %d\n", static_cast<int>(base_row + row), column_cellno, iq_lhs_columns[iq_lhs_rows[column_cellno] + lhs_column]);
+							}
+							continue;
+						}*/
+						
+						//Store at index (blockid + column, blockid + row), adding it to existing value
+						for(size_t i = 0; i < LHS_MATRIX_SIZE_Y; ++i){
+							const int row_index = i * NUM_ROWS_PER_BLOCK * num_blocks + column_cellno;
+											
+							for(size_t j = 0; j < lhs_num_blocks_per_row[i]; ++j){
+								
+								const int column_index = iq_lhs_rows[row_index] + j * NUM_COLUMNS_PER_BLOCK + row_column_number;
+								
+								if(a_transposed[i][lhs_block_offsets_per_row[i][j]] != 0.0f){
+									//printf("IQ_LHS %d %d # %d %d %d # %.28f # %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n", row_index, column_index, static_cast<int>(i), static_cast<int>(j), static_cast<int>(lhs_block_offsets_per_row[i][j]), a_transposed[i][lhs_block_offsets_per_row[i][j]], gradient_by_mass_solid, current_gradient_solid_row[0], current_gradient_solid_row[1], current_gradient_solid_row[2], current_gradient_solid_column[0], current_gradient_solid_column[1], current_gradient_solid_column[2]);
+									//printf("T_IQ_LHS %d %d # %d %d # %d # %.28f # %.28f\n", row_index, iq_lhs_columns[column_index], static_cast<int>(i), static_cast<int>(lhs_block_offsets_per_row[i][j]), static_cast<int>(column), a[i][lhs_block_offsets_per_row[i][j]], a_transposed[i][lhs_block_offsets_per_row[i][j]]);
+								}
+								
+								atomicAdd(&(iq_lhs_values[column_index]), a_transposed[i][lhs_block_offsets_per_row[i][j]]);
+							}
+						}
+					}else{
+						//printf("Skipping column: %d\n", column_cellno);
+						
+						for(size_t i = 0; i < LHS_MATRIX_SIZE_Y; ++i){
+							for(size_t j = 0; j < lhs_num_blocks_per_row[i]; ++j){
+								if(a_transposed[i][lhs_block_offsets_per_row[i][j]] != 0.0f){
+									printf("ERROR - Skipped non_empty column %d %d\n", static_cast<int>(base_row + row), column_cellno);
+								}
+							}
+						}
 					}
 				}
 				
@@ -1666,7 +1738,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 						const int row_index = i * 3 * NUM_ROWS_PER_BLOCK * num_blocks + 3 * base_row + 3 * row + k;
 						for(size_t j = 0; j < solve_velocity_num_blocks_per_row[i]; ++j){
 							
-							const int column_index = iq_solve_velocity_rows[row_index] + j * NUM_COLUMNS_PER_BLOCK + column;
+							const int column_index = iq_solve_velocity_rows[row_index] + j * NUM_COLUMNS_PER_BLOCK + solve_velocity_column_indices[column];
 							
 							if(solve_velocity[k][i][solve_velocity_block_offsets_per_row[i][j]] != 0.0f){
 								//printf("Solve_LHS %d %d # %d %d %d # %d # %.28f\n", row_index, column_index, static_cast<int>(i), static_cast<int>(j), static_cast<int>(solve_velocity_block_offsets_per_row[i][j]), k, solve_velocity[k][i][solve_velocity_block_offsets_per_row[i][j]]);
@@ -1740,7 +1812,6 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 		grid_block_fluid.val_1d(_2, cell_id_in_block) += delta_v_fluid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block + 1];
 		grid_block_fluid.val_1d(_3, cell_id_in_block) += delta_v_fluid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block + 2];
 	}
-	
 	
 #if (FIXED_COROTATED_GHOST_ENABLE_STRAIN_UPDATE == 0)
 	

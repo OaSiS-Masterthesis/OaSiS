@@ -16,6 +16,8 @@
 #include <array>
 #include <vector>
 #include <map>
+#include <algorithm>
+#include <execution>
 
 #include "grid_buffer.cuh"
 #include "hash_table.cuh"
@@ -337,8 +339,8 @@ struct OasisSimulator {
 			//Incomplete cholesky for smoothing
 			//TODO: Maybe use different smoother
 			/*
-			std::shared_ptr<gko::preconditioner::Ic<gko::solver::LowerTrs<float>>::Factory> ic_gen = gko::share(
-				gko::preconditioner::Ic<gko::solver::LowerTrs<float>>::build()
+			std::shared_ptr<gko::preconditioner::Ic<gko::solver::LowerTrs<float>, int>::Factory> ic_gen = gko::share(
+				gko::preconditioner::Ic<gko::solver::LowerTrs<float>, int>::build()
 				.with_factorization_factory(
 					gko::factorization::Ic<float, int>::build()
 					.with_skip_sorting(true) //We know that our matrix is sorted
@@ -354,8 +356,8 @@ struct OasisSimulator {
 			*/
 			
 			/*
-			std::shared_ptr<gko::preconditioner::Ic<gko::solver::Idr<float>>::Factory> ic_gen = gko::share(
-				gko::preconditioner::Ic<gko::solver::Idr<float>>::build()
+			std::shared_ptr<gko::preconditioner::Ic<gko::solver::Idr<float>, int>::Factory> ic_gen = gko::share(
+				gko::preconditioner::Ic<gko::solver::Idr<float>, int>::build()
 				.with_factorization_factory(
 					gko::factorization::Ic<float, int>::build()
 					.with_skip_sorting(true) //We know that our matrix is sorted
@@ -374,8 +376,8 @@ struct OasisSimulator {
 			);
 			*/
 			
-			std::shared_ptr<gko::preconditioner::Ic<gko::solver::Gmres<float>>::Factory> ic_gen = gko::share(
-				gko::preconditioner::Ic<gko::solver::Gmres<float>>::build()
+			std::shared_ptr<gko::preconditioner::Ic<gko::solver::Gmres<float>, int>::Factory> ic_gen = gko::share(
+				gko::preconditioner::Ic<gko::solver::Gmres<float>, int>::build()
 				.with_factorization_factory(
 					gko::factorization::Ic<float, int>::build()
 					.with_skip_sorting(true) //We know that our matrix is sorted
@@ -1259,6 +1261,80 @@ struct OasisSimulator {
 								, 1
 							)
 						);
+						
+						#ifdef VERIFY_IQ_MATRIX
+							auto iq_lhs_transposed = iq_lhs->transpose();
+							
+							std::shared_ptr<gko::matrix::Csr<float, int>> iq_lhs_transposed_csr = gko::share(
+								gko::matrix::Csr<float, int>::create(
+									ginkgo_executor
+								)
+							);
+							iq_lhs_transposed_csr->copy_from(iq_lhs_transposed);
+							
+							auto one_dense = share(gko::initialize<gko::matrix::Dense<float>>({1.0f}, ginkgo_executor));
+							auto neg_one_dense = share(gko::initialize<gko::matrix::Dense<float>>({-1.0f}, ginkgo_executor));
+							auto zero_dense = share(gko::initialize<gko::matrix::Dense<float>>({0.0f}, ginkgo_executor));
+						
+							/*
+							const int* max_column_device = thrust::max_element(thrust::device, iq_lhs->get_const_col_idxs(), iq_lhs->get_const_col_idxs() + iq_lhs->get_num_stored_elements());
+							
+							int max_column;
+							cudaMemcpyAsync(&max_column, max_column_device, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute());
+							
+							cudaDeviceSynchronize();
+
+							std::cout << "Rows: " << iq_lhs->get_size()[0] << " Columns: " << max_column << std::endl;
+							std::cout << "Rows: " << iq_lhs->get_size()[0] << " Columns: " << iq_lhs_transposed_csr->get_size()[0] << std::endl;
+							std::cout << "Rows: " << iq_lhs->get_num_srow_elements() << " Columns: " << iq_lhs_transposed_csr->get_num_srow_elements() << std::endl;
+							*/
+							
+							//Test if is quadratic
+							if(iq_lhs->get_size()[0] != iq_lhs_transposed_csr->get_size()[0]){
+								std::cout << std::endl;
+								std::cout << "IQ-Matrix is not quadratic. Row count is: " << iq_lhs->get_size()[0] << ", but Column count is: " << iq_lhs_transposed->get_size()[0] << std::endl;
+							}
+							
+							//Test if symmetric
+							iq_lhs->apply(one_dense, gko::matrix::Identity<float>::create(ginkgo_executor, iq_lhs->get_size()[0]), neg_one_dense, iq_lhs_transposed_csr);//iq_lhs_transposed_csr = iq_lhs - iq_lhs_transposed_csr;
+							thrust::pair<const float*, const float*> min_max_device = thrust::minmax_element(thrust::device, iq_lhs_transposed_csr->get_const_values(), iq_lhs_transposed_csr->get_const_values() + iq_lhs_transposed_csr->get_num_stored_elements());
+							
+							if(min_max_device.first != (iq_lhs_transposed_csr->get_const_values() + iq_lhs_transposed_csr->get_num_stored_elements())){
+								std::pair<float, float> min_max;
+								cudaMemcpyAsync(&(min_max.first), min_max_device.first, sizeof(float), cudaMemcpyDefault, cu_dev.stream_compute());
+								cudaMemcpyAsync(&(min_max.second), min_max_device.second, sizeof(float), cudaMemcpyDefault, cu_dev.stream_compute());
+							
+								cudaDeviceSynchronize();
+								if(min_max.first != 0.0f || min_max.second != 0.0f){
+									const float non_null_value = (min_max.first != 0.0f ? min_max.first : min_max.second);
+									const float* non_null_position = (min_max.first != 0.0f ? min_max_device.first : min_max_device.second);
+									std::cout << std::endl;
+									std::cout << "IQ-Matrix is not symmetric. Non-null-entry at position " << static_cast<size_t>(non_null_position - iq_lhs_transposed_csr->get_const_values()) << " is " << non_null_value << std::endl;
+									
+									std::vector<int> printout_subtraction_result0(iq_lhs_transposed_csr->get_size()[0]);
+									std::vector<int> printout_subtraction_result1(iq_lhs_transposed_csr->get_num_stored_elements());
+									
+									cudaMemcpyAsync(printout_subtraction_result0.data(), iq_lhs->get_const_row_ptrs(), sizeof(int) * iq_lhs_transposed_csr->get_size()[0] + 1, cudaMemcpyDefault, cu_dev.stream_compute());
+									cudaMemcpyAsync(printout_subtraction_result1.data(), iq_lhs->get_const_col_idxs(), sizeof(int) * iq_lhs_transposed_csr->get_num_stored_elements(), cudaMemcpyDefault, cu_dev.stream_compute());
+									
+									write(std::cout, iq_lhs_transposed_csr);
+									
+									cudaDeviceSynchronize();
+									
+									std::cout << std::endl;
+									for(size_t j = 0; j < iq_lhs_transposed_csr->get_size()[0] + 1; ++j){
+										std::cout << printout_subtraction_result0[j] << " ";
+									}
+									std::cout << std::endl;
+									for(size_t j = 0; j < iq_lhs_transposed_csr->get_num_stored_elements(); ++j){
+										std::cout << printout_subtraction_result1[j] << " ";
+									}
+									std::cout << std::endl;
+								}
+							}
+							
+							//TODO: Test positive semi-definite; Maybe use c++ jacobi solver found online (in extra file): https://github.com/jewettaij/jacobi_pd
+						#endif
 						
 						
 						std::vector<int> printout_tmp0(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1);
@@ -2200,8 +2276,8 @@ struct OasisSimulator {
 					timer.tick();
 
 					//Activate blocks near active blocks, including those before that block
-					//floor(partition_block_count/G_PARTICLE_BATCH_CAPACITY); G_PARTICLE_BATCH_CAPACITY
-					cu_dev.compute_launch({(partition_block_count + config::G_PARTICLE_BATCH_CAPACITY - 1) / config::G_PARTICLE_BATCH_CAPACITY, config::G_PARTICLE_BATCH_CAPACITY}, register_exterior_blocks, static_cast<uint32_t>(partition_block_count), partitions[(rollid + 1) % BIN_COUNT]);
+					//floor(total_neighbor_block_count/G_PARTICLE_BATCH_CAPACITY); G_PARTICLE_BATCH_CAPACITY
+					cu_dev.compute_launch({(total_neighbor_block_count + config::G_PARTICLE_BATCH_CAPACITY - 1) / config::G_PARTICLE_BATCH_CAPACITY, config::G_PARTICLE_BATCH_CAPACITY}, register_exterior_blocks, static_cast<uint32_t>(total_neighbor_block_count), partitions[(rollid + 1) % BIN_COUNT]);
 
 					//Retrieve total count
 					check_cuda_errors(cudaMemcpyAsync(&exterior_block_count, partitions[(rollid + 1) % BIN_COUNT].count, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute()));
@@ -3059,8 +3135,8 @@ struct OasisSimulator {
 
 			//Activate blocks near active blocks, including those before that block
 			//TODO: Only these with offset -1 are not already activated as neighbours
-			//floor(partition_block_count/G_PARTICLE_BATCH_CAPACITY); G_PARTICLE_BATCH_CAPACITY
-			cu_dev.compute_launch({(partition_block_count + config::G_PARTICLE_BATCH_CAPACITY - 1) / config::G_PARTICLE_BATCH_CAPACITY, config::G_PARTICLE_BATCH_CAPACITY}, register_exterior_blocks, static_cast<uint32_t>(partition_block_count), partitions[(rollid + 1) % BIN_COUNT]);
+			//floor(total_neighbor_block_count/G_PARTICLE_BATCH_CAPACITY); G_PARTICLE_BATCH_CAPACITY
+			cu_dev.compute_launch({(total_neighbor_block_count + config::G_PARTICLE_BATCH_CAPACITY - 1) / config::G_PARTICLE_BATCH_CAPACITY, config::G_PARTICLE_BATCH_CAPACITY}, register_exterior_blocks, static_cast<uint32_t>(total_neighbor_block_count), partitions[(rollid + 1) % BIN_COUNT]);
 
 			//Retrieve total count
 			check_cuda_errors(cudaMemcpyAsync(&exterior_block_count, partitions[(rollid + 1) % BIN_COUNT].count, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute()));
