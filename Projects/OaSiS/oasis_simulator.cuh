@@ -1463,22 +1463,29 @@ struct OasisSimulator {
 						
 						std::cout << "TEST3" << std::endl;
 						
-						std::vector<float> printout_tmp4(3 * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
-						std::vector<float> printout_tmp5(iq::LHS_MATRIX_SIZE_Y * iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						std::vector<float> printout_tmp4(3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
+						std::vector<float> printout_tmp5(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
 						
-						cudaMemcpyAsync(printout_tmp4.data(), iq_solve_velocity_result->get_const_values(), sizeof(float) * 3 * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp4.data(), iq_solve_velocity_result->get_const_values(), sizeof(float) * 3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
 						cudaMemcpyAsync(printout_tmp5.data(), iq_result->get_const_values(), sizeof(float) * iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
 						
 						cudaDeviceSynchronize();
 						
 						std::cout << std::endl;
-						for(size_t j = 0; j < 3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME; ++j){
-							std::cout << printout_tmp4[j] << " ";
+						for(size_t k = 0; k < iq::SOLVE_VELOCITY_MATRIX_SIZE_Y; ++k){
+							for(size_t j = 0; j < exterior_block_count * config::G_BLOCKVOLUME; ++j){
+								std::cout << '{';
+								std::cout << printout_tmp4[3 * k * exterior_block_count * config::G_BLOCKVOLUME + 3 * j + 0] << ", ";
+								std::cout << printout_tmp4[3 * k * exterior_block_count * config::G_BLOCKVOLUME + 3 * j + 1] << ", ";
+								std::cout << printout_tmp4[3 * k * exterior_block_count * config::G_BLOCKVOLUME + 3 * j + 2];
+								std::cout << '} ';
+							}
+							std::cout << std::endl;
 						}
 						std::cout << std::endl;
 						for(size_t k = 0; k < iq::LHS_MATRIX_SIZE_Y; ++k){
-							for(size_t j = 0; j < iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME; ++j){
-								std::cout << printout_tmp5[k * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + j] << " ";
+							for(size_t j = 0; j < exterior_block_count * config::G_BLOCKVOLUME; ++j){
+								std::cout << printout_tmp5[k * exterior_block_count * config::G_BLOCKVOLUME + j] << " ";
 							}
 							std::cout << std::endl;
 						}

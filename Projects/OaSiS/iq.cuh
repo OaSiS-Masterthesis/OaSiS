@@ -1070,7 +1070,7 @@ __forceinline__ __device__ void aggregate_data_coupling(const ParticleBuffer<Mat
 }
 
 template<typename Partition, typename Grid, MaterialE MaterialTypeSolid, MaterialE MaterialTypeFluid>
-__global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition partition, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, const SurfaceParticleBuffer surface_particle_buffer_solid, const SurfaceParticleBuffer surface_particle_buffer_fluid, const int* iq_lhs_rows, const int* iq_lhs_columns, float* iq_lhs_values, float* iq_rhs, const int* iq_solve_velocity_rows, const int* iq_solve_velocity_columns, float* iq_solve_velocity_values) {
+__global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Partition partition, const Grid grid_solid, const Grid grid_fluid, const SurfaceParticleBuffer surface_particle_buffer_solid, const SurfaceParticleBuffer surface_particle_buffer_fluid, const int* iq_lhs_rows, const int* iq_lhs_columns, float* iq_lhs_values, float* iq_rhs, const int* iq_solve_velocity_rows, const int* iq_solve_velocity_columns, float* iq_solve_velocity_values) {
 	//Both positive, both rounded up. Start will later be negated
 	constexpr size_t KERNEL_START_BLOCK = (KERNEL_SIZE - KERNEL_OFFSET - 1 + config::G_BLOCKSIZE - 1) / config::G_BLOCKSIZE;
 	constexpr size_t KERNEL_END_BLOCK = (KERNEL_OFFSET + config::G_BLOCKSIZE - 1) / config::G_BLOCKSIZE;
@@ -1394,7 +1394,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 	
 	for(int i = 0; i < (3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE; ++i){
 		if(mass_solid_local[i] > 0.0f && mass_fluid_local[i] > 0.0f){
-			printf("ABC3 %d %d # %.28f %.28f\n", static_cast<int>(threadIdx.x), i, mass_solid_local[i], mass_fluid_local[i]);
+			//printf("ABC3 %d %d # %.28f %.28f\n", static_cast<int>(threadIdx.x), i, mass_solid_local[i], mass_fluid_local[i]);
 		}
 	}
 	
@@ -1431,12 +1431,12 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 				}
 			}
 			
-			if(solve_velocity_column_indices[column] == -1){
+			if(threadIdx.x == 0 && solve_velocity_column_indices[column] == -1){
 				const ivec3 row_cellid = block_cellid + local_id;
 				
-				printf("ERROR0 %d %d # %d %d # %d %d %d # %d %d %d\n", static_cast<int>(3 * base_row + 3 * row), neighbour_cellno, iq_solve_velocity_rows[3 * base_row + 3 * row], iq_solve_velocity_rows[3 * base_row + 3 * row + 1], row_cellid[0], row_cellid[1], row_cellid[2], neighbour_cellid[0], neighbour_cellid[1], neighbour_cellid[2]);
+				printf("ERROR0 %d %d # %d %d # %d %d %d # %d %d %d # %d %d\n", static_cast<int>(3 * base_row + 3 * row), neighbour_cellno, iq_solve_velocity_rows[3 * base_row + 3 * row], iq_solve_velocity_rows[3 * base_row + 3 * row + 1], row_cellid[0], row_cellid[1], row_cellid[2], neighbour_cellid[0], neighbour_cellid[1], neighbour_cellid[2], static_cast<int>(blockIdx.x), neighbour_blockno);
 				for(size_t lhs_column = 0; lhs_column < NUM_COLUMNS_PER_BLOCK; ++lhs_column){
-					printf("ERROR1 %d %d # %d\n", static_cast<int>(3 * base_row + 3 * row), neighbour_cellno, iq_solve_velocity_columns[iq_solve_velocity_rows[3 * base_row + 3 * row] + lhs_column]);
+					printf("ERROR1 %d %d # %d # %d\n", static_cast<int>(3 * base_row + 3 * row), neighbour_cellno, iq_solve_velocity_columns[iq_solve_velocity_rows[3 * base_row + 3 * row] + lhs_column], iq_solve_velocity_columns[iq_solve_velocity_rows[3 * base_row + 3 * row + 1] + lhs_column]);
 				}
 			}
 		}
@@ -1780,7 +1780,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 				const int row_index = i * NUM_ROWS_PER_BLOCK * num_blocks + base_row + row;
 				
 				if(b[i] != 0.0f){
-					printf("IQ_RHS %d # %d # %.28f # %.28f %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n", row_index, static_cast<int>(i), b[i], current_scaling_solid, current_pressure_solid_nominator, current_pressure_solid_denominator, gradient_and_velocity_solid, current_gradient_solid_row[0], current_gradient_solid_row[1], current_gradient_solid_row[2], current_velocity_solid[0], current_velocity_solid[1], current_velocity_solid[2], current_gradient_fluid_row[0], current_gradient_fluid_row[1], current_gradient_fluid_row[2], current_velocity_fluid[0], current_velocity_fluid[1], current_velocity_fluid[2]);
+					//printf("IQ_RHS %d # %d # %.28f # %.28f %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n", row_index, static_cast<int>(i), b[i], current_scaling_solid, current_pressure_solid_nominator, current_pressure_solid_denominator, gradient_and_velocity_solid, current_gradient_solid_row[0], current_gradient_solid_row[1], current_gradient_solid_row[2], current_velocity_solid[0], current_velocity_solid[1], current_velocity_solid[2], current_gradient_fluid_row[0], current_gradient_fluid_row[1], current_gradient_fluid_row[2], current_velocity_fluid[0], current_velocity_fluid[1], current_velocity_fluid[2]);
 				}
 				
 				if(isnan(b[i])){
