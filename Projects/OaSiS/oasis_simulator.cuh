@@ -1336,7 +1336,7 @@ struct OasisSimulator {
 							//TODO: Test positive semi-definite; Maybe use c++ jacobi solver found online (in extra file): https://github.com/jewettaij/jacobi_pd
 						#endif
 						
-						
+						/*
 						std::vector<int> printout_tmp0(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1);
 						std::vector<int> printout_tmp1(iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
 						std::vector<float> printout_tmp2(iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
@@ -1389,7 +1389,7 @@ struct OasisSimulator {
 							std::cout << std::endl;
 						}
 						std::cout << std::endl;
-						
+						*/
 						
 						
 						/*
@@ -1462,7 +1462,7 @@ struct OasisSimulator {
 						ginkgo_executor->synchronize();
 						
 						std::cout << "TEST3" << std::endl;
-						
+						/*
 						std::vector<float> printout_tmp4(3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
 						std::vector<float> printout_tmp5(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
 						
@@ -1488,7 +1488,7 @@ struct OasisSimulator {
 								std::cout << printout_tmp5[k * exterior_block_count * config::G_BLOCKVOLUME + j] << " ";
 							}
 							std::cout << std::endl;
-						}
+						}*/
 						
 						//Update velocity and strain
 						match(particle_bins[rollid][solid_id])([this, &cu_dev, &coupling_block_count, &solid_id, &fluid_id, &iq_solve_velocity_result, &iq_result](auto& particle_buffer_solid) {
@@ -1506,6 +1506,7 @@ struct OasisSimulator {
 								, reinterpret_cast<void**>(&next_particle_buffer_solid.particle_bucket_sizes)
 								, reinterpret_cast<void**>(&next_particle_buffer_solid.blockbuckets)
 							);
+							
 							cu_dev.compute_launch({coupling_block_count, iq::BLOCK_SIZE}, iq::update_velocity_and_strain, particle_buffer_solid, get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_solve_velocity_result->get_const_values(), iq_solve_velocity_result->get_const_values() + 3 * exterior_block_count * config::G_BLOCKVOLUME, iq_result->get_const_values());
 						
 							managed_memory.release(
