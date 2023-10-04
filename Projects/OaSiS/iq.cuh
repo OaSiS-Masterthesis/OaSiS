@@ -24,9 +24,6 @@ constexpr size_t INTERPOLATION_DEGREE_FLUID_PRESSURE = 0;
 constexpr size_t INTERPOLATION_DEGREE_INTERFACE_PRESSURE = 0;
 constexpr size_t INTERPOLATION_DEGREE_MAX = std::max(std::max(std::max(INTERPOLATION_DEGREE_SOLID_VELOCITY, INTERPOLATION_DEGREE_SOLID_PRESSURE), std::max(INTERPOLATION_DEGREE_FLUID_VELOCITY, INTERPOLATION_DEGREE_FLUID_PRESSURE)), INTERPOLATION_DEGREE_INTERFACE_PRESSURE);
 
-constexpr size_t KERNEL_SIZE = 2 * INTERPOLATION_DEGREE_MAX + 1 + 4;//Neighbour cells by interpolation kernel plus offset due to particles being stored with offset
-constexpr size_t KERNEL_OFFSET = INTERPOLATION_DEGREE_MAX;
-
 constexpr size_t MAX_SHARED_PARTICLE_SOLID = config::G_BLOCKVOLUME * config::G_MAX_PARTICLES_IN_CELL >> 4;
 constexpr size_t MAX_SHARED_PARTICLE_FLUID = config::G_BLOCKVOLUME * config::G_MAX_PARTICLES_IN_CELL >> 3;
 
@@ -485,9 +482,9 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 	
 	//Get near fluid particles
 	bool has_neighbours_local = false;
-	for(int grid_x = -1; grid_x <= 1; ++grid_x){
-		for(int grid_y = -1; grid_y <= 1; ++grid_y){
-			for(int grid_z = -1; grid_z <= 1; ++grid_z){
+	for(int grid_x = -4; grid_x <= 1; ++grid_x){
+		for(int grid_y = -4; grid_y <= 1; ++grid_y){
+			for(int grid_z = -4; grid_z <= 1; ++grid_z){
 				const ivec3 cell_offset {grid_x, grid_y, grid_z};
 				const ivec3 current_cellid = global_base_index_solid_2 + cell_offset;
 				const ivec3 current_blockid = current_cellid / static_cast<int>(config::G_BLOCKSIZE);
@@ -586,7 +583,7 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 	for(size_t local_block_index = 0; local_block_index < get_thread_count<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, 3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME); local_block_index++){
 		const size_t block_index = get_global_index<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, local_block_index) / (3 * NUM_COLUMNS_PER_BLOCK);
 		const size_t column = (get_global_index<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, local_block_index) / 3) % NUM_COLUMNS_PER_BLOCK;
-		const size_t alpha = get_global_index<BLOCK_SIZE, (3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, local_block_index) % 3;
+		const size_t alpha = get_global_index<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, local_block_index) % 3;
 		const ivec3 local_id {static_cast<int>((block_index / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE), static_cast<int>((block_index / config::G_BLOCKSIZE) % config::G_BLOCKSIZE), static_cast<int>(block_index % config::G_BLOCKSIZE)};
 		const ivec3 neighbour_local_id = ivec3(static_cast<int>((column / ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1))) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>((column / (2 * INTERPOLATION_DEGREE_MAX + 1)) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>(column % (2 * INTERPOLATION_DEGREE_MAX + 1))) - ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));
 			
@@ -617,7 +614,7 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 		for(size_t local_block_index = 0; local_block_index < get_thread_count<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, 3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME); local_block_index++){
 			const size_t block_index = get_global_index<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, local_block_index) / (3 * NUM_COLUMNS_PER_BLOCK);
 			const size_t column = (get_global_index<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, local_block_index) / 3) % NUM_COLUMNS_PER_BLOCK;
-			const size_t alpha = get_global_index<BLOCK_SIZE, (3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, local_block_index) % 3;
+			const size_t alpha = get_global_index<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, local_block_index) % 3;
 			const ivec3 local_id {static_cast<int>((block_index / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE), static_cast<int>((block_index / config::G_BLOCKSIZE) % config::G_BLOCKSIZE), static_cast<int>(block_index % config::G_BLOCKSIZE)};
 			const ivec3 neighbour_local_id = ivec3(static_cast<int>((column / ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1))) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>((column / (2 * INTERPOLATION_DEGREE_MAX + 1)) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>(column % (2 * INTERPOLATION_DEGREE_MAX + 1))) - ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));
 				
@@ -720,7 +717,7 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 	for(size_t local_block_index = 0; local_block_index < get_thread_count<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, 3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME); local_block_index++){
 		const size_t block_index = get_global_index<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, local_block_index) / (3 * NUM_COLUMNS_PER_BLOCK);
 		const size_t column = (get_global_index<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, local_block_index) / 3) % NUM_COLUMNS_PER_BLOCK;
-		const size_t alpha = get_global_index<BLOCK_SIZE, (3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, local_block_index) % 3;
+		const size_t alpha = get_global_index<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, local_block_index) % 3;
 		const ivec3 local_id {static_cast<int>((block_index / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE), static_cast<int>((block_index / config::G_BLOCKSIZE) % config::G_BLOCKSIZE), static_cast<int>(block_index % config::G_BLOCKSIZE)};
 		const ivec3 neighbour_local_id = ivec3(static_cast<int>((column / ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1))) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>((column / (2 * INTERPOLATION_DEGREE_MAX + 1)) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>(column % (2 * INTERPOLATION_DEGREE_MAX + 1))) - ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));
 			
@@ -744,6 +741,10 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 
 template<typename Partition, typename Grid, MaterialE MaterialTypeSolid, MaterialE MaterialTypeFluid>
 __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Partition partition, const Grid grid_solid, const Grid grid_fluid, const SurfaceParticleBuffer surface_particle_buffer_solid, const SurfaceParticleBuffer surface_particle_buffer_fluid, const int* iq_lhs_rows, const int* iq_lhs_columns, float* iq_lhs_values, float* iq_rhs, const int* iq_solve_velocity_rows, const int* iq_solve_velocity_columns, float* iq_solve_velocity_values) {
+	//Particles with offset [-2, 0] can lie within cell (due to storing with interpolation degree 2 wich results in offset of 2); Interolation degree may offset positions so we need [-2, 2] for all interpolation positions in our cell. Then wee also need neighbour positions so we get [-4, 4];
+	constexpr size_t KERNEL_SIZE = 2 * INTERPOLATION_DEGREE_MAX + 5 + 1;//Plus one for both sides being inclusive
+	constexpr size_t KERNEL_OFFSET = INTERPOLATION_DEGREE_MAX + 2;
+	
 	//Both positive, both rounded up. Start will later be negated
 	constexpr size_t KERNEL_START_BLOCK = (KERNEL_SIZE - KERNEL_OFFSET - 1 + config::G_BLOCKSIZE - 1) / config::G_BLOCKSIZE;
 	constexpr size_t KERNEL_END_BLOCK = (KERNEL_OFFSET + config::G_BLOCKSIZE - 1) / config::G_BLOCKSIZE;
@@ -908,12 +909,12 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 						}
 					}
 					
-					for(int particle_offset = 0; particle_offset < next_particle_buffer_solid.particle_bucket_sizes[current_blockno]; particle_offset += static_cast<int>(MAX_SHARED_PARTICLE_FLUID)){
+					for(int particle_offset = 0; particle_offset < next_particle_buffer_fluid.particle_bucket_sizes[current_blockno]; particle_offset += static_cast<int>(MAX_SHARED_PARTICLE_FLUID)){
 						__shared__ std::array<float, 3> position_shared[MAX_SHARED_PARTICLE_FLUID];
 						__shared__ float mass_shared[MAX_SHARED_PARTICLE_FLUID];
 						__shared__ float J_shared[MAX_SHARED_PARTICLE_FLUID];
 						
-						for(int particle_id_in_block = particle_offset + static_cast<int>(threadIdx.x); particle_id_in_block < next_particle_buffer_solid.particle_bucket_sizes[current_blockno] && (particle_id_in_block - particle_offset) < MAX_SHARED_PARTICLE_FLUID; particle_id_in_block += static_cast<int>(blockDim.x)) {
+						for(int particle_id_in_block = particle_offset + static_cast<int>(threadIdx.x); particle_id_in_block < next_particle_buffer_fluid.particle_bucket_sizes[current_blockno] && (particle_id_in_block - particle_offset) < MAX_SHARED_PARTICLE_FLUID; particle_id_in_block += static_cast<int>(blockDim.x)) {
 							//Fetch index of the advection source
 							int advection_source_blockno;
 							int source_pidib;
@@ -1363,7 +1364,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 				}
 				
 				if(isnan(b[i])){
-					printf("ABC1 %.28f %.28f %.28f\n", current_velocity_solid[0], current_velocity_solid[1], current_velocity_solid[2]);
+					printf("ABC1 %d # %.28f %.28f %.28f # %.28f %.28f %.28f\n", static_cast<int>(i), current_gradient_fluid_row[0], current_gradient_fluid_row[1], current_gradient_fluid_row[2], current_velocity_fluid[0], current_velocity_fluid[1], current_velocity_fluid[2]);
 				}
 				
 				atomicAdd(&(iq_rhs[row_index]), b[i]);
@@ -1394,6 +1395,10 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 	
 #if (FIXED_COROTATED_GHOST_ENABLE_STRAIN_UPDATE == 0)
 	
+	//Particles in cell can have offset of [0, 5] ([0, 3] current block, 2 for offset caused by kernel 2 in storing); Then additional 2 are added in both directions for max kernel degree => [-2, 7] or absolute [0, 9] with offset 2
+	constexpr size_t KERNEL_SIZE = 2 * INTERPOLATION_DEGREE_MAX + 5 + 1;//Plus one for both sides being inclusive
+	constexpr size_t KERNEL_OFFSET = INTERPOLATION_DEGREE_MAX;
+	
 	constexpr size_t CELL_COUNT = KERNEL_SIZE * KERNEL_SIZE * KERNEL_SIZE;
 	
 	const int particle_bucket_size_solid = next_particle_buffer_soild.particle_bucket_sizes[src_blockno];
@@ -1406,19 +1411,13 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 	}
 	
 	//Load data from grid to shared memory
-	/*for(int base = static_cast<int>(threadIdx.x); base < config::G_BLOCKVOLUME; base += static_cast<int>(blockDim.x)) {
-		const ivec3 local_id {(static_cast<int>(base) / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE, (static_cast<int>(base) / config::G_BLOCKSIZE) % config::G_BLOCKSIZE, static_cast<int>(base) % config::G_BLOCKSIZE};
-
-		const float val = pressure_solid[config::G_BLOCKVOLUME * src_blockno + base];
-		pressure_solid_shared[local_id[0]][local_id[1]][local_id[2]] = val;
-	}*/
 	for(int base = static_cast<int>(threadIdx.x); base < CELL_COUNT; base += static_cast<int>(blockDim.x)) {
 		const ivec3 absolute_local_cellid = ivec3(static_cast<int>((base / (KERNEL_SIZE * KERNEL_SIZE)) % KERNEL_SIZE), static_cast<int>((base / KERNEL_SIZE) % KERNEL_SIZE), static_cast<int>(base % KERNEL_SIZE));
 		const ivec3 local_cellid = absolute_local_cellid - ivec3(static_cast<int>(KERNEL_OFFSET), static_cast<int>(KERNEL_OFFSET), static_cast<int>(KERNEL_OFFSET));
-		const ivec3 local_blockid = local_cellid / config::G_BLOCKSIZE;
-		const auto blockno = partition.query(blockid + local_blockid);
+		const ivec3 current_blockid = (block_cellid + local_cellid) / config::G_BLOCKSIZE;
+		const auto blockno = partition.query(current_blockid);
 	
-		const ivec3 cellid_in_block = local_cellid - local_blockid * config::G_BLOCKSIZE;
+		const ivec3 cellid_in_block = (block_cellid + local_cellid) - current_blockid * config::G_BLOCKSIZE;
 		const int cellno_in_block = (config::G_BLOCKSIZE * config::G_BLOCKSIZE) * cellid_in_block[0] + config::G_BLOCKSIZE * cellid_in_block[1] + cellid_in_block[2];
 
 		const float val = pressure_solid[config::G_BLOCKVOLUME * blockno + cellno_in_block];
@@ -1457,8 +1456,7 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 		
 		//Get position of grid cell
 		const ivec3 global_base_index_solid_0 = get_cell_id<0>(pos.data_arr(), grid_solid.get_offset());
-		const ivec3 global_base_index_solid_2 = get_cell_id<2>(pos.data_arr(), grid_solid.get_offset());
-
+		
 		//Get position relative to grid cell
 		const vec3 local_pos_solid_0 = pos - (global_base_index_solid_0 + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2])) * config::G_DX;
 
@@ -1491,7 +1489,7 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 						|| (absolute_local_id[1] < 0 || absolute_local_id[1] >= KERNEL_SIZE)
 						|| (absolute_local_id[2] < 0 || absolute_local_id[2] >= KERNEL_SIZE)
 					){
-						//printf("ERROR4 %d %d %d # %d %d %d\n", local_id[0], local_id[1], local_id[2], absolute_local_id[0], absolute_local_id[1], absolute_local_id[2]);
+						//printf("ERROR4 %d %d %d # %d %d %d # %.28f %.28f %.28f\n", local_id[0], local_id[1], local_id[2], absolute_local_id[0], absolute_local_id[1], absolute_local_id[2], pos[0], pos[1], pos[2]);
 					}
 					
 					//Weight

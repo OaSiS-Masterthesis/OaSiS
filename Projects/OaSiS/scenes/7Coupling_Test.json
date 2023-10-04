@@ -1,7 +1,7 @@
 {
 	"simulation": {
 		"gpuid": 0,
-		"fps": 120000,
+		"fps": 48000,
 		"frames": 120,
 		"default_dt": 5e-6
 	},
