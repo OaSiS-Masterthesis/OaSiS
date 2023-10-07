@@ -69,6 +69,7 @@ __forceinline__ __device__ void compute_stress<float, MaterialE::FIXED_COROTATED
 
 	float scaled_mu		= 2.0f * mu;
 	float scaled_lambda = lambda * (J - 1.0f);
+	//P_Hat = Corotational correction term derivate by stress (== s)
 	vec<float, 3> P_hat;
 	P_hat[0] = scaled_mu * (S[0] - 1.f) + scaled_lambda * (S[1] * S[2]);
 	P_hat[1] = scaled_mu * (S[1] - 1.f) + scaled_lambda * (S[0] * S[2]);
@@ -86,6 +87,7 @@ __forceinline__ __device__ void compute_stress<float, MaterialE::FIXED_COROTATED
 	P[8] = P_hat[0] * U[2] * V[2] + P_hat[1] * U[5] * V[5] + P_hat[2] * U[8] * V[8];
 
 	/// PF'
+	//Kirchhof-stress * volume
 	PF[0] = (P[0] * F[0] + P[3] * F[3] + P[6] * F[6]) * volume;
 	PF[1] = (P[1] * F[0] + P[4] * F[3] + P[7] * F[6]) * volume;
 	PF[2] = (P[2] * F[0] + P[5] * F[3] + P[8] * F[6]) * volume;
@@ -357,6 +359,75 @@ __forceinline__ __device__ void compute_stress<float, MaterialE::SAND>(const flo
 	PF[6] = (P[0] * F[2] + P[3] * F[5] + P[6] * F[8]) * volume;
 	PF[7] = (P[1] * F[2] + P[4] * F[5] + P[7] * F[8]) * volume;
 	PF[8] = (P[2] * F[2] + P[5] * F[5] + P[8] * F[8]) * volume;
+}
+//NOLINTEND(readability-magic-numbers, readability-identifier-naming)
+
+//TODO: But maybe use names instead for better understanding
+//NOLINTBEGIN(readability-magic-numbers, readability-identifier-naming) Magic numbers are formula specific; Common naming for this physical formulas
+template<>
+__forceinline__ __device__ void compute_stress<float, MaterialE::FIXED_COROTATED_GHOST>(const float volume, const float mu, const float lambda, std::array<float, 9>& F, std::array<float, 9>& PF, ComputeStressIntermediate<float>& data) {
+	(void) data;
+
+	std::array<float, 9> U = {};
+	std::array<float, 3> S = {};
+	std::array<float, 9> V = {};
+	math::svd(F[0], F[3], F[6], F[1], F[4], F[7], F[2], F[5], F[8], U[0], U[3], U[6], U[1], U[4], U[7], U[2], U[5], U[8], S[0], S[1], S[2], V[0], V[3], V[6], V[1], V[4], V[7], V[2], V[5], V[8]);
+	
+	//FIXME: Check if we can do this wihout damaging physic too much
+	//Too much deviation is bad.
+	//TODO: Maybe make this 1e-2 a parameter
+	bool changed_S = false;
+	/*
+	if((1.0 - std::abs(S[0])) > 1e-2){
+		changed_S = true;
+		S[0] = std::copysign(1.0f, S[0]);
+	}
+	if((1.0 - std::abs(S[1])) > 1e-2){
+		changed_S = true;
+		S[1] = std::copysign(1.0f, S[1]);
+	}
+	if((1.0 - std::abs(S[2])) > 1e-2){
+		changed_S = true;
+		S[2] = std::copysign(1.0f, S[2]);
+	}
+	*/
+	
+	if(changed_S) {
+		matmul_mat_diag_mat_t_3d(F, U, S, V);
+	}
+	
+	float J				= S[0] * S[1] * S[2];
+
+	float scaled_mu		= 2.0f * mu;
+	float scaled_lambda = lambda * (J - 1.0f);
+	//P_Hat = Corotational correction term derivate by stress (== s)
+	vec<float, 3> P_hat;
+	P_hat[0] = scaled_mu * (S[0] - 1.f) + scaled_lambda * (S[1] * S[2]);
+	P_hat[1] = scaled_mu * (S[1] - 1.f) + scaled_lambda * (S[0] * S[2]);
+	P_hat[2] = scaled_mu * (S[2] - 1.f) + scaled_lambda * (S[0] * S[1]);
+
+	vec<float, 9> P;
+	P[0] = P_hat[0] * U[0] * V[0] + P_hat[1] * U[3] * V[3] + P_hat[2] * U[6] * V[6];
+	P[1] = P_hat[0] * U[1] * V[0] + P_hat[1] * U[4] * V[3] + P_hat[2] * U[7] * V[6];
+	P[2] = P_hat[0] * U[2] * V[0] + P_hat[1] * U[5] * V[3] + P_hat[2] * U[8] * V[6];
+	P[3] = P_hat[0] * U[0] * V[1] + P_hat[1] * U[3] * V[4] + P_hat[2] * U[6] * V[7];
+	P[4] = P_hat[0] * U[1] * V[1] + P_hat[1] * U[4] * V[4] + P_hat[2] * U[7] * V[7];
+	P[5] = P_hat[0] * U[2] * V[1] + P_hat[1] * U[5] * V[4] + P_hat[2] * U[8] * V[7];
+	P[6] = P_hat[0] * U[0] * V[2] + P_hat[1] * U[3] * V[5] + P_hat[2] * U[6] * V[8];
+	P[7] = P_hat[0] * U[1] * V[2] + P_hat[1] * U[4] * V[5] + P_hat[2] * U[7] * V[8];
+	P[8] = P_hat[0] * U[2] * V[2] + P_hat[1] * U[5] * V[5] + P_hat[2] * U[8] * V[8];
+
+	/// PF'
+	//1/J * Kirchhof-stress * volume
+	PF[0] = (P[0] * F[0] + P[3] * F[3] + P[6] * F[6]) * volume / J;
+	PF[1] = (P[1] * F[0] + P[4] * F[3] + P[7] * F[6]) * volume / J;
+	PF[2] = (P[2] * F[0] + P[5] * F[3] + P[8] * F[6]) * volume / J;
+	PF[3] = (P[0] * F[1] + P[3] * F[4] + P[6] * F[7]) * volume / J;
+	PF[4] = (P[1] * F[1] + P[4] * F[4] + P[7] * F[7]) * volume / J;
+	PF[5] = (P[2] * F[1] + P[5] * F[4] + P[8] * F[7]) * volume / J;
+	PF[6] = (P[0] * F[2] + P[3] * F[5] + P[6] * F[8]) * volume / J;
+	PF[7] = (P[1] * F[2] + P[4] * F[5] + P[7] * F[8]) * volume / J;
+	PF[8] = (P[2] * F[2] + P[5] * F[5] + P[8] * F[8]) * volume / J;
 }
 //NOLINTEND(readability-magic-numbers, readability-identifier-naming)
 

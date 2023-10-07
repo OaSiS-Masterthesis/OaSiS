@@ -1336,7 +1336,7 @@ struct OasisSimulator {
 							//TODO: Test positive semi-definite; Maybe use c++ jacobi solver found online (in extra file): https://github.com/jewettaij/jacobi_pd
 						#endif
 						
-						
+						/*
 						std::vector<int> printout_tmp0(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1);
 						std::vector<int> printout_tmp1(iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
 						std::vector<float> printout_tmp2(iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
@@ -1389,7 +1389,7 @@ struct OasisSimulator {
 							std::cout << std::endl;
 						}
 						std::cout << std::endl;
-						
+						*/
 						
 						
 						/*
@@ -1463,6 +1463,7 @@ struct OasisSimulator {
 						
 						std::cout << "TEST3" << std::endl;
 						
+						/*
 						std::vector<float> printout_tmp4(3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
 						std::vector<float> printout_tmp5(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
 						
@@ -1489,6 +1490,7 @@ struct OasisSimulator {
 							}
 							std::cout << std::endl;
 						}
+						*/
 						
 						//Update velocity and strain
 						match(particle_bins[rollid][solid_id])([this, &cu_dev, &solid_id, &fluid_id, &iq_solve_velocity_result, &iq_result](auto& particle_buffer_solid) {

@@ -235,11 +235,11 @@ __forceinline__ __device__ void store_data_solid<MaterialE::NACC>(const Particle
 
 template<>
 __forceinline__ __device__ void store_data_solid<MaterialE::FIXED_COROTATED_GHOST>(const ParticleBuffer<MaterialE::FIXED_COROTATED_GHOST> particle_buffer_solid, float* __restrict__ scaling_solid, float* __restrict__ pressure_solid_nominator, float* __restrict__ pressure_solid_denominator, const float W_0, const float W_2, const float mass, const float J){			
-	const float volume = (mass / particle_buffer_solid.rho);
+	const float volume_0 = (mass / particle_buffer_solid.rho);
 	
-	(*scaling_solid) += (volume / particle_buffer_solid.lambda) * W_0;
-	(*pressure_solid_nominator) += volume * J * (-particle_buffer_solid.lambda * (J - 1.0f)) * W_0;
-	(*pressure_solid_denominator) += volume * J * W_0;
+	(*scaling_solid) += (volume_0 / particle_buffer_solid.lambda) * W_0;
+	(*pressure_solid_nominator) += volume_0 * J * (-particle_buffer_solid.lambda * (J - 1.0f)) * W_0;
+	(*pressure_solid_denominator) += volume_0 * J * W_0;
 }
 
 template<>
@@ -266,7 +266,7 @@ template<>
 __forceinline__ __device__ void store_data_neigbours_solid<MaterialE::FIXED_COROTATED_GHOST>(const ParticleBuffer<MaterialE::FIXED_COROTATED_GHOST> particle_buffer_solid, float* __restrict__ gradient_solid, const float W1_0, const float delta_w_2, const float mass, const float J){
 	(*gradient_solid) += -(mass / particle_buffer_solid.rho) * J * W1_0 * delta_w_2;
 }
-								
+
 template<>
 __forceinline__ __device__ void store_data_neigbours_coupling_solid<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer_solid, float* __restrict__ coupling_solid, const float W_2, const float W1_0, const float contact_area, const float normal){
 	printf("Material type not supported for coupling as solid.");
@@ -410,7 +410,7 @@ __forceinline__ __device__ void update_strain(const ParticleBuffer<MaterialE::FI
 }
 
 template<typename Partition, typename Grid, MaterialE MaterialTypeSolid, MaterialE MaterialTypeFluid>
-__forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Grid grid_solid, const SurfaceParticleBuffer surface_particle_buffer, const std::array<float, 3>* __restrict__ position_shared, const float* __restrict__ mass_shared, const float* __restrict__ J_shared, const std::array<float, 3>* __restrict__ normal_shared, const SurfacePointType* __restrict__ point_type_shared, const float* __restrict__ contact_area_shared, const int particle_offset, const int current_blockno, const ivec3 current_blockid, const ivec3 block_cellid, const int particle_id_in_block, float* __restrict__ scaling_solid, float* __restrict__ pressure_solid_nominator, float* __restrict__ pressure_solid_denominator, float* __restrict__ mass_solid, float* __restrict__ gradient_solid, float* __restrict__ coupling_solid, float* __restrict__ coupling_fluid) {
+__forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, const SurfaceParticleBuffer surface_particle_buffer, const std::array<float, 3>* __restrict__ position_shared, const float* __restrict__ mass_shared, const float* __restrict__ J_shared, const std::array<float, 3>* __restrict__ normal_shared, const SurfacePointType* __restrict__ point_type_shared, const float* __restrict__ contact_area_shared, const int particle_offset, const int current_blockno, const ivec3 current_blockid, const ivec3 block_cellid, const int particle_id_in_block, float* __restrict__ scaling_solid, float* __restrict__ pressure_solid_nominator, float* __restrict__ pressure_solid_denominator, float* __restrict__ mass_solid, float* __restrict__ gradient_solid, float* __restrict__ coupling_solid, float* __restrict__ coupling_fluid) {
 	const vec3 normal {normal_shared[particle_id_in_block - particle_offset][0], normal_shared[particle_id_in_block - particle_offset][1], normal_shared[particle_id_in_block - particle_offset][2]};
 	const SurfacePointType point_type = point_type_shared[particle_id_in_block - particle_offset];
 	const float contact_area = contact_area_shared[particle_id_in_block - particle_offset];
@@ -423,18 +423,21 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 	const ivec3 global_base_index_solid_0 = get_cell_id<0>(pos.data_arr(), grid_solid.get_offset());
 	const ivec3 global_base_index_solid_1 = get_cell_id<1>(pos.data_arr(), grid_solid.get_offset());
 	const ivec3 global_base_index_solid_2 = get_cell_id<2>(pos.data_arr(), grid_solid.get_offset());
+	
+	const ivec3 global_base_index_fluid_1 = get_cell_id<1>(pos.data_arr(), grid_fluid.get_offset());//NOTE: Using solid/intreface quadrature position
 
 	//Get position relative to grid cell
 	const vec3 local_pos_solid_0 = pos - (global_base_index_solid_0 + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2])) * config::G_DX;
 	const vec3 local_pos_solid_1 = pos - (global_base_index_solid_1 + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2])) * config::G_DX;
 	const vec3 local_pos_solid_2 = pos - (global_base_index_solid_2 + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2])) * config::G_DX;
+	
+	const vec3 local_pos_fluid_1 = pos - (global_base_index_fluid_1 + vec3(grid_fluid.get_offset()[0], grid_fluid.get_offset()[1], grid_fluid.get_offset()[2])) * config::G_DX;
 
 	//Calculate weights
 	vec3x3 weight_solid_0;
 	vec3x3 weight_solid_2;
 	vec3x3 gradient_weight_solid_2;
 	
-	vec3x3 weight_fluid_0;
 	vec3x3 weight_fluid_1;
 	
 	#pragma unroll 3
@@ -463,15 +466,7 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 			gradient_weight_solid_2(dd, i)		  = 0.0f;
 		}
 		
-		const std::array<float, INTERPOLATION_DEGREE_FLUID_PRESSURE + 1> current_weight_fluid_0 = bspline_weight<float, INTERPOLATION_DEGREE_FLUID_PRESSURE>(local_pos_solid_0[dd]);
-		for(int i = 0; i < INTERPOLATION_DEGREE_FLUID_PRESSURE + 1; ++i){
-			weight_fluid_0(dd, i)		  = current_weight_fluid_0[i];
-		}
-		for(int i = INTERPOLATION_DEGREE_FLUID_PRESSURE + 1; i < 3; ++i){
-			weight_fluid_0(dd, i)		  = 0.0f;
-		}
-		
-		const std::array<float, INTERPOLATION_DEGREE_FLUID_VELOCITY + 1> current_weight_fluid_1 = bspline_weight<float, INTERPOLATION_DEGREE_FLUID_VELOCITY>(local_pos_solid_1[dd]);
+		const std::array<float, INTERPOLATION_DEGREE_FLUID_VELOCITY + 1> current_weight_fluid_1 = bspline_weight<float, INTERPOLATION_DEGREE_FLUID_VELOCITY>(local_pos_fluid_1[dd]);
 		for(int i = 0; i < INTERPOLATION_DEGREE_FLUID_VELOCITY + 1; ++i){
 			weight_fluid_1(dd, i)		  = current_weight_fluid_1[i];
 		}
@@ -619,9 +614,9 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 			const ivec3 neighbour_local_id = ivec3(static_cast<int>((column / ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1))) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>((column / (2 * INTERPOLATION_DEGREE_MAX + 1)) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>(column % (2 * INTERPOLATION_DEGREE_MAX + 1))) - ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));
 				
 			const ivec3 local_offset_2_solid = global_base_index_solid_2 - (block_cellid + local_id);
-			const ivec3 local_offset_1_fluid = global_base_index_solid_1 - (block_cellid + local_id);//NOTE: Using solid pos
+			const ivec3 local_offset_1_fluid = global_base_index_fluid_1 - (block_cellid + local_id);
 			const ivec3 neighbour_local_offset_0_solid = global_base_index_solid_0 - (block_cellid + local_id + neighbour_local_id);
-									const ivec3 neighbour_local_offset_0_fluid = global_base_index_solid_0 - (block_cellid + local_id + neighbour_local_id);//NOTE: Using solid pos
+			const ivec3 neighbour_local_offset_0_fluid = global_base_index_solid_0 - (block_cellid + local_id + neighbour_local_id);//NOTE: Using solid pos
 			
 			const ivec3 absolute_local_offset_2_solid {std::abs(local_offset_2_solid[0]), std::abs(local_offset_2_solid[1]), std::abs(local_offset_2_solid[2])};
 			const ivec3 absolute_local_offset_1_fluid {std::abs(local_offset_1_fluid[0]), std::abs(local_offset_1_fluid[1]), std::abs(local_offset_1_fluid[2])};
@@ -631,11 +626,10 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 
 			//Weight
 			const float W_2 = (absolute_local_offset_2_solid[0] < 3 ? weight_solid_2(0, absolute_local_offset_2_solid[0]) : 0.0f) * (absolute_local_offset_2_solid[1] < 3 ? weight_solid_2(1, absolute_local_offset_2_solid[1]) : 0.0f) * (absolute_local_offset_2_solid[2] < 3 ? weight_solid_2(2, absolute_local_offset_2_solid[2]) : 0.0f);	
-			const float W_1 = (absolute_local_offset_1_fluid[0] < 3 ? weight_solid_2(0, absolute_local_offset_1_fluid[0]) : 0.0f) * (absolute_local_offset_1_fluid[1] < 3 ? weight_solid_2(1, absolute_local_offset_1_fluid[1]) : 0.0f) * (absolute_local_offset_1_fluid[2] < 3 ? weight_solid_2(2, absolute_local_offset_1_fluid[2]) : 0.0f);
+			const float W_1 = (absolute_local_offset_1_fluid[0] < 3 ? weight_fluid_1(0, absolute_local_offset_1_fluid[0]) : 0.0f) * (absolute_local_offset_1_fluid[1] < 3 ? weight_fluid_1(1, absolute_local_offset_1_fluid[1]) : 0.0f) * (absolute_local_offset_1_fluid[2] < 3 ? weight_fluid_1(2, absolute_local_offset_1_fluid[2]) : 0.0f);
 			const float W1_0_solid = (neighbour_absolute_local_offset_solid[0] < 3 ? weight_solid_0(0, neighbour_absolute_local_offset_solid[0]) : 0.0f) * (neighbour_absolute_local_offset_solid[1] < 3 ? weight_solid_0(1, neighbour_absolute_local_offset_solid[1]) : 0.0f) * (neighbour_absolute_local_offset_solid[2] < 3 ? weight_solid_0(2, neighbour_absolute_local_offset_solid[2]) : 0.0f);
 			const float W1_0_fluid = (neighbour_absolute_local_offset_fluid[0] < 3 ? weight_solid_0(0, neighbour_absolute_local_offset_fluid[0]) : 0.0f) * (neighbour_absolute_local_offset_fluid[1] < 3 ? weight_solid_0(1, neighbour_absolute_local_offset_fluid[1]) : 0.0f) * (neighbour_absolute_local_offset_fluid[2] < 3 ? weight_solid_0(2, neighbour_absolute_local_offset_fluid[2]) : 0.0f);
 											
-			
 					
 			float* current_coupling_solid = &(coupling_solid[local_block_index]);
 			float* current_coupling_fluid = &(coupling_fluid[local_block_index]);
@@ -886,6 +880,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 								, next_particle_buffer_fluid
 								, prev_partition
 								, grid_solid
+								, grid_fluid
 								, surface_particle_buffer_solid
 								, &(position_shared[0])
 								, &(mass_shared[0])
@@ -982,6 +977,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 	constexpr size_t IDENTIITY_NEIGHBOUR_INDEX = (INTERPOLATION_DEGREE_MAX * ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1)) + INTERPOLATION_DEGREE_MAX * (2 * INTERPOLATION_DEGREE_MAX + 1) + INTERPOLATION_DEGREE_MAX);
 	
 	//Store data in matrix
+	//NOTE: Coupling was stored in transposed form
 	for(int row = 0; row < NUM_ROWS_PER_BLOCK; ++row) {
 		const ivec3 local_id {static_cast<int>((row / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE), static_cast<int>((row / config::G_BLOCKSIZE) % config::G_BLOCKSIZE), static_cast<int>(row % config::G_BLOCKSIZE)};
 		
@@ -1081,24 +1077,21 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 			
 			//P = O^T * M^-1 * O => P_row_col = sum(all_rows_in_column; current_o_row * current_o_col / current_m^2) => add current_o_row * current_o_col / current_m^2 to entries for current row and for neighbour row (row and col); Other entries are zero
 			if(get_thread_index<BLOCK_SIZE, (NUM_ROWS_PER_BLOCK * NUM_COLUMNS_PER_BLOCK + BLOCK_SIZE - 1) / BLOCK_SIZE>(row * NUM_COLUMNS_PER_BLOCK + column) == threadIdx.x){
-				const vec3 square_mass_solid{current_mass_solid[0] * current_mass_solid[0], current_mass_solid[1] * current_mass_solid[1], current_mass_solid[2] * current_mass_solid[2]};
-				const vec3 square_mass_fluid{current_mass_fluid[0] * current_mass_fluid[0], current_mass_fluid[1] * current_mass_fluid[1], current_mass_fluid[2] * current_mass_fluid[2]};
-				
 				//Caling only for diagonal element
 				const float scaling_solid = (column == IDENTIITY_NEIGHBOUR_INDEX ? current_scaling_solid : 0.0f);
 				
-				const float gradient_by_mass_solid = (current_gradient_solid_row[0] * current_gradient_solid_column[0] / square_mass_solid[0] + current_gradient_solid_row[1] * current_gradient_solid_column[1] / square_mass_solid[1] + current_gradient_solid_row[2] * current_gradient_solid_column[2] / square_mass_solid[2]);
-				const float gradient_by_mass_fluid = (current_gradient_fluid_row[0] * current_gradient_fluid_column[0] / square_mass_fluid[0] + current_gradient_fluid_row[1] * current_gradient_fluid_column[1] / square_mass_fluid[1] + current_gradient_fluid_row[2] * current_gradient_fluid_column[2] / square_mass_fluid[2]);
+				const float gradient_by_mass_solid = (current_gradient_solid_row[0] * current_gradient_solid_column[0] / current_mass_solid[0] + current_gradient_solid_row[1] * current_gradient_solid_column[1] / current_mass_solid[1] + current_gradient_solid_row[2] * current_gradient_solid_column[2] / current_mass_solid[2]);
+				const float gradient_by_mass_fluid = (current_gradient_fluid_row[0] * current_gradient_fluid_column[0] / current_mass_fluid[0] + current_gradient_fluid_row[1] * current_gradient_fluid_column[1] / current_mass_fluid[1] + current_gradient_fluid_row[2] * current_gradient_fluid_column[2] / current_mass_fluid[2]);
 				
-				const float boundary_by_mass = (current_boundary_fluid_row[0] * current_boundary_fluid_column[0] / square_mass_fluid[0] + current_boundary_fluid_row[1] * current_boundary_fluid_column[1] / square_mass_fluid[1] + current_boundary_fluid_row[2] * current_boundary_fluid_column[2] / square_mass_fluid[2]);
-				const float gradient_and_boundary_by_mass = (current_gradient_fluid_row[0] * current_boundary_fluid_column[0] / square_mass_fluid[0] + current_gradient_fluid_row[1] * current_boundary_fluid_column[1] / square_mass_fluid[1] + current_gradient_fluid_row[2] * current_boundary_fluid_column[2] / square_mass_fluid[2]);
+				const float boundary_by_mass = (current_boundary_fluid_row[0] * current_boundary_fluid_column[0] / current_mass_fluid[0] + current_boundary_fluid_row[1] * current_boundary_fluid_column[1] / current_mass_fluid[1] + current_boundary_fluid_row[2] * current_boundary_fluid_column[2] / current_mass_fluid[2]);
+				const float gradient_and_boundary_by_mass = (current_gradient_fluid_row[0] * current_boundary_fluid_column[0] / current_mass_fluid[0] + current_gradient_fluid_row[1] * current_boundary_fluid_column[1] / current_mass_fluid[1] + current_gradient_fluid_row[2] * current_boundary_fluid_column[2] / current_mass_fluid[2]);
 				
-				const float gradient_and_coupling_by_mass_solid = (current_gradient_solid_row[0] * current_coupling_solid_column[0] / square_mass_solid[0] + current_gradient_solid_row[1] * current_coupling_solid_column[1] / square_mass_solid[1] + current_gradient_solid_row[2] * current_coupling_solid_column[2] / square_mass_solid[2]);
-				const float gradient_and_coupling_by_mass_fluid = (current_gradient_fluid_row[0] * current_coupling_fluid_column[0] / square_mass_fluid[0] + current_gradient_fluid_row[1] * current_coupling_fluid_column[1] / square_mass_fluid[1] + current_gradient_fluid_row[2] * current_coupling_fluid_column[2] / square_mass_fluid[2]);
-				const float boundary_and_coupling_by_mass_fluid = (current_boundary_fluid_row[0] * current_coupling_fluid_column[0] / square_mass_fluid[0] + current_boundary_fluid_row[1] * current_coupling_fluid_column[1] / square_mass_fluid[1] + current_boundary_fluid_row[2] * current_coupling_fluid_column[2] / square_mass_fluid[2]);
+				const float gradient_and_coupling_by_mass_solid = (current_gradient_solid_row[0] * current_coupling_solid_column[0] / current_mass_solid[0] + current_gradient_solid_row[1] * current_coupling_solid_column[1] / current_mass_solid[1] + current_gradient_solid_row[2] * current_coupling_solid_column[2] / current_mass_solid[2]);
+				const float gradient_and_coupling_by_mass_fluid = (current_gradient_fluid_row[0] * current_coupling_fluid_column[0] / current_mass_fluid[0] + current_gradient_fluid_row[1] * current_coupling_fluid_column[1] / current_mass_fluid[1] + current_gradient_fluid_row[2] * current_coupling_fluid_column[2] / current_mass_fluid[2]);
+				const float boundary_and_coupling_by_mass_fluid = (current_boundary_fluid_row[0] * current_coupling_fluid_column[0] / current_mass_fluid[0] + current_boundary_fluid_row[1] * current_coupling_fluid_column[1] / current_mass_fluid[1] + current_boundary_fluid_row[2] * current_coupling_fluid_column[2] / current_mass_fluid[2]);
 				
-				const float coupling_by_mass_solid = (current_coupling_solid_row[0] * current_coupling_solid_column[0] / square_mass_solid[0] + current_coupling_solid_row[1] * current_coupling_solid_column[1] / square_mass_solid[1] + current_coupling_solid_row[2] * current_coupling_solid_column[2] / square_mass_solid[2]);
-				const float coupling_by_mass_fluid = (current_coupling_fluid_row[0] * current_coupling_fluid_column[0] / square_mass_fluid[0] + current_coupling_fluid_row[1] * current_coupling_fluid_column[1] / square_mass_fluid[1] + current_coupling_fluid_row[2] * current_coupling_fluid_column[2] / square_mass_fluid[2]);
+				const float coupling_by_mass_solid = (current_coupling_solid_row[0] * current_coupling_solid_column[0] / current_mass_solid[0] + current_coupling_solid_row[1] * current_coupling_solid_column[1] / current_mass_solid[1] + current_coupling_solid_row[2] * current_coupling_solid_column[2] / current_mass_solid[2]);
+				const float coupling_by_mass_fluid = (current_coupling_fluid_row[0] * current_coupling_fluid_column[0] / current_mass_fluid[0] + current_coupling_fluid_row[1] * current_coupling_fluid_column[1] / current_mass_fluid[1] + current_coupling_fluid_row[2] * current_coupling_fluid_column[2] / current_mass_fluid[2]);
 				
 				std::array<std::array<float, LHS_MATRIX_SIZE_X>, LHS_MATRIX_SIZE_Y> a;
 				
@@ -1122,9 +1115,9 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 				
 				//Only calculate for particles with mass bigger than 0 (otherwise we will divide by 0)
 				if(
-					   square_mass_solid[0] > 0.0f
-					&& square_mass_solid[1] > 0.0f
-					&& square_mass_solid[2] > 0.0f
+					   current_mass_solid[0] > 0.0f
+					&& current_mass_solid[1] > 0.0f
+					&& current_mass_solid[2] > 0.0f
 				){
 					a[0][0] = scaling_solid / dt.count() + dt.count() * gradient_by_mass_solid;
 					a[0][3] = -dt.count() * gradient_and_coupling_by_mass_solid;
@@ -1155,9 +1148,9 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 				}*/
 				
 				if(
-					   square_mass_fluid[0] > 0.0f
-					&& square_mass_fluid[1] > 0.0f
-					&& square_mass_fluid[2] > 0.0f
+					   current_mass_fluid[0] > 0.0f
+					&& current_mass_fluid[1] > 0.0f
+					&& current_mass_fluid[2] > 0.0f
 				){
 					a[1][1] = dt.count() * gradient_by_mass_fluid;
 					a[1][2] = dt.count() * gradient_and_boundary_by_mass;
@@ -1248,6 +1241,13 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 						if(a[i][lhs_block_offsets_per_row[i][j]] != 0.0f){
 							//printf("IQ_LHS %d %d # %d %d %d # %.28f # %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n", row_index, column_index, static_cast<int>(i), static_cast<int>(j), static_cast<int>(lhs_block_offsets_per_row[i][j]), a[i][lhs_block_offsets_per_row[i][j]], gradient_by_mass_solid, current_gradient_solid_row[0], current_gradient_solid_row[1], current_gradient_solid_row[2], current_gradient_solid_column[0], current_gradient_solid_column[1], current_gradient_solid_column[2]);
 							//printf("IQ_LHS %d %d # %d %d # %d # %.28f # %.28f\n", row_index, iq_lhs_columns[column_index], static_cast<int>(i), static_cast<int>(lhs_block_offsets_per_row[i][j]), static_cast<int>(column), a[i][lhs_block_offsets_per_row[i][j]], a_transposed[i][lhs_block_offsets_per_row[i][j]]);
+						}
+						
+						if(a[i][lhs_block_offsets_per_row[i][j]] != 0.0f && lhs_block_offsets_per_row[i][j] == 3){
+							//printf("IQ_LHS %d %d # %d %d %d # %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n", row_index, column_index, static_cast<int>(i), static_cast<int>(j), static_cast<int>(lhs_block_offsets_per_row[i][j]), a[i][lhs_block_offsets_per_row[i][j]]
+							//, current_gradient_solid_row[0]	, current_gradient_solid_row[1], current_gradient_solid_row[2]
+							//, current_gradient_fluid_row[0]	, current_gradient_fluid_row[1], current_gradient_fluid_row[2]						
+							//);
 						}
 						
 						atomicAdd(&(iq_lhs_values[column_index]), a[i][lhs_block_offsets_per_row[i][j]]);
@@ -1363,6 +1363,10 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 					//printf("IQ_RHS %d # %d # %.28f # %.28f %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n", row_index, static_cast<int>(i), b[i], current_scaling_solid, current_pressure_solid_nominator, current_pressure_solid_denominator, gradient_and_velocity_solid, current_gradient_solid_row[0], current_gradient_solid_row[1], current_gradient_solid_row[2], current_velocity_solid[0], current_velocity_solid[1], current_velocity_solid[2], current_gradient_fluid_row[0], current_gradient_fluid_row[1], current_gradient_fluid_row[2], current_velocity_fluid[0], current_velocity_fluid[1], current_velocity_fluid[2]);
 				}
 				
+				if(b[i] != 0.0f && i == 3){
+					//printf("IQ_RHS %d # %d # %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n", row_index, static_cast<int>(i), b[i], current_coupling_solid_row[0], current_coupling_solid_row[1], current_coupling_solid_row[2], current_coupling_fluid_row[0], current_coupling_fluid_row[1], current_coupling_fluid_row[2], current_velocity_solid[0], current_velocity_solid[1], current_velocity_solid[2], current_velocity_fluid[0], current_velocity_fluid[1], current_velocity_fluid[2]);
+				}
+				
 				if(isnan(b[i])){
 					printf("ABC1 %d # %.28f %.28f %.28f # %.28f %.28f %.28f\n", static_cast<int>(i), current_gradient_fluid_row[0], current_gradient_fluid_row[1], current_gradient_fluid_row[2], current_velocity_fluid[0], current_velocity_fluid[1], current_velocity_fluid[2]);
 				}
@@ -1392,7 +1396,7 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 		grid_block_fluid.val_1d(_2, cell_id_in_block) += delta_v_fluid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block + 1];
 		grid_block_fluid.val_1d(_3, cell_id_in_block) += delta_v_fluid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block + 2];
 	}
-	
+
 #if (FIXED_COROTATED_GHOST_ENABLE_STRAIN_UPDATE == 0)
 	
 	//Particles in cell can have offset of [0, 5] ([0, 3] current block, 2 for offset caused by kernel 2 in storing); Then additional 2 are added in both directions for max kernel degree => [-2, 7] or absolute [0, 9] with offset 2

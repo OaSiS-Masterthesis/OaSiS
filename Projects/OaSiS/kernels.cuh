@@ -919,9 +919,6 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 	(void) advection_source_blockno;
 	(void) source_pidib;
 	
-	//TODO: Make this a parameter or something
-	const float bulk_viscosity = particle_buffer.bulk * 1.0f;//bulk_viscosity = bulk_modulus * relaxation_time
-
 	//Update determinante of deformation gradiant
 	//Divergence of velocity multiplied with time and transfered to global space
 	data.J += (A[0] + A[4] + A[8]) * dt.count() * config::G_D_INV * data.J;
@@ -936,7 +933,7 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 	{
 		float voln	   = data.J * (data.mass / particle_buffer.rho);
 		//Values from ]0; 0.1^-gamma - 1]
-		float pressure = (bulk_viscosity  - (2.0f / 3.0f) * particle_buffer.viscosity) * (powf(data.J, -particle_buffer.gamma) - 1.f);
+		float pressure = (particle_buffer.bulk - (2.0f / 3.0f) * particle_buffer.viscosity) * (powf(data.J, -particle_buffer.gamma) - 1.f);
 		
 		//NOTE: See also: https://en.wikipedia.org/wiki/Viscous_stress_tensor
 		//NOTE: Stress of compressible Navier-Stokes flow
@@ -956,17 +953,17 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 		}
 		
 		/*{
-			contrib[0] = (((A[0] + A[0]) * config::G_D_INV - (2.0f / 3.0f) * data.J) * particle_buffer.viscosity + bulk_viscosity * data.J) * voln;
+			contrib[0] = (((A[0] + A[0]) * config::G_D_INV - (2.0f / 3.0f) * data.J) * particle_buffer.viscosity + particle_buffer.bulk * data.J) * voln;
 			contrib[1] = (A[1] + A[3]) * config::G_D_INV * particle_buffer.viscosity * voln;
 			contrib[2] = (A[2] + A[6]) * config::G_D_INV * particle_buffer.viscosity * voln;
 
 			contrib[3] = (A[3] + A[1]) * config::G_D_INV * particle_buffer.viscosity * voln;
-			contrib[4] = (((A[4] + A[4]) * config::G_D_INV - (2.0f / 3.0f) * data.J) * particle_buffer.viscosity + bulk_viscosity * data.J) * voln;
+			contrib[4] = (((A[4] + A[4]) * config::G_D_INV - (2.0f / 3.0f) * data.J) * particle_buffer.viscosity + particle_buffer.bulk * data.J) * voln;
 			contrib[5] = (A[5] + A[7]) * config::G_D_INV * particle_buffer.viscosity * voln;
 
 			contrib[6] = (A[6] + A[2]) * config::G_D_INV * particle_buffer.viscosity * voln;
 			contrib[7] = (A[7] + A[5]) * config::G_D_INV * particle_buffer.viscosity * voln;
-			contrib[8] = (((A[8] + A[8]) * config::G_D_INV - (2.0f / 3.0f) * data.J) * particle_buffer.viscosity + bulk_viscosity * data.J) * voln;
+			contrib[8] = (((A[8] + A[8]) * config::G_D_INV - (2.0f / 3.0f) * data.J) * particle_buffer.viscosity + particle_buffer.bulk * data.J) * voln;
 		}*/
 	}
 
@@ -1143,7 +1140,7 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 
 		//TODO: Rename if we use different stress model
 		ComputeStressIntermediate compute_stress_tmp = {};
-		compute_stress<float, MaterialE::FIXED_COROTATED>((data.mass / particle_buffer.rho), particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
+		compute_stress<float, MaterialE::FIXED_COROTATED_GHOST>((data.mass / particle_buffer.rho), particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
 		
 		StoreParticleDataIntermediate store_particle_data_tmp = {};
 		store_particle_data_tmp.mass = data.mass;
@@ -2172,7 +2169,7 @@ __forceinline__ __device__ void calculate_contribution<MaterialE::FIXED_COROTATE
 		matrix_matrix_multiplication_3d(dws.data_arr(), contrib, F.data_arr());
 		ComputeStressIntermediate compute_stress_tmp = {};
 		//TODO: Rename if we use different stress model
-		compute_stress<float, MaterialE::FIXED_COROTATED>((data.mass / particle_buffer.rho), particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
+		compute_stress<float, MaterialE::FIXED_COROTATED_GHOST>((data.mass / particle_buffer.rho), particle_buffer.mu, particle_buffer.lambda, F.data_arr(), contrib, compute_stress_tmp);
 	}
 }
 
