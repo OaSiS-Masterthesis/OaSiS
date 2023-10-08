@@ -600,7 +600,7 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 	
 	//Only percede if we have an interface
 	//FIXME: Currently only handling outer points
-	if(has_neighbours && point_type == SurfacePointType::OUTER_POINT){
+	if(has_neighbours){
 	
 		//Store data
 		//Note: Weights are 0 if outside of interpolation degree/radius around particles cell

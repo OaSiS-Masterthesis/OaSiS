@@ -1017,6 +1017,12 @@ struct OasisSimulator {
 								cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, marching_cubes_calculate_density, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), marching_cubes_grid_buffer, bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr());
 							});
 							
+							//Init with default values
+							match(particle_bins[rollid][i])([this, &cu_dev, &i, &bounding_box_offset, &marching_cubes_grid_size](const auto& particle_buffer) {
+								//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+								cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, marching_cubes_init_surface_particle_buffer, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), surface_particle_buffers[i], marching_cubes_grid_buffer, bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr());
+							});
+							
 							//TODO: Do this before setting grid size to minimize it
 							//Sort out invalid cells
 							uint32_t* removed_cells = static_cast<uint32_t*>(cu_dev.borrow(sizeof(uint32_t)));
@@ -2578,6 +2584,12 @@ struct OasisSimulator {
 					match(particle_bins[rollid][i])([this, &cu_dev, &i, &bounding_box_offset, &marching_cubes_grid_size](const auto& particle_buffer) {
 						//partition_block_count; G_PARTICLE_BATCH_CAPACITY
 						cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, marching_cubes_calculate_density, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), marching_cubes_grid_buffer, bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr());
+					});
+					
+					//Init with default values
+					match(particle_bins[rollid][i])([this, &cu_dev, &i, &bounding_box_offset, &marching_cubes_grid_size](const auto& particle_buffer) {
+						//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+						cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, marching_cubes_init_surface_particle_buffer, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), surface_particle_buffers[i], marching_cubes_grid_buffer, bounding_box_offset.data_arr(), marching_cubes_grid_size.data_arr());
 					});
 					
 					//TODO: Do this before setting grid size to minimize it

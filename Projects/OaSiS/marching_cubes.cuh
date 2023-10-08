@@ -17,7 +17,7 @@ constexpr size_t MARCHING_CUBES_MAX_ACTIVE_BLOCK = config::G_MAX_ACTIVE_BLOCK * 
 
 //TODO: Currently looks wrong with degress bigger 1. Maybe wrong threshold? Maybe other issues?
 //NOTE: Values bigger than 0 will only have effect on cells being classified full/empty if they have particles or are fully enclosed by full cells
-constexpr size_t MARCHING_CUBES_INTERPOLATION_DEGREE = 1;//MARCHING_CUBES_GRID_SCALING;
+constexpr size_t MARCHING_CUBES_INTERPOLATION_DEGREE = 2;//MARCHING_CUBES_GRID_SCALING;
 
 //Controls maximum distance from face == maximum distance from normal marching cubes vertex
 constexpr float MARCHING_CUBES_MAXIMUM_AXIS_DISTANCE = 0.5f;//FIXME: Set to corrent value (something lower than 0.25
@@ -97,7 +97,7 @@ __global__ void marching_cubes_clear_surface_particle_buffer(const ParticleBuffe
 	}
 	
 	for(int particle_id_in_block = static_cast<int>(threadIdx.x); particle_id_in_block < particle_bucket_size; particle_id_in_block += static_cast<int>(blockDim.x)) {
-		auto particle_bin													= surface_particle_buffer.ch(_0, next_particle_buffer.bin_offsets[src_blockno] + particle_id_in_block / config::G_BIN_CAPACITY);
+		auto particle_bin													= surface_particle_buffer.ch(_0, particle_buffer.bin_offsets[src_blockno] + particle_id_in_block / config::G_BIN_CAPACITY);
 		//point_type
 		SurfacePointType default_point_type = SurfacePointType::ISOLATED_POINT;
 		particle_bin.val(_0, particle_id_in_block % config::G_BIN_CAPACITY) = 	*reinterpret_cast<float*>(&default_point_type);
@@ -1162,6 +1162,8 @@ __global__ void marching_cubes_gen_faces(Partition prev_partition, ParticleBuffe
 	}
 	*/
 	
+	//FIXME:
+	/*
 	const float cotan_clamp_min_rad = 1.0f / std::tan(3.0f * (180.0f / static_cast<float>(M_PI)));
 	const float cotan_clamp_max_rad = 1.0f / std::tan(177.0f * (180.0f / static_cast<float>(M_PI)));
 	
@@ -1327,10 +1329,8 @@ __global__ void marching_cubes_gen_faces(Partition prev_partition, ParticleBuffe
 								}else{ //Draw line between center of cell and particle and count amount of intersections
 									const vec3 difference = center - particle_position;
 									
-									/*
-									 * We solve
-									 * mat3(p0-p2, p1-p2, -dir)*(a, b, t) = pos - p2;
-									 */
+									//We solve
+									//mat3(p0-p2, p1-p2, -dir)*(a, b, t) = pos - p2;
 									const vec9 A {
 											  triangle_positions[0][0] - triangle_positions[2][0], triangle_positions[0][1] - triangle_positions[2][1], triangle_positions[0][2] - triangle_positions[2][2]
 											, triangle_positions[1][0] - triangle_positions[2][0], triangle_positions[1][1] - triangle_positions[2][1], triangle_positions[1][2] - triangle_positions[2][2]
@@ -1352,31 +1352,6 @@ __global__ void marching_cubes_gen_faces(Partition prev_partition, ParticleBuffe
 									
 									//Normal
 									summed_normal += angle * face_normal;
-									
-									/*
-									printf("M %d %d %d # %d %d %d # %d # %.28f %.28f %.28f # %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n"
-										, static_cast<int>(x)
-										, static_cast<int>(y)
-										, static_cast<int>(z)
-										, current_triangle[0]
-										, current_triangle[1]
-										, current_triangle[2]
-										, global_particle_id
-										, face_normal[0]
-										, face_normal[1]
-										, face_normal[2]
-										, angle
-										, triangle_positions[0][0]
-										, triangle_positions[0][1]
-										, triangle_positions[0][2]
-										, triangle_positions[1][0]
-										, triangle_positions[1][1]
-										, triangle_positions[1][2]
-										, triangle_positions[2][0]
-										, triangle_positions[2][1]
-										, triangle_positions[2][2]
-									);
-									*/
 									
 									//Gauss curvature
 									summed_face_area += face_area * (1.0f / 3.0f);
@@ -1460,6 +1435,7 @@ __global__ void marching_cubes_gen_faces(Partition prev_partition, ParticleBuffe
 			}
 		}
 	}
+	*/
 }
 
 template<typename Partition, typename ParticleBuffer, typename MarchingCubesGrid>
@@ -1504,7 +1480,7 @@ __global__ void marching_cubes_calculate_density(Partition partition, Partition 
 		
 		#pragma unroll 3
 		for(int dd = 0; dd < 3; ++dd) {
-			const std::array<float, MARCHING_CUBES_INTERPOLATION_DEGREE + 1> current_weight = bspline_weight<float, MARCHING_CUBES_INTERPOLATION_DEGREE>(local_pos[dd]);
+			const std::array<float, MARCHING_CUBES_INTERPOLATION_DEGREE + 1> current_weight = bspline_weight<float, MARCHING_CUBES_INTERPOLATION_DEGREE>(local_pos[dd], MARCHING_CUBES_DX_INV);
 			for(int i = 0; i < MARCHING_CUBES_INTERPOLATION_DEGREE + 1; ++i){
 				weight(dd, i)		  = current_weight[i];
 			}
@@ -1513,7 +1489,7 @@ __global__ void marching_cubes_calculate_density(Partition partition, Partition 
 			}
 		}
 		
-		//Spread mass
+		//Spread density
 		for(char i = -static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE); i < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; i++) {
 			for(char j = -static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE); j < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; j++) {
 				for(char k = -static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE); k < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; k++) {
@@ -1521,7 +1497,7 @@ __global__ void marching_cubes_calculate_density(Partition partition, Partition 
 					
 					if(
 						   (coord[0] >= 0 && coord[1] >= 0 && coord[2] >= 0)
-						&& (coord[0] < grid_size[0] && coord[1]< grid_size[1] && coord[2] < grid_size[2])
+						&& (coord[0] < grid_size[0] && coord[1] < grid_size[1] && coord[2] < grid_size[2])
 					){
 						//Weight
 						const float W = weight(0, std::abs(i)) * weight(1, std::abs(j)) * weight(2, std::abs(k));
@@ -1798,6 +1774,105 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 			}
 		}
 	}while(local_removed_cells > 0);
+}
+
+template<typename Partition, MaterialE MaterialType, typename MarchingCubesGrid>
+__global__ void marching_cubes_init_surface_particle_buffer(Partition partition, Partition prev_partition, ParticleBuffer<MaterialType> particle_buffer, ParticleBuffer<MaterialType> next_particle_buffer, SurfaceParticleBuffer surface_particle_buffer, MarchingCubesGrid marching_cubes_grid, const std::array<float, 3> bounding_box_offset_arr, const std::array<int, 3> grid_size) {
+	const int particle_counts	= next_particle_buffer.particle_bucket_sizes[blockIdx.x];
+	const ivec3 blockid			= partition.active_keys[blockIdx.x];
+	const auto advection_bucket = next_particle_buffer.blockbuckets + blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK;
+	
+	const vec3 bounding_box_offset {bounding_box_offset_arr[0], bounding_box_offset_arr[1], bounding_box_offset_arr[2]};
+	
+	// auto particle_offset = particle_buffer.bin_offsets[blockIdx.x];
+	for(int particle_id_in_block = static_cast<int>(threadIdx.x); particle_id_in_block < particle_counts; particle_id_in_block += static_cast<int>(blockDim.x)) {
+		int advection_source_blockno;
+		int source_pidib;
+		marching_cubes_fetch_id(prev_partition, advection_bucket[particle_id_in_block], blockid.data_arr(), advection_source_blockno, source_pidib);
+
+		FetchParticleBufferDataIntermediate fetch_particle_buffer_tmp = {};
+		fetch_particle_buffer_data<MaterialType>(particle_buffer, advection_source_blockno, source_pidib, fetch_particle_buffer_tmp);
+		vec3 pos {fetch_particle_buffer_tmp.pos[0], fetch_particle_buffer_tmp.pos[1], fetch_particle_buffer_tmp.pos[2]};
+		const float mass = fetch_particle_buffer_tmp.mass;
+		const float J = fetch_particle_buffer_tmp.J;
+		
+		pos -= bounding_box_offset;
+		
+		//Get position of grid cell
+		const ivec3 global_base_index_0 = get_cell_id<0>(pos.data_arr(), {0.0f, 0.0f, 0.0f}, {MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV});
+		const ivec3 global_base_index = get_cell_id<MARCHING_CUBES_INTERPOLATION_DEGREE>(pos.data_arr(), {0.0f, 0.0f, 0.0f}, {MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV, MARCHING_CUBES_DX_INV});
+		
+		//printf("D %d %d %d # %d %d %d\n", global_base_index_0[0], global_base_index_0[1], global_base_index_0[2], global_base_index[0], global_base_index[1], global_base_index[2]);
+		
+		//Get position relative to grid cell
+		const vec3 local_pos = pos - global_base_index * MARCHING_CUBES_DX;
+		
+		//Calculate weights
+		vec<float, 3, MARCHING_CUBES_INTERPOLATION_DEGREE + 1> weight;
+		vec<float, 3, MARCHING_CUBES_INTERPOLATION_DEGREE + 1> gradient_weight;
+		
+		#pragma unroll 3
+		for(int dd = 0; dd < 3; ++dd) {
+			const std::array<float, MARCHING_CUBES_INTERPOLATION_DEGREE + 1> current_weight = bspline_weight<float, MARCHING_CUBES_INTERPOLATION_DEGREE>(local_pos[dd], MARCHING_CUBES_DX_INV);
+			for(int i = 0; i < MARCHING_CUBES_INTERPOLATION_DEGREE + 1; ++i){
+				weight(dd, i)		  = current_weight[i];
+			}
+			for(int i = MARCHING_CUBES_INTERPOLATION_DEGREE + 1; i < 3; ++i){
+				weight(dd, i)		  = 0.0f;
+			}
+			
+			const std::array<float, MARCHING_CUBES_INTERPOLATION_DEGREE + 1> current_gradient_weight = bspline_gradient_weight<float, MARCHING_CUBES_INTERPOLATION_DEGREE>(local_pos[dd], MARCHING_CUBES_DX_INV);
+			for(int i = 0; i < MARCHING_CUBES_INTERPOLATION_DEGREE + 1; ++i){
+				gradient_weight(dd, i)		  = current_gradient_weight[i];
+			}
+			for(int i = MARCHING_CUBES_INTERPOLATION_DEGREE + 1; i < 3; ++i){
+				gradient_weight(dd, i)		  = 0.0f;
+			}
+		}
+
+		//Get normal by mass gradient
+		vec3 normal {0.0f};
+		for(char i = -static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE); i < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; i++) {
+			for(char j = -static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE); j < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; j++) {
+				for(char k = -static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE); k < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; k++) {
+					const ivec3 coord = global_base_index + ivec3(i, j, k);
+					
+					if(
+						   (coord[0] >= 0 && coord[1] >= 0 && coord[2] >= 0)
+						&& (coord[0] < grid_size[0] && coord[1] < grid_size[1] && coord[2] < grid_size[2])
+					){
+						for(char alpha = 0; alpha < 3; ++alpha){
+							//Weight
+							
+							const float delta_w = ((alpha == 0 ? gradient_weight(0, std::abs(i)) : weight(0, std::abs(i))) * (alpha == 1 ? gradient_weight(1, std::abs(j)) : weight(1, std::abs(j))) * (alpha == 2 ? gradient_weight(2, std::abs(k)) : weight(2, std::abs(k)))) * MARCHING_CUBES_DX_INV;
+			
+							normal[alpha] += -marching_cubes_grid.val(_0, marching_cubes_calculate_offset(coord[0], coord[1], coord[2], grid_size)) * delta_w;
+						}
+					}
+				}
+			}
+		}
+		
+		normal /= std::sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+		
+		const float volume = (mass / particle_buffer.rho) * J;
+		const float face_area = 2.0f * std::sqrt(volume / static_cast<float>(M_PI));
+		
+		auto particle_bin													= surface_particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
+		//point_type
+		SurfacePointType default_point_type = SurfacePointType::ISOLATED_POINT;
+		particle_bin.val(_0, source_pidib % config::G_BIN_CAPACITY) = *reinterpret_cast<float*>(&default_point_type);
+		//normal
+		particle_bin.val(_1, source_pidib % config::G_BIN_CAPACITY) = normal[0];
+		particle_bin.val(_2, source_pidib % config::G_BIN_CAPACITY) = normal[1];
+		particle_bin.val(_3, source_pidib % config::G_BIN_CAPACITY) = normal[2];
+		//mean_curvature
+		particle_bin.val(_4, source_pidib % config::G_BIN_CAPACITY) = 0.0f;
+		//gauss_curvature
+		particle_bin.val(_5, source_pidib % config::G_BIN_CAPACITY) = 0.0f;
+		//face_area
+		particle_bin.val(_6, source_pidib % config::G_BIN_CAPACITY) = face_area;
+	}
 }
 	
 //NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic, readability-magic-numbers, readability-identifier-naming, misc-definitions-in-headers)
