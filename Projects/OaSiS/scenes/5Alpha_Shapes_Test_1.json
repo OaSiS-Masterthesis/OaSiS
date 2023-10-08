@@ -12,9 +12,9 @@
 			"constitutive": "jfluid",
 			"volume": 7.4505806e-9,
 			"rho": 1e3,
-			"bulk_viscosity": 2.2,
-			"gamma": 0.3,
-			"viscosity": 1e-2,
+			"bulk_viscosity": 2.47e-3,
+			"gamma": 7.0,
+			"viscosity": 1.0016e-3,
 			"offset": [
 				0.5,
 				0.04,
