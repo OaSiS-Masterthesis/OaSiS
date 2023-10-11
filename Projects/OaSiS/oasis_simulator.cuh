@@ -316,7 +316,7 @@ struct OasisSimulator {
 			//Maximum 100 iterations
 			std::shared_ptr<gko::stop::Iteration::Factory> iter_stop = gko::share(
 				gko::stop::Iteration::build()
-				.with_max_iters(10u)
+				.with_max_iters(1000u)
 				.on(ginkgo_executor)
 			);
 			
@@ -1097,6 +1097,8 @@ struct OasisSimulator {
 					//All active blocks and neighbours (and a bit more). All neighbours of these blocks do also exist (exterior_block_count with each block having 4 cells being suifficient for a kernel up to 4)
 					const int coupling_block_count = total_neighbor_block_count;
 					
+					std::cout << "Coupling block count: " << coupling_block_count << std::endl;
+					
 					for(int i = 0; i < solid_fluid_couplings.size(); ++i){
 						const int solid_id = solid_fluid_couplings[i][0];
 						const int fluid_id = solid_fluid_couplings[i][1];
@@ -1340,6 +1342,92 @@ struct OasisSimulator {
 							}
 							
 							//TODO: Test positive semi-definite; Maybe use c++ jacobi solver found online (in extra file): https://github.com/jewettaij/jacobi_pd
+							
+							//Write out matrix for further external checks
+							std::string fn = std::string {"matrix"} + "_id[" + std::to_string(i) + "]_step[" + std::to_string(cur_step) + "].txt";
+							IO::insert_job([this, coupling_block_count, cu_dev, lhs_number_of_nonzeros, iq_lhs, fn]() {
+								std::vector<int> printout_tmp0(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1);
+								std::vector<int> printout_tmp1(iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+								std::vector<float> printout_tmp2(iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+								
+								cudaMemcpyAsync(printout_tmp0.data(), iq_lhs->get_const_row_ptrs(), sizeof(int) * iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1, cudaMemcpyDefault, cu_dev.stream_compute());
+								cudaMemcpyAsync(printout_tmp1.data(), iq_lhs->get_const_col_idxs(), sizeof(int) * iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK, cudaMemcpyDefault, cu_dev.stream_compute());
+								cudaMemcpyAsync(printout_tmp2.data(), iq_lhs->get_const_values(), sizeof(float) * iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK, cudaMemcpyDefault, cu_dev.stream_compute());
+								
+								cudaDeviceSynchronize();
+								
+								printout_tmp0[iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME] = lhs_number_of_nonzeros;
+								
+								std::ofstream matrix_file;
+								matrix_file.open(fn);
+								
+								matrix_file << std::setprecision(std::numeric_limits<float>::digits10 + 1);
+								
+								for(size_t j = 0; j < iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME; ++j){
+									matrix_file << printout_tmp0[j] << " ";
+								}
+								matrix_file << printout_tmp0[iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME] << std::endl;
+								for(size_t j = 0; j < iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK - 1; ++j){
+									matrix_file << printout_tmp1[j] << " ";
+								}
+								matrix_file << printout_tmp1[iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK - 1] << std::endl;
+								for(size_t j = 0; j < iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK - 1; ++j){
+									matrix_file<< printout_tmp2[j] << " ";
+								}
+								matrix_file << printout_tmp2[iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK];
+								
+								/*
+								const std::array<size_t, iq::LHS_MATRIX_SIZE_Y> tmp_num_blocks_per_row = {
+									  2
+									, 3
+									, 3
+									, 4
+								};
+								const std::array<std::array<size_t, iq::LHS_MATRIX_SIZE_X>, iq::LHS_MATRIX_SIZE_Y> lhs_block_offsets_per_row = {{
+									  {0, 3, std::numeric_limits<size_t>::max(), std::numeric_limits<size_t>::max()}
+									, {1, 2, 3, std::numeric_limits<size_t>::max()}
+									, {1, 2, 3, std::numeric_limits<size_t>::max()}
+									, {0, 1, 2, 3}
+								}};
+								printout_tmp0[iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME] = lhs_number_of_nonzeros;
+								for(size_t j = 0; j < iq::LHS_MATRIX_SIZE_Y; ++j){
+									for(size_t block = 0; block < tmp_num_blocks_per_row[j]; ++block){
+										const size_t intermediate_blocks = lhs_block_offsets_per_row[j][block] - ((block + 1) >= tmp_num_blocks_per_row[j] ? iq::LHS_MATRIX_SIZE_X : lhs_block_offsets_per_row[j][block + 1]) - 1;
+										
+										for(size_t intermediate_block = 0; intermediate_block < intermediate_blocks; ++intermediate_block){
+											for(size_t k = 0; k < exterior_block_count * config::G_BLOCKVOLUME; ++k){
+												for(size_t m = 0; m < exterior_block_count * config::G_BLOCKVOLUME; ++m){
+													matrix_file << "0" << " ";
+												}
+											}
+										}
+										
+										for(size_t k = 0; k < exterior_block_count * config::G_BLOCKVOLUME; ++k){
+											if((printout_tmp0[j * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + k + 1] - printout_tmp0[j * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + k]) > 0){
+												for(size_t m = 0; m < printout_tmp1[printout_tmp0[j * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + k] + block * iq::NUM_COLUMNS_PER_BLOCK]; ++m){
+													matrix_file << "0" << " ";
+												}
+												matrix_file << printout_tmp2[printout_tmp0[j * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + k] + block * iq::NUM_COLUMNS_PER_BLOCK] << " ";
+												for(size_t l = 0; l < iq::NUM_COLUMNS_PER_BLOCK - 1; ++l){
+													for(size_t m = printout_tmp1[printout_tmp0[j * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + k] + block * iq::NUM_COLUMNS_PER_BLOCK + l] + 1; m < printout_tmp1[printout_tmp0[j * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + k] + block * iq::NUM_COLUMNS_PER_BLOCK + l + 1]; ++m){
+														matrix_file << "0" << " ";
+													}
+													matrix_file << printout_tmp2[printout_tmp0[j * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + k] + block * iq::NUM_COLUMNS_PER_BLOCK + l] << " ";
+												}
+												std::cout << std::endl;
+											}else{
+												for(size_t m = 0; m < exterior_block_count * config::G_BLOCKVOLUME; ++m){
+													matrix_file << "0" << " ";
+												}
+											}
+										}
+									}
+								}
+								*/
+								matrix_file.close();
+							});
+							IO::flush();
+							
 						#endif
 						
 						/*
@@ -1448,6 +1536,10 @@ struct OasisSimulator {
 						// Create solver
 						ginkgo_executor->synchronize();
 						std::unique_ptr<gko::solver::Bicgstab<float>> iq_solver = iq_solver_factory->generate(iq_lhs);
+						
+						std::shared_ptr<const gko::log::Convergence<float>> iq_logger = gko::log::Convergence<float>::create();
+						iq_solver->add_logger(iq_logger);
+						
 						ginkgo_executor->synchronize();
 						
 						std::cout << "TEST1" << std::endl;
@@ -1457,6 +1549,13 @@ struct OasisSimulator {
 						ginkgo_executor->synchronize();
 						
 						std::cout << "TEST2" << std::endl;
+						
+						// Print solver statistics
+						auto res = gko::as<gko::matrix::Dense<float>>(iq_logger->get_residual_norm());
+						std::cout << "IQ-Solver iteration count: " << iq_logger->get_num_iterations() << std::endl;
+						std::cout << "IQ-Solver has converged: " << iq_logger->has_converged() << std::endl;
+						std::cout << "IQ-Solver residual norm sqrt(r^T r): " << std::endl;
+						gko::write(std::cout, res);
 						
 						//Update velocity and ghost matrix strain
 						//v_s,t+1 = v_s,t + (- dt * M_s^-1 * G_s * p_g,t+1 + dt * M_s^-1 * H_s^T * h,t+1)
@@ -1495,6 +1594,71 @@ struct OasisSimulator {
 								std::cout << printout_tmp5[k * exterior_block_count * config::G_BLOCKVOLUME + j] << " ";
 							}
 							std::cout << std::endl;
+						}
+						*/
+						
+						/*
+						std::vector<int> printout_tmp0(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1);
+						std::vector<int> printout_tmp1(iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						std::vector<float> printout_tmp2(iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+						std::vector<float> printout_tmp3(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
+						std::vector<float> printout_tmp4(3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
+						std::vector<float> printout_tmp5(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
+						
+						cudaMemcpyAsync(printout_tmp0.data(), iq_lhs->get_const_row_ptrs(), sizeof(int) * iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp1.data(), iq_lhs->get_const_col_idxs(), sizeof(int) * iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp2.data(), iq_lhs->get_const_values(), sizeof(float) * iq::LHS_MATRIX_TOTAL_BLOCK_COUNT * coupling_block_count * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp3.data(), iq_rhs_array.get_const_data(), sizeof(float) * iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp4.data(), iq_solve_velocity_result->get_const_values(), sizeof(float) * 3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp5.data(), iq_result->get_const_values(), sizeof(float) * iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
+						
+						cudaDeviceSynchronize();
+						
+						const std::array<size_t, iq::LHS_MATRIX_SIZE_Y> tmp_num_blocks_per_row = {
+							  2
+							, 3
+							, 3
+							, 4
+						};
+						printout_tmp0[iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME] = lhs_number_of_nonzeros;
+						
+						std::cout << std::endl;
+						for(size_t k = 0; k < iq::LHS_MATRIX_SIZE_Y; ++k){
+							for(size_t j = 0; j < exterior_block_count * config::G_BLOCKVOLUME; ++j){
+								//if(printout_tmp5[k * exterior_block_count * config::G_BLOCKVOLUME + j] > 1e4){
+								if(printout_tmp5[k * exterior_block_count * config::G_BLOCKVOLUME + j] != 0.0f){
+									std::cout << "P: " << printout_tmp5[k * exterior_block_count * config::G_BLOCKVOLUME + j] << std::endl;
+									
+									std::cout << "A: " << std::endl;
+									for(size_t k1 = 0; k1 < iq::LHS_MATRIX_SIZE_Y; ++k1){
+										for(size_t j1 = 0; j1 < exterior_block_count * config::G_BLOCKVOLUME; ++j1){
+											for(size_t block = 0; block < tmp_num_blocks_per_row[k1]; ++block){
+												if((printout_tmp0[k1 * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + j1 + 1] - printout_tmp0[k1 * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + j1]) > 0){
+													bool found_column = false;
+													bool not_null = false;
+													for(size_t l = 0; l < iq::NUM_COLUMNS_PER_BLOCK; ++l){
+														if(printout_tmp1[printout_tmp0[k1 * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + j1] + block * iq::NUM_COLUMNS_PER_BLOCK + l] == (k * exterior_block_count * config::G_BLOCKVOLUME + j) && printout_tmp2[printout_tmp0[k1 * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + j1] + block * iq::NUM_COLUMNS_PER_BLOCK + l] != 0.0f){
+															found_column = true;
+														}
+														if(printout_tmp2[printout_tmp0[k1 * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + j1] + block * iq::NUM_COLUMNS_PER_BLOCK + l] != 0.0f){
+															not_null = true;
+														}
+													}
+													if(not_null && found_column){
+														std::cout << printout_tmp3[k1 * exterior_block_count * config::G_BLOCKVOLUME + j1] << " = ";
+														for(size_t l = 0; l < iq::NUM_COLUMNS_PER_BLOCK; ++l){
+															std::cout << "{" << printout_tmp2[printout_tmp0[k1 * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + j1] + block * iq::NUM_COLUMNS_PER_BLOCK + l] << ", ";
+															std::cout << printout_tmp5[printout_tmp1[printout_tmp0[k1 * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + j1] + block * iq::NUM_COLUMNS_PER_BLOCK + l]] << "} ";
+														}
+														std::cout << std::endl;
+													}
+													
+												}
+											}
+										}
+									}
+								}
+							}
 						}
 						*/
 						

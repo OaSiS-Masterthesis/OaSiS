@@ -1038,6 +1038,7 @@ __global__ void marching_cubes_gen_faces(Partition prev_partition, ParticleBuffe
 		}
 	}
 	
+	/*
 	//Calculate center
 	vec3 center;
 	{
@@ -1124,6 +1125,7 @@ __global__ void marching_cubes_gen_faces(Partition prev_partition, ParticleBuffe
 			+ positions[5] / 6.0f
 		;
 	}
+	*/
 	
 	/*
 	for(size_t triangle_index = 0; triangle_index < cell_adjacent_triangles_count; ++triangle_index){
@@ -1773,7 +1775,7 @@ __global__ void marching_cubes_sort_out_invalid_cells(Partition partition, Parti
 				//printf("R %d %d %d # %d %d\n", static_cast<int>(blockIdx.x), static_cast<int>(blockIdx.y), static_cast<int>(blockIdx.z), static_cast<int>(local_removed_cells), static_cast<int>(abc));
 			}
 		}
-	}while(local_removed_cells > 0);
+	}while(atomicAdd(&local_removed_cells, 0) > 0);
 }
 
 template<typename Partition, MaterialE MaterialType, typename MarchingCubesGrid>
