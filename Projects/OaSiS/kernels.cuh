@@ -929,11 +929,11 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 		data.J = 0.1;
 	}
 
-	//TODO: What is calculated here?
+	//TODO: What is calculated here? Force?
 	{
 		float voln	   = data.J * (data.mass / particle_buffer.rho);
 		//Values from ]0; 0.1^-gamma - 1]
-		float pressure = (particle_buffer.bulk - (2.0f / 3.0f) * particle_buffer.viscosity) * (powf(data.J, -particle_buffer.gamma) - 1.f);
+		float pressure = (particle_buffer.bulk - (2.0f / 3.0f) * particle_buffer.viscosity) * (powf(data.J, -particle_buffer.gamma) - 1.0f);
 		
 		//NOTE: See also: https://en.wikipedia.org/wiki/Viscous_stress_tensor
 		//NOTE: Stress of compressible Navier-Stokes flow

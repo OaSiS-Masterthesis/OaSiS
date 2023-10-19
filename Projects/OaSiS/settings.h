@@ -99,6 +99,7 @@ namespace config {
 	constexpr float POISSON_RATIO  = 0.4f;
 	
 	//TODO: Maybe move somewhere else
+	//TODO: Somehow choose by current used kernel and percentil which shell be considered inside
 	constexpr float MARCHING_CUBES_DENSITY_THRESHOLD_FACTOR = 0.75f;
 
 	constexpr float G_GRAVITY = -9.8f;
@@ -150,7 +151,7 @@ struct CustomDeviceAllocator {			   // hide the global one
 	}
 };
 
-using managed_memory_type = ManagedMemory<CustomDeviceAllocator, (static_cast<size_t>(13) << 30), (static_cast<size_t>(0) << 30)>;
+using managed_memory_type = ManagedMemory<CustomDeviceAllocator, (static_cast<size_t>(9) << 30), (static_cast<size_t>(0) << 30)>;
 
 }// namespace mn
 
