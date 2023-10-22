@@ -246,7 +246,6 @@ __global__ void add_block_rows(const size_t* num_blocks_per_row, const uint32_t 
 		accumulated_blocks_per_row[i] = accumulated_blocks_per_row[i - 1] + num_blocks_per_row[i - 1];
 	}
 	
-	//Fill empty rows
 	for(size_t row = static_cast<int>(threadIdx.x); row < NumRowsPerBlock; row += static_cast<int>(blockDim.x)){
 		for(size_t dimension = 0; dimension < NumDimensionsPerRow; ++dimension){
 			for(size_t row_offset = 0; row_offset < MatrixSizeY; ++row_offset){
@@ -286,7 +285,6 @@ __global__ void copy_values(const size_t* num_blocks_per_row, const std::array<s
 		accumulated_blocks_per_row[i] = accumulated_blocks_per_row[i - 1] + num_blocks_per_row[i - 1];
 	}
 	
-	//Fill empty rows
 	for(size_t row = static_cast<int>(threadIdx.x); row < NumRowsPerBlock; row += static_cast<int>(blockDim.x)){
 		for(size_t dimension = 0; dimension < NumDimensionsPerRow; ++dimension){
 			for(size_t row_offset = 0; row_offset < MatrixSizeY; ++row_offset){
@@ -354,9 +352,10 @@ __forceinline__ __device__ void store_data_solid<MaterialE::NACC>(const Particle
 template<>
 __forceinline__ __device__ void store_data_solid<MaterialE::FIXED_COROTATED_GHOST>(const ParticleBuffer<MaterialE::FIXED_COROTATED_GHOST> particle_buffer_solid, float* __restrict__ scaling_solid, float* __restrict__ pressure_solid_nominator, float* __restrict__ pressure_solid_denominator, const float W_pressure, const float W_velocity, const float mass, const float J){			
 	const float volume_0 = (mass / particle_buffer_solid.rho);
+	const float pressure = -particle_buffer_solid.lambda * (J - 1.0f);
 	
 	(*scaling_solid) += (volume_0 / particle_buffer_solid.lambda) * W_pressure;
-	(*pressure_solid_nominator) += volume_0 * J * (-particle_buffer_solid.lambda * (J - 1.0f)) * W_pressure;
+	(*pressure_solid_nominator) += volume_0 * J * pressure * W_pressure;
 	(*pressure_solid_denominator) += volume_0 * J * W_pressure;
 }
 
@@ -413,14 +412,17 @@ __forceinline__ __device__ void store_data_neigbours_coupling_solid<MaterialE::F
 template<>
 __forceinline__ __device__ void store_data_fluid<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer_fluid, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, const float W_pressure, const float W_velocity, const float mass, const float J){			
 	const float volume_0 = (mass / particle_buffer_fluid.rho);
-	const float pressure = (particle_buffer_fluid.bulk - (2.0f / 3.0f) * particle_buffer_fluid.viscosity) * (powf(J, -particle_buffer_fluid.gamma) - 1.0f);
+	const float lambda = (particle_buffer_fluid.bulk - (2.0f / 3.0f) * particle_buffer_fluid.viscosity);
+	const float pressure = -lambda * (powf(J, -particle_buffer_fluid.gamma) - 1.0f);//FIXME: Positive or negative lambda here?
 	
-	//TODO: Maybe volume weighted average of pressure;
+	
 	//TODO: Maybe some other scaling?
 	//(*scaling_fluid) += (1.0f / particle_buffer_fluid.rho) * W_pressure;
 	//(*pressure_fluid_nominator) += pressure * W_pressure;
 	//(*pressure_fluid_denominator) += 1.0f * W_pressure;
-	(*scaling_fluid) += volume_0 * W_pressure;
+	
+	//Volume weighted average of pressure;
+	(*scaling_fluid) += (volume_0 / lambda) * W_pressure;
 	(*pressure_fluid_nominator) += volume_0 * J * pressure * W_pressure;
 	(*pressure_fluid_denominator) += volume_0 * J * W_pressure;
 }
@@ -1259,430 +1261,6 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 		
 		atomicAdd(&(iq_pointers.boundary_fluid_values[column_index]), boundary_fluid_local[local_cell_index]);
 	}
-	
-	/*
-	for(int row = 0; row < NUM_ROWS_PER_BLOCK; ++row) {
-		const ivec3 local_id {static_cast<int>((row / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE), static_cast<int>((row / config::G_BLOCKSIZE) % config::G_BLOCKSIZE), static_cast<int>(row % config::G_BLOCKSIZE)};
-		
-		//Generate cell mapping
-		//Local cells are indexed by offset, global cells are sorted by cellno
-		int lhs_column_indices[NUM_COLUMNS_PER_BLOCK];
-		int solve_velocity_column_indices[NUM_COLUMNS_PER_BLOCK];
-		for(size_t column = 0; column < NUM_COLUMNS_PER_BLOCK; ++column){
-			const ivec3 row_cellid = block_cellid + local_id;
-			const ivec3 neighbour_local_id = ivec3(static_cast<int>((column / ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1))) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>((column / (2 * INTERPOLATION_DEGREE_MAX + 1)) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>(column % (2 * INTERPOLATION_DEGREE_MAX + 1))) - ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));
-			const ivec3 neighbour_cellid = row_cellid + neighbour_local_id;
-			const ivec3 neighbour_blockid = neighbour_cellid / static_cast<int>(config::G_BLOCKSIZE);
-			
-			const ivec3 neighbour_base_cellid = neighbour_blockid * static_cast<int>(config::G_BLOCKSIZE);
-			const ivec3 neighbour_celloffset = neighbour_cellid - neighbour_base_cellid;
-			
-			const int neighbour_blockno = partition.query(neighbour_blockid);
-			const int neighbour_cellno = NUM_ROWS_PER_BLOCK * neighbour_blockno + (config::G_BLOCKSIZE * config::G_BLOCKSIZE) * neighbour_celloffset[0] + config::G_BLOCKSIZE * neighbour_celloffset[1] + neighbour_celloffset[2];
-			
-			for(size_t lhs_column = 0; lhs_column < NUM_COLUMNS_PER_BLOCK; ++lhs_column){
-				if(neighbour_cellno == iq_lhs_columns[iq_lhs_rows[base_row + row] + lhs_column]){
-					lhs_column_indices[column] = lhs_column;
-				}
-				if(neighbour_cellno == iq_solve_velocity_columns[iq_solve_velocity_rows[3 * base_row + 3 * row] + lhs_column]){
-					solve_velocity_column_indices[column] = lhs_column;
-				}
-			}
-		}
-		
-		__shared__ float current_mass_solid[3];
-		__shared__ float current_scaling_solid;
-		__shared__ float current_gradient_solid_row[3];
-		__shared__ float current_velocity_solid[3];
-		__shared__ float current_pressure_solid_nominator;
-		__shared__ float current_pressure_solid_denominator;
-		
-		__shared__ float current_mass_fluid[3];
-		__shared__ float current_scaling_fluid;
-		__shared__ float current_gradient_fluid_row[3];
-		__shared__ float current_velocity_fluid[3];
-		__shared__ float current_boundary_fluid_row[3];
-		__shared__ float current_pressure_fluid_nominator;
-		__shared__ float current_pressure_fluid_denominator;
-		
-		__shared__ float current_coupling_solid_row[3];
-		__shared__ float current_coupling_fluid_row[3];
-		
-		if(get_thread_index<BLOCK_SIZE, (1 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(row) == threadIdx.x){
-			current_scaling_solid = scaling_solid_local[get_thread_offset<BLOCK_SIZE, (1 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(row)];
-			current_pressure_solid_nominator = pressure_solid_nominator_local[get_thread_offset<BLOCK_SIZE, (1 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(row)];
-			current_pressure_solid_denominator = pressure_solid_denominator_local[get_thread_offset<BLOCK_SIZE, (1 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(row)];
-			
-			current_scaling_fluid = scaling_fluid_local[get_thread_offset<BLOCK_SIZE, (1 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(row)];
-			current_pressure_fluid_nominator = pressure_fluid_nominator_local[get_thread_offset<BLOCK_SIZE, (1 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(row)];
-			current_pressure_fluid_denominator = pressure_fluid_denominator_local[get_thread_offset<BLOCK_SIZE, (1 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(row)];
-		}
-		
-		for(int i = 0; i < 3; ++i){
-			if(get_thread_index<BLOCK_SIZE, (3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * row + i) == threadIdx.x){
-				current_mass_solid[i] = mass_solid_local[get_thread_offset<BLOCK_SIZE, (3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * row + i)];
-				current_mass_fluid[i] = mass_fluid_local[get_thread_offset<BLOCK_SIZE, (3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * row + i)];
-				current_velocity_solid[i] = velocity_solid_local[get_thread_offset<BLOCK_SIZE, (3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * row + i)];
-				current_velocity_fluid[i] = velocity_fluid_local[get_thread_offset<BLOCK_SIZE, (3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * row + i)];
-			}
-			if(get_thread_index<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * NUM_COLUMNS_PER_BLOCK * row + 3 * IDENTIITY_NEIGHBOUR_INDEX + i) == threadIdx.x){
-				current_gradient_solid_row[i] = gradient_solid_local[get_thread_offset<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * NUM_COLUMNS_PER_BLOCK * row + 3 * IDENTIITY_NEIGHBOUR_INDEX + i)];
-				current_gradient_fluid_row[i] = gradient_fluid_local[get_thread_offset<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * NUM_COLUMNS_PER_BLOCK * row + 3 * IDENTIITY_NEIGHBOUR_INDEX + i)];
-				current_boundary_fluid_row[i] = boundary_fluid_local[get_thread_offset<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * NUM_COLUMNS_PER_BLOCK * row + 3 * IDENTIITY_NEIGHBOUR_INDEX + i)];
-				current_coupling_solid_row[i] = coupling_solid_local[get_thread_offset<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * NUM_COLUMNS_PER_BLOCK * row + 3 * IDENTIITY_NEIGHBOUR_INDEX + i)];
-				current_coupling_fluid_row[i] = coupling_fluid_local[get_thread_offset<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * NUM_COLUMNS_PER_BLOCK * row + 3 * IDENTIITY_NEIGHBOUR_INDEX + i)];
-			}
-		}
-		
-		for(size_t column = 0; column < NUM_COLUMNS_PER_BLOCK; ++column){
-			__shared__ float current_gradient_solid_column[3];
-			
-			__shared__ float current_gradient_fluid_column[3];
-			__shared__ float current_boundary_fluid_column[3];
-			
-			__shared__ float current_coupling_solid_column[3];
-			__shared__ float current_coupling_fluid_column[3];
-			
-			for(int i = 0; i < 3; ++i){
-				if(get_thread_index<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * NUM_COLUMNS_PER_BLOCK * row + 3 * column + i) == threadIdx.x){
-					current_gradient_solid_column[i] = gradient_solid_local[get_thread_offset<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * NUM_COLUMNS_PER_BLOCK * row + 3 * column + i)];
-					current_gradient_fluid_column[i] = gradient_fluid_local[get_thread_offset<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * NUM_COLUMNS_PER_BLOCK * row + 3 * column + i)];
-					current_boundary_fluid_column[i] = boundary_fluid_local[get_thread_offset<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * NUM_COLUMNS_PER_BLOCK * row + 3 * column + i)];
-					current_coupling_solid_column[i] = coupling_solid_local[get_thread_offset<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * NUM_COLUMNS_PER_BLOCK * row + 3 * column + i)];
-					current_coupling_fluid_column[i] = coupling_fluid_local[get_thread_offset<BLOCK_SIZE, (3 * NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(3 * NUM_COLUMNS_PER_BLOCK * row + 3 * column + i)];
-				}
-			}
-			
-			__syncthreads();
-			
-			//P = O^T * M^-1 * O => P_row_col = sum(all_rows_in_column; current_o_row * current_o_col / current_m) => add current_o_row * current_o_col / current_m to entries for current row and for neighbour row (row and col); Other entries are zero
-			if(get_thread_index<BLOCK_SIZE, (NUM_ROWS_PER_BLOCK * NUM_COLUMNS_PER_BLOCK + BLOCK_SIZE - 1) / BLOCK_SIZE>(row * NUM_COLUMNS_PER_BLOCK + column) == threadIdx.x){
-				//Caling only for diagonal element
-				const float scaling_solid = (column == IDENTIITY_NEIGHBOUR_INDEX ? current_scaling_solid : 0.0f);
-				const float scaling_fluid = (column == IDENTIITY_NEIGHBOUR_INDEX ? current_scaling_fluid : 0.0f);
-				
-				const float gradient_by_mass_solid = (current_gradient_solid_row[0] * current_gradient_solid_column[0] / current_mass_solid[0] + current_gradient_solid_row[1] * current_gradient_solid_column[1] / current_mass_solid[1] + current_gradient_solid_row[2] * current_gradient_solid_column[2] / current_mass_solid[2]);
-				const float gradient_by_mass_fluid = (current_gradient_fluid_row[0] * current_gradient_fluid_column[0] / current_mass_fluid[0] + current_gradient_fluid_row[1] * current_gradient_fluid_column[1] / current_mass_fluid[1] + current_gradient_fluid_row[2] * current_gradient_fluid_column[2] / current_mass_fluid[2]);
-				
-				const float boundary_by_mass = (current_boundary_fluid_row[0] * current_boundary_fluid_column[0] / current_mass_fluid[0] + current_boundary_fluid_row[1] * current_boundary_fluid_column[1] / current_mass_fluid[1] + current_boundary_fluid_row[2] * current_boundary_fluid_column[2] / current_mass_fluid[2]);
-				const float gradient_and_boundary_by_mass = (current_gradient_fluid_row[0] * current_boundary_fluid_column[0] / current_mass_fluid[0] + current_gradient_fluid_row[1] * current_boundary_fluid_column[1] / current_mass_fluid[1] + current_gradient_fluid_row[2] * current_boundary_fluid_column[2] / current_mass_fluid[2]);
-				
-				const float gradient_and_coupling_by_mass_solid = (current_gradient_solid_row[0] * current_coupling_solid_column[0] / current_mass_solid[0] + current_gradient_solid_row[1] * current_coupling_solid_column[1] / current_mass_solid[1] + current_gradient_solid_row[2] * current_coupling_solid_column[2] / current_mass_solid[2]);
-				const float gradient_and_coupling_by_mass_fluid = (current_gradient_fluid_row[0] * current_coupling_fluid_column[0] / current_mass_fluid[0] + current_gradient_fluid_row[1] * current_coupling_fluid_column[1] / current_mass_fluid[1] + current_gradient_fluid_row[2] * current_coupling_fluid_column[2] / current_mass_fluid[2]);
-				const float boundary_and_coupling_by_mass_fluid = (current_boundary_fluid_row[0] * current_coupling_fluid_column[0] / current_mass_fluid[0] + current_boundary_fluid_row[1] * current_coupling_fluid_column[1] / current_mass_fluid[1] + current_boundary_fluid_row[2] * current_coupling_fluid_column[2] / current_mass_fluid[2]);
-				
-				const float coupling_by_mass_solid = (current_coupling_solid_row[0] * current_coupling_solid_column[0] / current_mass_solid[0] + current_coupling_solid_row[1] * current_coupling_solid_column[1] / current_mass_solid[1] + current_coupling_solid_row[2] * current_coupling_solid_column[2] / current_mass_solid[2]);
-				const float coupling_by_mass_fluid = (current_coupling_fluid_row[0] * current_coupling_fluid_column[0] / current_mass_fluid[0] + current_coupling_fluid_row[1] * current_coupling_fluid_column[1] / current_mass_fluid[1] + current_coupling_fluid_row[2] * current_coupling_fluid_column[2] / current_mass_fluid[2]);
-				
-				std::array<std::array<float, LHS_MATRIX_SIZE_X>, LHS_MATRIX_SIZE_Y> a;
-				
-				std::array<std::array<float, LHS_MATRIX_SIZE_X>, LHS_MATRIX_SIZE_Y> a_transposed;
-				
-				//Clear empty values
-				a[0][1] = 0.0f;
-				a[0][2] = 0.0f;
-				a[1][0] = 0.0f;
-				a[2][0] = 0.0f;
-				
-				a_transposed[0][1] = 0.0f;
-				a_transposed[0][2] = 0.0f;
-				a_transposed[1][0] = 0.0f;
-				a_transposed[2][0] = 0.0f;
-				
-				//Clear other values
-				a[3][3] = 0.0f;
-				
-				a_transposed[3][3] = 0.0f;
-				
-				//Only calculate for particles with mass bigger than 0 (otherwise we will divide by 0)
-				if(
-					   current_mass_solid[0] > 0.0f
-					&& current_mass_solid[1] > 0.0f
-					&& current_mass_solid[2] > 0.0f
-				){
-					a[0][0] = 0.0f;//FIXME:scaling_solid / dt.count() + dt.count() * gradient_by_mass_solid;
-					a[0][3] = 0.0f;//FIXME:-dt.count() * gradient_and_coupling_by_mass_solid;
-					a[3][3] += dt.count() * coupling_by_mass_solid;
-					
-					//Avoid adding twice to diagonale
-					if(column != IDENTIITY_NEIGHBOUR_INDEX){
-						a_transposed[0][0] = 0.0f;//FIXME:dt.count() * gradient_by_mass_solid;
-						a_transposed[0][3] = 0.0f;//FIXME:-dt.count() * gradient_and_coupling_by_mass_solid;
-						a_transposed[3][3] += dt.count() * coupling_by_mass_solid;
-					}else{
-						a_transposed[0][0] = 0.0f;
-						a_transposed[0][3] = 0.0f;
-					}
-				}else{
-					a[0][0] = 0.0f;//FIXME:scaling_solid / dt.count();
-					a[0][3] = 0.0f;
-					
-					a_transposed[0][0] = 0.0f;
-					a_transposed[0][3] = 0.0f;
-				}
-				
-				if(
-					   current_mass_fluid[0] > 0.0f
-					&& current_mass_fluid[1] > 0.0f
-					&& current_mass_fluid[2] > 0.0f
-				){
-					a[1][1] = 0.0f;//FIXME:scaling_fluid / dt.count() + dt.count() * gradient_by_mass_fluid;
-					a[1][2] = dt.count() * gradient_and_boundary_by_mass;
-					a[1][3] = 0.0f;//FIXME:dt.count() * gradient_and_coupling_by_mass_fluid;
-					a[2][2] = dt.count() * boundary_by_mass;
-					a[2][3] = dt.count() * boundary_and_coupling_by_mass_fluid;
-					a[3][3] += dt.count() * coupling_by_mass_fluid;
-					
-					//Avoid adding twice to diagonale
-					if(column != IDENTIITY_NEIGHBOUR_INDEX){
-						a_transposed[1][1] = 0.0f;//FIXME:dt.count() * gradient_by_mass_fluid;
-						a_transposed[1][2] = dt.count() * gradient_and_boundary_by_mass;
-						a_transposed[1][3] = 0.0f;//FIXME:dt.count() * gradient_and_coupling_by_mass_fluid;
-						a_transposed[2][2] = dt.count() * boundary_by_mass;
-						a_transposed[2][3] = dt.count() * boundary_and_coupling_by_mass_fluid;
-						a_transposed[3][3] += dt.count() * coupling_by_mass_fluid;
-					}else{
-						a_transposed[1][1] = 0.0f;
-						a_transposed[1][2] = 0.0f;
-						a_transposed[1][3] = 0.0f;
-						a_transposed[2][2] = 0.0f;
-						a_transposed[2][3] = 0.0f;
-					}
-				}else{
-					a[1][1] = 0.0f;//FIXME:scaling_fluid / dt.count();
-					a[1][2] = 0.0f;
-					a[1][3] = 0.0f;
-					a[2][2] = 0.0f;
-					a[2][3] = 0.0f;
-					
-					a_transposed[1][1] = 0.0f;
-					a_transposed[1][2] = 0.0f;
-					a_transposed[1][3] = 0.0f;
-					a_transposed[2][2] = 0.0f;
-					a_transposed[2][3] = 0.0f;
-				}
-				
-				//Fill symmetric
-				a[3][0] = a[0][3];
-				a[2][1] = a[1][2];
-				a[3][1] = a[1][3];
-				a[3][2] = a[2][3];
-				
-				a_transposed[3][0] = a_transposed[0][3];
-				a_transposed[2][1] = a_transposed[1][2];
-				a_transposed[3][1] = a_transposed[1][3];
-				a_transposed[3][2] = a_transposed[2][3];
-				
-				std::array<std::array<std::array<float, SOLVE_VELOCITY_MATRIX_SIZE_X>, SOLVE_VELOCITY_MATRIX_SIZE_Y>, 3> solve_velocity;
-
-				for(int k = 0; k < 3; ++k){
-					//Clear empty values
-					solve_velocity[k][0][1] = 0.0f;
-					solve_velocity[k][0][2] = 0.0f;
-					solve_velocity[k][1][0] = 0.0f;
-					
-					//Only calculate for particles with mass bigger than 0 (otherwise we will divide by 0)
-					if(
-						   current_mass_solid[k] > 0.0f
-					){
-						solve_velocity[k][0][0] = -dt.count() * current_gradient_solid_column[k] / current_mass_solid[k];
-						solve_velocity[k][0][3] = dt.count() * current_coupling_solid_column[k] / current_mass_solid[k];
-					}else{
-						solve_velocity[k][0][0] = 0.0f;
-						solve_velocity[k][0][3] = 0.0f;
-					}
-					
-					if(
-						   current_mass_fluid[k] > 0.0f
-					){
-						solve_velocity[k][1][1] = -dt.count() * current_gradient_fluid_column[k] / current_mass_fluid[k];
-						solve_velocity[k][1][2] = -dt.count() * current_boundary_fluid_row[k] / current_mass_fluid[k];
-						solve_velocity[k][1][3] = -dt.count() * current_coupling_fluid_column[k] / current_mass_fluid[k];
-					}else{
-						solve_velocity[k][1][1] = 0.0f;
-						solve_velocity[k][1][2] = 0.0f;
-						solve_velocity[k][1][3] = 0.0f;
-					}
-				}
-				
-				//Store at index (blockid + row, blockid + column), adding it to existing value
-				for(size_t i = 0; i < LHS_MATRIX_SIZE_Y; ++i){
-					const int row_index = i * NUM_ROWS_PER_BLOCK * num_blocks + base_row + row;
-					for(size_t j = 0; j < lhs_num_blocks_per_row[i]; ++j){
-						
-						const int column_index = iq_lhs_rows[row_index] + j * NUM_COLUMNS_PER_BLOCK + lhs_column_indices[column];
-						
-						if(a[i][lhs_block_offsets_per_row[i][j]] != 0.0f){
-							//printf("IQ_LHS %d %d # %d %d %d # %.28f # %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n", row_index, column_index, static_cast<int>(i), static_cast<int>(j), static_cast<int>(lhs_block_offsets_per_row[i][j]), a[i][lhs_block_offsets_per_row[i][j]], gradient_by_mass_solid, current_gradient_solid_row[0], current_gradient_solid_row[1], current_gradient_solid_row[2], current_gradient_solid_column[0], current_gradient_solid_column[1], current_gradient_solid_column[2]);
-							//printf("IQ_LHS %d %d # %d %d # %d # %.28f # %.28f\n", row_index, iq_lhs_columns[column_index], static_cast<int>(i), static_cast<int>(lhs_block_offsets_per_row[i][j]), static_cast<int>(column), a[i][lhs_block_offsets_per_row[i][j]], a_transposed[i][lhs_block_offsets_per_row[i][j]]);
-							//const int column_cellno = iq_lhs_columns[iq_lhs_rows[base_row + row] + lhs_column_indices[column]];
-							//printf("IQ_LHS %d # %d %d # %.28f\n", static_cast<int>(column_cellno), static_cast<int>(i), static_cast<int>(lhs_block_offsets_per_row[i][j]), a[i][lhs_block_offsets_per_row[i][j]]);
-						}
-						
-						if(i == 0 && lhs_block_offsets_per_row[i][j] == 0 && a[i][lhs_block_offsets_per_row[i][j]] != 0.0f){
-							//printf("IQ_LHS00 %.28f # %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n"
-							//	, a[i][lhs_block_offsets_per_row[i][j]]
-							//	, gradient_by_mass_solid
-							//	, current_mass_solid[0]	, current_mass_solid[1], current_mass_solid[2]
-							//	, current_gradient_solid_row[0], current_gradient_solid_row[1], current_gradient_solid_row[2]
-							//	, current_gradient_solid_column[0], current_gradient_solid_column[1], current_gradient_solid_column[2]						
-							//);
-						}
-						
-						if(i == 3 && lhs_block_offsets_per_row[i][j] == 3 && a[i][lhs_block_offsets_per_row[i][j]] != 0.0f){
-							printf("IQ_LHS33 %d %d # %.28f # %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n"
-								, static_cast<int>(row_index), static_cast<int>(i * num_blocks * NUM_ROWS_PER_BLOCK + iq_lhs_columns[iq_lhs_rows[base_row + row] + lhs_column_indices[column]])
-								, a[i][lhs_block_offsets_per_row[i][j]]
-								, coupling_by_mass_solid
-								, coupling_by_mass_fluid
-								, current_coupling_solid_row[0], current_coupling_solid_row[1], current_coupling_solid_row[2]
-								, current_coupling_solid_column[0], current_coupling_solid_column[1], current_coupling_solid_column[2]
-								, current_coupling_fluid_row[0], current_coupling_fluid_row[1], current_coupling_fluid_row[2]
-								, current_coupling_fluid_column[0], current_coupling_fluid_column[1], current_coupling_fluid_column[2]						
-							);
-						}
-						
-						if(i == 1 && lhs_block_offsets_per_row[i][j] == 1 && a[i][lhs_block_offsets_per_row[i][j]] != 0.0f){
-							//printf("IQ_LHS11 %.28f # %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n"
-							//	, a[i][lhs_block_offsets_per_row[i][j]]
-							//	, gradient_by_mass_fluid
-							//	, current_mass_fluid[0]	, current_mass_fluid[1], current_mass_fluid[2]
-							//	, current_gradient_fluid_row[0], current_gradient_fluid_row[1], current_gradient_fluid_row[2]
-							//	, current_gradient_fluid_column[0], current_gradient_fluid_column[1], current_gradient_fluid_column[2]						
-							//);
-						}
-								
-						atomicAdd(&(iq_lhs_values[column_index]), a[i][lhs_block_offsets_per_row[i][j]]);
-					}
-				}
-				
-				//Skip columns that are empty. These might be neighbours of neighbours which should always have zero values stored.
-				{
-					const int column_cellno = iq_lhs_columns[iq_lhs_rows[base_row + row] + lhs_column_indices[column]];
-					if(column_cellno < NUM_ROWS_PER_BLOCK * num_blocks && (iq_lhs_rows[column_cellno + 1] - iq_lhs_rows[column_cellno]) > 0){
-						//Generate cell mapping
-						//Local cells are indexed by offset, global cells are sorted by cellno
-						int row_column_number = -1;
-						for(size_t lhs_column = 0; lhs_column < NUM_COLUMNS_PER_BLOCK; ++lhs_column){
-							if((base_row + row) == iq_lhs_columns[iq_lhs_rows[column_cellno] + lhs_column]){
-								row_column_number = lhs_column;
-								break;
-							}
-						}
-						
-						//if(row_column_number == -1){
-						//	const ivec3 row_cellid = block_cellid + local_id;
-						//	
-						//	const ivec3 column_local_id {static_cast<int>((column_cellno / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE), static_cast<int>((column_cellno / config::G_BLOCKSIZE) % config::G_BLOCKSIZE), static_cast<int>(column_cellno % config::G_BLOCKSIZE)};
-						//	const int column_blockno = column_cellno / static_cast<int>(config::G_BLOCKVOLUME);
-						//	const ivec3 column_blockid = partition.active_keys[column_blockno];
-						//	const ivec3 column_cellid = column_blockid * static_cast<int>(config::G_BLOCKSIZE) + column_local_id;
-						//	
-						//	printf("ERROR1 %d %d # %d %d %d # %d %d %d # %d %d %d\n", static_cast<int>(base_row + row), column_cellno, iq_lhs_rows[column_cellno], iq_lhs_rows[column_cellno + 1], lhs_column_indices[column], row_cellid[0], row_cellid[1], row_cellid[2], column_cellid[0], column_cellid[1], column_cellid[2]);
-						//	for(size_t lhs_column = 0; lhs_column < NUM_COLUMNS_PER_BLOCK; ++lhs_column){
-						//		printf("ERROR1 %d %d # %d\n", static_cast<int>(base_row + row), column_cellno, iq_lhs_columns[iq_lhs_rows[column_cellno] + lhs_column]);
-						//	}
-						//	continue;
-						//}
-						
-						//Store at index (blockid + column, blockid + row), adding it to existing value
-						for(size_t i = 0; i < LHS_MATRIX_SIZE_Y; ++i){
-							const int row_index = i * NUM_ROWS_PER_BLOCK * num_blocks + column_cellno;
-											
-							for(size_t j = 0; j < lhs_num_blocks_per_row[i]; ++j){
-								
-								const int column_index = iq_lhs_rows[row_index] + j * NUM_COLUMNS_PER_BLOCK + row_column_number;
-								
-								if(a_transposed[i][lhs_block_offsets_per_row[i][j]] != 0.0f){
-									//printf("T_IQ_LHS %d %d # %d %d %d # %.28f # %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n", row_index, column_index, static_cast<int>(i), static_cast<int>(j), static_cast<int>(lhs_block_offsets_per_row[i][j]), a_transposed[i][lhs_block_offsets_per_row[i][j]], gradient_by_mass_solid, current_gradient_solid_row[0], current_gradient_solid_row[1], current_gradient_solid_row[2], current_gradient_solid_column[0], current_gradient_solid_column[1], current_gradient_solid_column[2]);
-									//printf("T_IQ_LHS %d %d # %d %d # %d # %.28f # %.28f\n", row_index, iq_lhs_columns[column_index], static_cast<int>(i), static_cast<int>(lhs_block_offsets_per_row[i][j]), static_cast<int>(column), a[i][lhs_block_offsets_per_row[i][j]], a_transposed[i][lhs_block_offsets_per_row[i][j]]);
-									//printf("T_IQ_LHS %d # %d %d # %.28f\n", static_cast<int>(base_row + row), static_cast<int>(i), static_cast<int>(lhs_block_offsets_per_row[i][j]), a_transposed[i][lhs_block_offsets_per_row[i][j]]);
-								}
-								
-								atomicAdd(&(iq_lhs_values[column_index]), a_transposed[i][lhs_block_offsets_per_row[i][j]]);
-							}
-						}
-					}else{
-						//printf("Skipping column: %d\n", column_cellno);
-						
-						for(size_t i = 0; i < LHS_MATRIX_SIZE_Y; ++i){
-							for(size_t j = 0; j < lhs_num_blocks_per_row[i]; ++j){
-								if(a_transposed[i][lhs_block_offsets_per_row[i][j]] != 0.0f){
-									printf("ERROR - Skipped non_empty column %d %d\n", static_cast<int>(base_row + row), column_cellno);
-								}
-							}
-						}
-					}
-				}
-				
-				//Store at index (blockid + row, blockid + column), adding it to existing value
-				for(int k = 0; k < 3; ++k){
-					for(size_t i = 0; i < SOLVE_VELOCITY_MATRIX_SIZE_Y; ++i){
-						const int row_index = i * 3 * NUM_ROWS_PER_BLOCK * num_blocks + 3 * base_row + 3 * row + k;
-						for(size_t j = 0; j < solve_velocity_num_blocks_per_row[i]; ++j){
-							
-							const int column_index = iq_solve_velocity_rows[row_index] + j * NUM_COLUMNS_PER_BLOCK + solve_velocity_column_indices[column];
-							
-							if(solve_velocity[k][i][solve_velocity_block_offsets_per_row[i][j]] != 0.0f){
-								//printf("Solve_LHS %d %d # %d %d %d # %d # %.28f\n", row_index, column_index, static_cast<int>(i), static_cast<int>(j), static_cast<int>(solve_velocity_block_offsets_per_row[i][j]), k, solve_velocity[k][i][solve_velocity_block_offsets_per_row[i][j]]);
-							}
-							
-							atomicAdd(&(iq_solve_velocity_values[column_index]), solve_velocity[k][i][solve_velocity_block_offsets_per_row[i][j]]);
-						}
-					}
-				}
-			}
-			
-			__syncthreads();
-		}
-		
-		if(get_thread_index<BLOCK_SIZE, (NUM_ROWS_PER_BLOCK + BLOCK_SIZE - 1) / BLOCK_SIZE>(row) == threadIdx.x){
-			const float gradient_and_velocity_solid = (current_gradient_solid_row[0] * current_velocity_solid[0] + current_gradient_solid_row[1] * current_velocity_solid[1] + current_gradient_solid_row[2] * current_velocity_solid[2]);
-			const float gradient_and_velocity_fluid = (current_gradient_fluid_row[0] * current_velocity_fluid[0] + current_gradient_fluid_row[1] * current_velocity_fluid[1] + current_gradient_fluid_row[2] * current_velocity_fluid[2]);
-			const float boundary_and_velocity_fluid = (current_boundary_fluid_row[0] * current_velocity_fluid[0] + current_boundary_fluid_row[1] * current_velocity_fluid[1] + current_boundary_fluid_row[2] * current_velocity_fluid[2]);
-			const float coupling_and_velocity_solid = (current_coupling_solid_row[0] * current_velocity_solid[0] + current_coupling_solid_row[1] * current_velocity_solid[1] + current_coupling_solid_row[2] * current_velocity_solid[2]);
-			const float coupling_and_velocity_fluid = (current_coupling_fluid_row[0] * current_velocity_fluid[0] + current_coupling_fluid_row[1] * current_velocity_fluid[1] + current_coupling_fluid_row[2] * current_velocity_fluid[2]);
-			
-			std::array<float, LHS_MATRIX_SIZE_Y> b;
-			//Only calculate for particles with pressure_denominator bigger than 0 (otherwise we will divide by 0)
-			if(current_pressure_solid_denominator > 0.0f){
-				b[0] = (current_scaling_solid * current_pressure_solid_nominator) / (current_pressure_solid_denominator * dt.count()) - gradient_and_velocity_solid;
-			}else{
-				b[0] = -gradient_and_velocity_solid;
-			}
-			if(current_pressure_fluid_denominator > 0.0f){
-				b[1] = (current_scaling_fluid * current_pressure_fluid_nominator) / (current_pressure_fluid_denominator * dt.count()) - gradient_and_velocity_fluid;
-			}else{
-				b[1] = -gradient_and_velocity_fluid;
-			}
-			b[2] = boundary_and_velocity_fluid - 0.0f;//FIXME: Correct external force from air interface or something with surface tension
-			b[3] = coupling_and_velocity_solid - coupling_and_velocity_fluid;
-			
-			
-			for(size_t i = 0; i < LHS_MATRIX_SIZE_Y; ++i){
-				const int row_index = i * NUM_ROWS_PER_BLOCK * num_blocks + base_row + row;
-				
-				if(b[i] != 0.0f){
-					//printf("IQ_RHS %d # %d # %.28f # %.28f %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n", row_index, static_cast<int>(i), b[i], current_scaling_solid, current_pressure_solid_nominator, current_pressure_solid_denominator, gradient_and_velocity_solid, current_gradient_solid_row[0], current_gradient_solid_row[1], current_gradient_solid_row[2], current_velocity_solid[0], current_velocity_solid[1], current_velocity_solid[2], current_gradient_fluid_row[0], current_gradient_fluid_row[1], current_gradient_fluid_row[2], current_velocity_fluid[0], current_velocity_fluid[1], current_velocity_fluid[2]);
-					//printf("IQ_RHS %d # %d # %.28f\n", static_cast<int>(base_row + row), static_cast<int>(i), b[i]);
-					const ivec3 row_cellid = block_cellid + local_id;
-					printf("IQ_RHS %d # %d # %.28f # %d %d %d\n", row_index, static_cast<int>(i), b[i], row_cellid[0], row_cellid[1], row_cellid[2]);
-				}
-				
-				if(std::abs(b[i]) > 1e-5){
-					//printf("IQ_RHS %d # %d # %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n", row_index, static_cast<int>(i), b[i], current_gradient_solid_row[0], current_gradient_solid_row[1], current_gradient_solid_row[2], current_gradient_fluid_row[0], current_gradient_fluid_row[1], current_gradient_fluid_row[2], current_velocity_solid[0], current_velocity_solid[1], current_velocity_solid[2], current_velocity_fluid[0], current_velocity_fluid[1], current_velocity_fluid[2]);
-				}
-				
-				if(isnan(b[i])){
-					printf("ABC1 %d # %.28f %.28f %.28f # %.28f %.28f %.28f # %.28f %.28f %.28f\n", static_cast<int>(i), current_scaling_fluid, current_pressure_fluid_nominator, current_pressure_fluid_denominator, current_gradient_fluid_row[0], current_gradient_fluid_row[1], current_gradient_fluid_row[2], current_velocity_fluid[0], current_velocity_fluid[1], current_velocity_fluid[2]);
-				}
-				
-				atomicAdd(&(iq_rhs[row_index]), b[i]);
-			}
-		}
-		
-		__syncthreads();
-	}*/
 }
 template<typename Partition, typename Grid, MaterialE MaterialTypeSolid>
 __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, ParticleBuffer<MaterialTypeSolid> next_particle_buffer_soild, const Partition prev_partition, Partition partition, Grid grid_solid, Grid grid_fluid, const float* delta_v_solid, const float* delta_v_fluid, const float* pressure_solid) {
