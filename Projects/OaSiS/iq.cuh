@@ -253,16 +253,9 @@ __global__ void add_block_rows(const size_t* num_blocks_per_row, const uint32_t 
 				for(size_t column_offset_index = 0; column_offset_index < num_blocks_per_row[row_offset]; ++column_offset_index){
 					const size_t block_index = accumulated_blocks_per_row[row_offset] + column_offset_index;
 					
-					if(blockIdx.x == blockDim.x - 1 && row == NumRowsPerBlock - 1 && row_offset == MatrixSizeY - 1 && dimension == NumDimensionsPerRow - 1){
-						printf("TMP0 %d %d %d\n", (iq_parts_rows[block_index][NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension + 1] - iq_parts_rows[block_index][NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension]), iq_parts_rows[block_index][NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension], iq_parts_rows[block_index][NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension + 1]);
-					}
-					
 					elements_in_row += (iq_parts_rows[block_index][NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension + 1] - iq_parts_rows[block_index][NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension]);
 				}
 				
-				if(blockIdx.x == blockDim.x - 1 && row == NumRowsPerBlock - 1 && row_offset == MatrixSizeY - 1 && dimension == NumDimensionsPerRow - 1){
-					printf("TMP1 %d\n", static_cast<int>(elements_in_row));
-				}
 				atomicAdd(&(iq_rows[row_offset * NumDimensionsPerRow * NumRowsPerBlock * num_blocks + NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension]), elements_in_row);
 			}
 		}
@@ -1282,6 +1275,7 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 		grid_block_fluid.val_1d(_2, cell_id_in_block) += delta_v_fluid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block + 1];
 		grid_block_fluid.val_1d(_3, cell_id_in_block) += delta_v_fluid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block + 2];
 		
+		/*
 		if(
 			(grid_block_solid.val_1d(_1, cell_id_in_block) > 30.0f)
 			|| (grid_block_solid.val_1d(_2, cell_id_in_block) > 30.0f)
@@ -1305,7 +1299,7 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 				, delta_v_fluid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block + 1]
 				, delta_v_fluid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block + 2]
 			);
-		}
+		}*/
 	}
 
 #if (FIXED_COROTATED_GHOST_ENABLE_STRAIN_UPDATE == 0)

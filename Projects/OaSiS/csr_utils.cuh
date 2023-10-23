@@ -157,9 +157,6 @@ __global__ void csr_matrix_matrix_multiplication(const int* a_rows, const int* a
 							const float value_b = b_values[column_index_b];
 							
 							sum += value_a * value_b;
-							if(value_a != 0.0f && value_b != 0.0f){
-								//printf("Column: %d %d # %d %d # Sum: %.28f %.28f # %.28f\n", column_a, column_b, column_index_a, column_index_b, value_a, value_b, sum);
-							}
 							
 							column_index_a++;
 							column_index_b++;
@@ -182,9 +179,9 @@ __global__ void csr_matrix_matrix_multiplication(const int* a_rows, const int* a
 	}
 }
 
-/*
+
 template<size_t NumRowsPerBlock, size_t NumDimensionsPerRow>
-__global__ void csr_matrix_matrix_multiplication_calculate_rows(const size_t num_columns, const int* a_rows, const int* a_columns, const float* a_values, const int* b_rows, const int* b_columns, const float* b_values, int* c_rows, int* tmp_memory) {
+__global__ void csr_matrix_matrix_multiplication_gustavson_calculate_rows(const size_t num_columns, const int* a_rows, const int* a_columns, const float* a_values, const int* b_rows, const int* b_columns, const float* b_values, int* c_rows, int* tmp_memory) {
 	//const int src_blockno		   = static_cast<int>(blockIdx.x);
 	//const auto blockid			   = partition.active_keys[blockIdx.x];
 	
@@ -238,7 +235,7 @@ __global__ void csr_matrix_matrix_multiplication_calculate_rows(const size_t num
 //A * B
 //Using Gustavson
 template<size_t NumRowsPerBlock, size_t NumDimensionsPerRow>
-__global__ void csr_matrix_matrix_multiplication(const int* a_rows, const int* a_columns, const float* a_values, const int* b_rows, const int* b_columns, const float* b_values, const int* c_rows, int* c_columns, float* c_values) {
+__global__ void csr_matrix_matrix_multiplication_gustavson(const int* a_rows, const int* a_columns, const float* a_values, const int* b_rows, const int* b_columns, const float* b_values, const int* c_rows, int* c_columns, float* c_values) {
 	//const int src_blockno		   = static_cast<int>(blockIdx.x);
 	//const auto blockid			   = partition.active_keys[blockIdx.x];
 	
@@ -285,7 +282,7 @@ __global__ void csr_matrix_matrix_multiplication(const int* a_rows, const int* a
 							}
 							
 							if(index >= num_columns){
-								printf("ERROR: Index out of bounds: %d\n", index);
+								printf("ERROR: Index out of bounds: %d\n", static_cast<int>(index));
 							}
 							
 							//If column does not exist, insert it
@@ -315,7 +312,7 @@ __global__ void csr_matrix_matrix_multiplication(const int* a_rows, const int* a
 			}
 		}
 	}
-}*/
+}
 
 //A * D * B^T
 template<size_t NumRowsPerBlock, size_t NumDimensionsPerRow, bool WriteRows>
@@ -359,9 +356,6 @@ __global__ void csr_matrix_matrix_multiplication_with_diagonal(const int* a_rows
 							const float value_d = d_values[column_a];
 							
 							sum += (value_a * value_b) * value_d;
-							if(value_a != 0.0f && value_b != 0.0f){
-								//printf("Column: %d %d # %d %d # Sum: %.28f %.28f # %.28f\n", column_a, column_b, column_index_a, column_index_b, value_a, value_b, sum);
-							}
 							
 							column_index_a++;
 							column_index_b++;
@@ -384,9 +378,9 @@ __global__ void csr_matrix_matrix_multiplication_with_diagonal(const int* a_rows
 	}
 }
 
-/*
+
 template<size_t NumRowsPerBlock, size_t NumDimensionsPerRow>
-__global__ void csr_matrix_matrix_multiplication_with_diagonal_calculate_rows(const size_t num_columns, const int* a_rows, const int* a_columns, const float* a_values, const float* d_values, const int* b_rows, const int* b_columns, const float* b_values, int* c_rows, int* tmp_memory) {
+__global__ void csr_matrix_matrix_multiplication_with_diagonal_gustavson_calculate_rows(const size_t num_columns, const int* a_rows, const int* a_columns, const float* a_values, const float* d_values, const int* b_rows, const int* b_columns, const float* b_values, int* c_rows, int* tmp_memory) {
 	//const int src_blockno		   = static_cast<int>(blockIdx.x);
 	//const auto blockid			   = partition.active_keys[blockIdx.x];
 	
@@ -445,7 +439,7 @@ __global__ void csr_matrix_matrix_multiplication_with_diagonal_calculate_rows(co
 //A * D * B
 //Using Gustavson
 template<size_t NumRowsPerBlock, size_t NumDimensionsPerRow>
-__global__ void csr_matrix_matrix_multiplication_with_diagonal(const int* a_rows, const int* a_columns, const float* a_values, const float* d_values, const int* b_rows, const int* b_columns, const float* b_values, const int* c_rows, int* c_columns, float* c_values) {
+__global__ void csr_matrix_matrix_multiplication_with_diagonal_gustavson(const int* a_rows, const int* a_columns, const float* a_values, const float* d_values, const int* b_rows, const int* b_columns, const float* b_values, const int* c_rows, int* c_columns, float* c_values) {
 	//const int src_blockno		   = static_cast<int>(blockIdx.x);
 	//const auto blockid			   = partition.active_keys[blockIdx.x];
 	
@@ -493,6 +487,10 @@ __global__ void csr_matrix_matrix_multiplication_with_diagonal(const int* a_rows
 								index = (l + r)/2;
 							}
 							
+							if(index >= num_columns){
+								printf("ERROR: Index out of bounds: %d\n", static_cast<int>(index));
+							}
+							
 							//If column does not exist, insert it
 							if(columns_row[index] != column_b){
 								//Might be one of
@@ -520,7 +518,41 @@ __global__ void csr_matrix_matrix_multiplication_with_diagonal(const int* a_rows
 			}
 		}
 	}
-}*/
+}
+
+//Copy upper triangular to lower triangular
+template<size_t NumRowsPerBlock, size_t NumDimensionsPerRow>
+__global__ void csr_mirror(const int* a_rows, const int* a_columns, float* a_values) {
+	//const int src_blockno		   = static_cast<int>(blockIdx.x);
+	//const auto blockid			   = partition.active_keys[blockIdx.x];
+	
+	const size_t base_row = NumRowsPerBlock * blockIdx.x;
+	
+	//For all rows in A
+	for(size_t row = static_cast<int>(threadIdx.x); row < NumRowsPerBlock; row += static_cast<int>(blockDim.x)){
+		for(size_t dimension_row = 0; dimension_row < NumDimensionsPerRow; ++dimension_row){
+			
+			//For all columns in row_a
+			for(int column_index_a = a_rows[NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension_row]; column_index_a < a_rows[NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension_row + 1]; ++column_index_a){
+				const int column_a = a_columns[column_index_a];
+				
+				if(column_a < (NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension_row)){
+					for(int column_index_a_transposed = a_rows[column_a]; column_index_a_transposed < a_rows[column_a + 1]; ++column_index_a_transposed){
+						const int column_a_transposed = a_columns[column_index_a_transposed];
+						
+						if(column_a_transposed == (NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension_row)){
+							a_values[column_index_a] = a_values[column_index_a_transposed];
+							break;
+						}
+					}
+					
+				}
+			}
+		}
+	}
+}
+
+
 
 //NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic, readability-magic-numbers, readability-identifier-naming, misc-definitions-in-headers)
 }// namespace mn
