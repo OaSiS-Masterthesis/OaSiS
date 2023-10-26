@@ -3158,6 +3158,42 @@ __global__ void retrieve_particle_buffer_surface(Partition partition, Partition 
 	}
 }
 
+template<typename Partition, typename ParticleBuffer, typename SurfaceFlowParticleBuffer>
+__global__ void retrieve_particle_buffer_surface_flow(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, const SurfaceFlowParticleBuffer surface_flow_particle_buffer, unsigned int* particle_id_mapping_buffer, float* surface_flow_mass_transfer_device_buffer) {
+	const int particle_counts	= next_particle_buffer.particle_bucket_sizes[blockIdx.x];
+	const ivec3 blockid			= partition.active_keys[blockIdx.x];
+	const auto advection_bucket = next_particle_buffer.blockbuckets + blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK;
+
+	// auto particle_offset = particle_buffer.bin_offsets[blockIdx.x];
+	for(int particle_id_in_block = static_cast<int>(threadIdx.x); particle_id_in_block < particle_counts; particle_id_in_block += static_cast<int>(blockDim.x)) {
+		//Fetch advection (direction at high bits, particle in in cell at low bits)
+		const auto advect = advection_bucket[particle_id_in_block];
+
+		//Retrieve the direction (first stripping the particle id by division)
+		ivec3 source_blockid;
+		dir_components<3>(advect / config::G_PARTICLE_NUM_PER_BLOCK, source_blockid.data_arr());
+
+		//Retrieve the particle id by AND for lower bits
+		const auto source_pidib = advect % config::G_PARTICLE_NUM_PER_BLOCK;
+
+		//Get global index by adding the blockid
+		source_blockid += blockid;
+
+		//Get block from partition
+		const auto advection_source_blockno_from_partition = prev_partition.query(source_blockid);
+
+		//Get bin from particle buffer
+		const auto surface_flow_source_bin = surface_flow_particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib / config::G_BIN_CAPACITY);
+
+		//Fetch particle id in destination buffer
+		const unsigned int particle_id = particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno_from_partition] * config::G_BIN_CAPACITY + source_pidib];
+		
+		if(surface_flow_mass_transfer_device_buffer != nullptr){
+			surface_flow_mass_transfer_device_buffer[particle_id] = *reinterpret_cast<const int*>(&surface_flow_source_bin.val(_0, source_pidib % config::G_BIN_CAPACITY));
+		}
+	}
+}
+
 __global__ void calculate_center_of_mass(TriangleMesh triangle_mesh, uint32_t vertex_count, float* center_of_mass){
 	const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
 	constexpr int NUM_WARPS		   = (config::DEFAULT_CUDA_BLOCK_SIZE + config::CUDA_WARP_SIZE - 1) / config::CUDA_WARP_SIZE;

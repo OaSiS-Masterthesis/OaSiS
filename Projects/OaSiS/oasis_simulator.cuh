@@ -29,6 +29,7 @@
 #include "marching_cubes.cuh"
 #include "iq.cuh"
 #include "csr_utils.cuh"
+#include "surface_flow.cuh"
 #include "managed_memory.hpp"
 
 #define OUTPUT_TRIANGLE_SHELL_OUTER_POS 1
@@ -181,6 +182,10 @@ struct OasisSimulator {
 	uint32_t* surface_triangle_count;
 	std::vector<std::array<int, 2>> solid_fluid_couplings = {};
 	
+	std::vector<surface_flow_model_t> surface_flow_models = {};
+	std::vector<std::array<int, 2>> surface_flows = {};
+	std::array<std::vector<SurfaceFlowParticleBuffer>, BIN_COUNT> surface_flow_particle_buffers = {};
+	
 	size_t max_surface_vertex_count;
 	size_t max_surface_triangle_count;
 
@@ -209,6 +214,8 @@ struct OasisSimulator {
 	std::vector<float> surface_mean_curvature_transfer_host_buffer = {};
 	std::vector<float> surface_gauss_curvature_transfer_host_buffer = {};
 	std::vector<std::array<float, config::NUM_DIMENSIONS>> surface_vertex_transfer_host_buffer = {};
+	std::vector<float> surface_flow_mass_transfer_host_buffer = {};
+	
 	std::vector<std::array<unsigned int, 3>> surface_triangle_transfer_host_buffer = {};
 	
 	std::vector<uint32_t> triangle_mesh_vertex_counts = {};
@@ -629,6 +636,10 @@ struct OasisSimulator {
 		IO::flush();
 	}
 	
+	void init_surface_flow_model() {
+		surface_flow_models.emplace_back(0);
+	}
+	
 	void init_solid_fluid_coupling(const int solid_id, const int fluid_id) {
 		if(solid_id < particle_counts.size() && fluid_id < particle_counts.size()){
 			bool already_coupled = false;
@@ -644,7 +655,30 @@ struct OasisSimulator {
 				solid_fluid_couplings.push_back({solid_id, fluid_id});
 			}
 		}else{
-			fmt::print("Model ids out of range: {} {} but model count is", solid_id, fluid_id, particle_counts.size());
+			fmt::print("Model ids out of range: {} {} but model count is {}", solid_id, fluid_id, particle_counts.size());
+		}
+	}
+	
+	void init_surface_flow(const int surface_id, const int flow_id) {
+		if(surface_id < particle_counts.size() && flow_id < surface_flow_models.size()){
+			bool already_coupled = false;
+			for(size_t i = 0; i < surface_flows.size(); ++i){
+				if(surface_flows[i][0] == surface_id || surface_flows[i][1] == surface_id){
+					already_coupled = true;
+					fmt::print("Model already has surface_flow: {}<->{} but already exists {}<->{}", surface_id, flow_id, surface_flows[i][0], surface_flows[i][1]);
+					break;
+				}
+			}
+			
+			if(!already_coupled){
+				surface_flows.push_back({surface_id, flow_id});
+				
+				for(int copyid = 0; copyid < BIN_COUNT; ++copyid) {
+					surface_flow_particle_buffers[copyid].emplace_back(SurfaceFlowParticleBuffer(managed_memory_allocator, &managed_memory, particle_counts[surface_id] / config::G_BIN_CAPACITY + config::G_MAX_ACTIVE_BLOCK));
+				}
+			}
+		}else{
+			fmt::print("Model ids out of range: {} {} but model count is {} and surface flow model count is {}", surface_id, flow_id, particle_counts.size(), surface_flow_models.size());
 		}
 	}
 	
@@ -711,12 +745,17 @@ struct OasisSimulator {
 			}
 		);
 	}
+	
+	void update_surface_flow_parameters() {
+	}
 
 	//Sum up count values from in and store them in out
 	template<typename CudaContext>
 	void exclusive_scan(int count, int const* const in, int* out, CudaContext& cu_dev) {
+		std::cout << "Thrust call 0 Start. Count: " << count << std::endl;
 		auto policy = thrust::cuda::par.on(static_cast<cudaStream_t>(cu_dev.stream_compute()));
 		thrust::exclusive_scan(policy, get_device_ptr(in), get_device_ptr(in) + count, get_device_ptr(out));
+		std::cout << "Thrust call 0 End." << std::endl;
 		/*
 		std::size_t temp_storage_bytes = 0;
 		auto plus_op				   = [] __device__(const int& a, const int& b) {
@@ -1366,15 +1405,34 @@ struct OasisSimulator {
 						const int solid_id = solid_fluid_couplings[i][0];
 						const int fluid_id = solid_fluid_couplings[i][1];
 						
+						int surface_flow_model_id = -1;
+						for(int j = 0; j < surface_flows.size(); ++j) {
+							if(surface_flows[j][0] == solid_id){
+								surface_flow_model_id = surface_flows[j][1];
+								break;
+							}
+						}
+						
+						const bool has_surface_flow = (surface_flow_model_id != -1);
+						
+						const size_t lhs_matrix_size_x = (has_surface_flow ? surface_flow_models[surface_flow_model_id].get_lhs_matrix_size_x() : iq::LHS_MATRIX_SIZE_X);
+						const size_t lhs_matrix_size_y = (has_surface_flow ? surface_flow_models[surface_flow_model_id].get_lhs_matrix_size_y() : iq::LHS_MATRIX_SIZE_Y);
+						const size_t lhs_matrix_total_block_count = (has_surface_flow ? surface_flow_models[surface_flow_model_id].get_lhs_matrix_total_block_count() : iq::LHS_MATRIX_TOTAL_BLOCK_COUNT);
+						
+						const size_t solve_velocity_matrix_size_x = (has_surface_flow ? surface_flow_models[surface_flow_model_id].get_solve_velocity_matrix_size_x() : iq::SOLVE_VELOCITY_MATRIX_SIZE_X);
+						const size_t solve_velocity_matrix_size_y = (has_surface_flow ? surface_flow_models[surface_flow_model_id].get_solve_velocity_matrix_size_y() : iq::SOLVE_VELOCITY_MATRIX_SIZE_Y);
+						const size_t solve_velocity_matrix_total_block_count = (has_surface_flow ? surface_flow_models[surface_flow_model_id].get_solve_velocity_matrix_total_block_count() : iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT);
+						
+						
 						//Resize and clear matrix and vectors
-						iq_rhs_array.resize_and_reset(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
-						iq_result_array.resize_and_reset(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
+						iq_rhs_array.resize_and_reset(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME);
+						iq_result_array.resize_and_reset(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME);
 						
-						iq_lhs_rows.resize_and_reset(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1);
+						iq_lhs_rows.resize_and_reset(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1);
 						
-						iq_solve_velocity_result_array.resize_and_reset(3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
+						iq_solve_velocity_result_array.resize_and_reset(3 * solve_velocity_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME);
 						
-						iq_solve_velocity_rows.resize_and_reset(3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1);
+						iq_solve_velocity_rows.resize_and_reset(3 * solve_velocity_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1);
 						
 						iq_lhs_scaling_solid_values.resize_and_reset(exterior_block_count * config::G_BLOCKVOLUME);
 						iq_lhs_scaling_fluid_values.resize_and_reset(exterior_block_count * config::G_BLOCKVOLUME);
@@ -1417,16 +1475,16 @@ struct OasisSimulator {
 						ginkgo_executor->synchronize();
 						
 						//Init rows and columns
-						size_t* lhs_num_blocks_per_row_ptr;
-						size_t* solve_velocity_num_blocks_per_row_ptr;
+						//size_t* lhs_num_blocks_per_row_ptr;
+						//size_t* solve_velocity_num_blocks_per_row_ptr;
 						size_t* temporary_num_blocks_per_row_ptr;
-						std::array<size_t, iq::LHS_MATRIX_SIZE_X>* lhs_block_offsets_per_row_ptr;
-						std::array<size_t, iq::SOLVE_VELOCITY_MATRIX_SIZE_X>* solve_velocity_block_offsets_per_row_ptr;
+						//std::array<size_t, iq::LHS_MATRIX_SIZE_X>* lhs_block_offsets_per_row_ptr;
+						//std::array<size_t, iq::SOLVE_VELOCITY_MATRIX_SIZE_X>* solve_velocity_block_offsets_per_row_ptr;
 						std::array<size_t, 1>* temporary_block_offsets_per_row_ptr;
-						cudaGetSymbolAddress(reinterpret_cast<void**>(&lhs_num_blocks_per_row_ptr), iq::lhs_num_blocks_per_row);
-						cudaGetSymbolAddress(reinterpret_cast<void**>(&solve_velocity_num_blocks_per_row_ptr), iq::solve_velocity_num_blocks_per_row);
-						cudaGetSymbolAddress(reinterpret_cast<void**>(&lhs_block_offsets_per_row_ptr), iq::lhs_block_offsets_per_row);
-						cudaGetSymbolAddress(reinterpret_cast<void**>(&solve_velocity_block_offsets_per_row_ptr), iq::solve_velocity_block_offsets_per_row);
+						//cudaGetSymbolAddress(reinterpret_cast<void**>(&lhs_num_blocks_per_row_ptr), iq::lhs_num_blocks_per_row);
+						//cudaGetSymbolAddress(reinterpret_cast<void**>(&solve_velocity_num_blocks_per_row_ptr), iq::solve_velocity_num_blocks_per_row);
+						//cudaGetSymbolAddress(reinterpret_cast<void**>(&lhs_block_offsets_per_row_ptr), iq::lhs_block_offsets_per_row);
+						//cudaGetSymbolAddress(reinterpret_cast<void**>(&solve_velocity_block_offsets_per_row_ptr), iq::solve_velocity_block_offsets_per_row);
 						cudaGetSymbolAddress(reinterpret_cast<void**>(&temporary_num_blocks_per_row_ptr), iq::temporary_num_blocks_per_row);
 						cudaGetSymbolAddress(reinterpret_cast<void**>(&temporary_block_offsets_per_row_ptr), iq::temporary_block_offsets_per_row);
 						//cu_dev.compute_launch({coupling_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::clear_iq_system<iq::LHS_MATRIX_SIZE_X, iq::LHS_MATRIX_SIZE_Y, iq::NUM_ROWS_PER_BLOCK, iq::NUM_COLUMNS_PER_BLOCK, 1, Partition<1>>, lhs_num_blocks_per_row_ptr, lhs_block_offsets_per_row_ptr, static_cast<uint32_t>(coupling_block_count), static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_lhs_rows.get_data(), iq_lhs_columns.get_data(), iq_lhs_values.get_data());
@@ -1473,106 +1531,115 @@ struct OasisSimulator {
 						
 						cu_dev.syncStream<streamIdx::COMPUTE>();
 						
-						//IQ-System create
-						/*
-							Creates single arrays for composition of left side, right side and solve velocity matrix (G^s, S^s, M^s, G^f, S^f, M^f, H^s, H^f, B, p^s, p^f, v^s, v^f).
-							//NOTE: Storing H^T instead H and dt * M^-1 instead M and S/dt instead S.
-							RHS = {
-								p^s
-								p^f
-								-
-								-
-							}
-							SOLVE_VELOCITY_RESULT = {
-								v^s
-								v^f
-								-
-								-
-							}
-						*/
-						match(particle_bins[rollid][solid_id], particle_bins[rollid][fluid_id])([this, &cu_dev, &coupling_block_count, &solid_id, &fluid_id](auto& particle_buffer_solid, auto& particle_buffer_fluid) {
-							auto& next_particle_buffer_solid = get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]);
-							auto& next_particle_buffer_fluid = get<typename std::decay_t<decltype(particle_buffer_fluid)>>(particle_bins[(rollid + 1) % BIN_COUNT][fluid_id]);
-							
-							particle_buffer_solid.bin_offsets = particle_buffer_solid.bin_offsets_virtual;
-							particle_buffer_fluid.bin_offsets = particle_buffer_fluid.bin_offsets_virtual;
-							next_particle_buffer_solid.particle_bucket_sizes = next_particle_buffer_solid.particle_bucket_sizes_virtual;
-							next_particle_buffer_fluid.particle_bucket_sizes = next_particle_buffer_fluid.particle_bucket_sizes_virtual;
-							next_particle_buffer_solid.blockbuckets = next_particle_buffer_solid.blockbuckets_virtual;
-							next_particle_buffer_fluid.blockbuckets = next_particle_buffer_fluid.blockbuckets_virtual;
-							managed_memory.acquire<MemoryType::DEVICE>(
-								  particle_buffer_solid.acquire()
-								, particle_buffer_fluid.acquire()
-								, next_particle_buffer_solid.acquire()
-								, next_particle_buffer_fluid.acquire()
-								, grid_blocks[0][solid_id].acquire()
-								, grid_blocks[0][fluid_id].acquire()
-								, surface_particle_buffers[solid_id].acquire()
-								, surface_particle_buffers[fluid_id].acquire()
-								, reinterpret_cast<void**>(&particle_buffer_solid.bin_offsets)
-								, reinterpret_cast<void**>(&particle_buffer_fluid.bin_offsets)
-								, reinterpret_cast<void**>(&next_particle_buffer_solid.particle_bucket_sizes)
-								, reinterpret_cast<void**>(&next_particle_buffer_fluid.particle_bucket_sizes)
-								, reinterpret_cast<void**>(&next_particle_buffer_solid.blockbuckets)
-								, reinterpret_cast<void**>(&next_particle_buffer_fluid.blockbuckets)
-							);
-							
-							iq::IQCreatePointers pointers;
-							pointers.scaling_solid = iq_lhs_scaling_solid_values.get_data();
-							pointers.scaling_fluid = iq_lhs_scaling_fluid_values.get_data();
-							
-							pointers.mass_solid = iq_lhs_mass_solid_values.get_data();
-							pointers.mass_fluid = iq_lhs_mass_fluid_values.get_data();
-							
-							pointers.gradient_solid_rows = iq_lhs_3_1_rows.get_const_data();
-							pointers.gradient_solid_columns = iq_lhs_3_1_columns.get_const_data();
-							pointers.gradient_solid_values = iq_lhs_gradient_solid_values.get_data();
-							pointers.gradient_fluid_rows = iq_lhs_3_1_rows.get_const_data();
-							pointers.gradient_fluid_columns = iq_lhs_3_1_columns.get_const_data();
-							pointers.gradient_fluid_values = iq_lhs_gradient_fluid_values.get_data();
-							
-							pointers.coupling_solid_rows = iq_lhs_3_1_rows.get_const_data();
-							pointers.coupling_solid_columns = iq_lhs_3_1_columns.get_const_data();
-							pointers.coupling_solid_values = iq_lhs_coupling_solid_values.get_data();
-							pointers.coupling_fluid_rows = iq_lhs_3_1_rows.get_const_data();
-							pointers.coupling_fluid_columns = iq_lhs_3_1_columns.get_const_data();
-							pointers.coupling_fluid_values = iq_lhs_coupling_fluid_values.get_data();
-							
-							pointers.boundary_fluid_rows = iq_lhs_3_1_rows.get_const_data();
-							pointers.boundary_fluid_columns = iq_lhs_3_1_columns.get_const_data();
-							pointers.boundary_fluid_values = iq_lhs_boundary_fluid_values.get_data();
-							
-							pointers.iq_rhs = iq_rhs_array.get_data();
-							pointers.iq_solve_velocity_result = iq_solve_velocity_result_array.get_data();
-							
-							cu_dev.compute_launch({coupling_block_count, iq::BLOCK_SIZE}, iq::create_iq_system, static_cast<uint32_t>(exterior_block_count), dt, particle_buffer_solid, particle_buffer_fluid, next_particle_buffer_solid, next_particle_buffer_fluid, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], surface_particle_buffers[solid_id], surface_particle_buffers[fluid_id], pointers);
-							
-							managed_memory.release(
-								  particle_buffer_solid.release()
-								, particle_buffer_fluid.release()
-								, next_particle_buffer_solid.release()
-								, next_particle_buffer_fluid.release()
-								, grid_blocks[0][solid_id].release()
-								, grid_blocks[0][fluid_id].release()
-								, surface_particle_buffers[solid_id].release()
-								, surface_particle_buffers[fluid_id].release()
-								, particle_buffer_solid.bin_offsets_virtual
-								, particle_buffer_fluid.bin_offsets_virtual
-								, next_particle_buffer_solid.particle_bucket_sizes_virtual
-								, next_particle_buffer_fluid.particle_bucket_sizes_virtual
-								, next_particle_buffer_solid.blockbuckets_virtual
-								, next_particle_buffer_fluid.blockbuckets_virtual
-							);
-						});
+						
+						
+						//If we have a surface flow model, let it generate its matrices
+						if(has_surface_flow){
+							surface_flow_models[surface_flow_model_id].fill_matrices();
+						}else{
+							//IQ-System create
+							/*
+								Creates single arrays for composition of left side, right side and solve velocity matrix (G^s, S^s, M^s, G^f, S^f, M^f, H^s, H^f, B, p^s, p^f, v^s, v^f).
+								//NOTE: Storing H^T instead H and dt * M^-1 instead M and S/dt instead S.
+								RHS = {
+									p^s
+									p^f
+									-
+									-
+								}
+								SOLVE_VELOCITY_RESULT = {
+									v^s
+									v^f
+									-
+									-
+								}
+							*/
+							match(particle_bins[rollid][solid_id], particle_bins[rollid][fluid_id])([this, &cu_dev, &coupling_block_count, &solid_id, &fluid_id](auto& particle_buffer_solid, auto& particle_buffer_fluid) {
+								auto& next_particle_buffer_solid = get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]);
+								auto& next_particle_buffer_fluid = get<typename std::decay_t<decltype(particle_buffer_fluid)>>(particle_bins[(rollid + 1) % BIN_COUNT][fluid_id]);
+								
+								particle_buffer_solid.bin_offsets = particle_buffer_solid.bin_offsets_virtual;
+								particle_buffer_fluid.bin_offsets = particle_buffer_fluid.bin_offsets_virtual;
+								next_particle_buffer_solid.particle_bucket_sizes = next_particle_buffer_solid.particle_bucket_sizes_virtual;
+								next_particle_buffer_fluid.particle_bucket_sizes = next_particle_buffer_fluid.particle_bucket_sizes_virtual;
+								next_particle_buffer_solid.blockbuckets = next_particle_buffer_solid.blockbuckets_virtual;
+								next_particle_buffer_fluid.blockbuckets = next_particle_buffer_fluid.blockbuckets_virtual;
+								managed_memory.acquire<MemoryType::DEVICE>(
+									  particle_buffer_solid.acquire()
+									, particle_buffer_fluid.acquire()
+									, next_particle_buffer_solid.acquire()
+									, next_particle_buffer_fluid.acquire()
+									, grid_blocks[0][solid_id].acquire()
+									, grid_blocks[0][fluid_id].acquire()
+									, surface_particle_buffers[solid_id].acquire()
+									, surface_particle_buffers[fluid_id].acquire()
+									, reinterpret_cast<void**>(&particle_buffer_solid.bin_offsets)
+									, reinterpret_cast<void**>(&particle_buffer_fluid.bin_offsets)
+									, reinterpret_cast<void**>(&next_particle_buffer_solid.particle_bucket_sizes)
+									, reinterpret_cast<void**>(&next_particle_buffer_fluid.particle_bucket_sizes)
+									, reinterpret_cast<void**>(&next_particle_buffer_solid.blockbuckets)
+									, reinterpret_cast<void**>(&next_particle_buffer_fluid.blockbuckets)
+								);
+								
+								iq::IQCreatePointers pointers;
+								pointers.scaling_solid = iq_lhs_scaling_solid_values.get_data();
+								pointers.scaling_fluid = iq_lhs_scaling_fluid_values.get_data();
+								
+								pointers.mass_solid = iq_lhs_mass_solid_values.get_data();
+								pointers.mass_fluid = iq_lhs_mass_fluid_values.get_data();
+								
+								pointers.gradient_solid_rows = iq_lhs_3_1_rows.get_const_data();
+								pointers.gradient_solid_columns = iq_lhs_3_1_columns.get_const_data();
+								pointers.gradient_solid_values = iq_lhs_gradient_solid_values.get_data();
+								pointers.gradient_fluid_rows = iq_lhs_3_1_rows.get_const_data();
+								pointers.gradient_fluid_columns = iq_lhs_3_1_columns.get_const_data();
+								pointers.gradient_fluid_values = iq_lhs_gradient_fluid_values.get_data();
+								
+								pointers.coupling_solid_rows = iq_lhs_3_1_rows.get_const_data();
+								pointers.coupling_solid_columns = iq_lhs_3_1_columns.get_const_data();
+								pointers.coupling_solid_values = iq_lhs_coupling_solid_values.get_data();
+								pointers.coupling_fluid_rows = iq_lhs_3_1_rows.get_const_data();
+								pointers.coupling_fluid_columns = iq_lhs_3_1_columns.get_const_data();
+								pointers.coupling_fluid_values = iq_lhs_coupling_fluid_values.get_data();
+								
+								pointers.boundary_fluid_rows = iq_lhs_3_1_rows.get_const_data();
+								pointers.boundary_fluid_columns = iq_lhs_3_1_columns.get_const_data();
+								pointers.boundary_fluid_values = iq_lhs_boundary_fluid_values.get_data();
+								
+								pointers.iq_rhs = iq_rhs_array.get_data();
+								pointers.iq_solve_velocity_result = iq_solve_velocity_result_array.get_data();
+								
+								cu_dev.compute_launch({coupling_block_count, iq::BLOCK_SIZE}, iq::create_iq_system, static_cast<uint32_t>(exterior_block_count), dt, particle_buffer_solid, particle_buffer_fluid, next_particle_buffer_solid, next_particle_buffer_fluid, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], surface_particle_buffers[solid_id], surface_particle_buffers[fluid_id], pointers);
+								
+								managed_memory.release(
+									  particle_buffer_solid.release()
+									, particle_buffer_fluid.release()
+									, next_particle_buffer_solid.release()
+									, next_particle_buffer_fluid.release()
+									, grid_blocks[0][solid_id].release()
+									, grid_blocks[0][fluid_id].release()
+									, surface_particle_buffers[solid_id].release()
+									, surface_particle_buffers[fluid_id].release()
+									, particle_buffer_solid.bin_offsets_virtual
+									, particle_buffer_fluid.bin_offsets_virtual
+									, next_particle_buffer_solid.particle_bucket_sizes_virtual
+									, next_particle_buffer_fluid.particle_bucket_sizes_virtual
+									, next_particle_buffer_solid.blockbuckets_virtual
+									, next_particle_buffer_fluid.blockbuckets_virtual
+								);
+							});
+						}
 						
 						cu_dev.syncStream<streamIdx::COMPUTE>();
 						
 						constexpr size_t NUM_TEMPORARY_MATRICES = 1;
-						std::array<std::shared_ptr<gko::matrix::Csr<float, int>>, iq::LHS_MATRIX_TOTAL_BLOCK_COUNT> iq_lhs_parts;
-						std::array<std::shared_ptr<gko::matrix::Csr<float, int>>, iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT> iq_solve_velocity_parts;
+						std::array<std::shared_ptr<gko::matrix::Csr<float, int>>, lhs_matrix_total_block_count> iq_lhs_parts;
+						std::array<std::shared_ptr<gko::matrix::Csr<float, int>>, solve_velocity_matrix_total_block_count> iq_solve_velocity_parts;
 						std::array<std::shared_ptr<gko::matrix::Csr<float, int>>, NUM_TEMPORARY_MATRICES> temporary_matrices;
 						
-						for(size_t temporary_block = 0; temporary_block < iq::LHS_MATRIX_TOTAL_BLOCK_COUNT; ++temporary_block){
+						std::array<std::shared_ptr<gko::matrix::Dense<float>>, lhs_matrix_size_y> iq_rhs_parts;
+						
+						for(size_t temporary_block = 0; temporary_block < lhs_matrix_total_block_count; ++temporary_block){
 							iq_lhs_parts[temporary_block] = gko::share(
 								gko::matrix::Csr<float, int>::create(
 									  ginkgo_executor
@@ -1581,7 +1648,7 @@ struct OasisSimulator {
 							);
 						}
 						
-						for(size_t temporary_block = 0; temporary_block < iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT; ++temporary_block){
+						for(size_t temporary_block = 0; temporary_block < solve_velocity_matrix_total_block_count; ++temporary_block){
 							iq_solve_velocity_parts[temporary_block] = gko::share(
 								gko::matrix::Csr<float, int>::create(
 									  ginkgo_executor
@@ -1599,320 +1666,312 @@ struct OasisSimulator {
 							);
 						}
 						
-						const std::shared_ptr<const gko::matrix::Diagonal<float>> scaling_solid = gko::share(
-							gko::matrix::Diagonal<float>::create_const(
-								  ginkgo_executor
-								, exterior_block_count * config::G_BLOCKVOLUME
-								, iq_lhs_scaling_solid_values.as_const_view()
-							)
-						);
-						const std::shared_ptr<const gko::matrix::Diagonal<float>> scaling_fluid = gko::share(
-							gko::matrix::Diagonal<float>::create_const(
-								  ginkgo_executor
-								, exterior_block_count * config::G_BLOCKVOLUME
-								, iq_lhs_scaling_fluid_values.as_const_view()
-							)
-						);
-						
-						const std::shared_ptr<const gko::matrix::Diagonal<float>> mass_solid = gko::share(
-							gko::matrix::Diagonal<float>::create_const(
-								  ginkgo_executor
-								, 3 * exterior_block_count * config::G_BLOCKVOLUME
-								, iq_lhs_mass_solid_values.as_const_view()
-							)
-						);
-						const std::shared_ptr<const gko::matrix::Diagonal<float>> mass_fluid = gko::share(
-							gko::matrix::Diagonal<float>::create_const(
-								  ginkgo_executor
-								, 3 * exterior_block_count * config::G_BLOCKVOLUME
-								, iq_lhs_mass_fluid_values.as_const_view()
-							)
-						);
-						
-						std::shared_ptr<gko::matrix::Csr<float, int>> gradient_solid = gko::share(
-							gko::matrix::Csr<float, int>::create(
-								  ginkgo_executor
-								, gko::dim<2>(3 * exterior_block_count * config::G_BLOCKVOLUME, exterior_block_count * config::G_BLOCKVOLUME)
-								, iq_lhs_gradient_solid_values.as_view()
-								, iq_lhs_3_1_columns.as_view()
-								, iq_lhs_3_1_rows.as_view()
-							)
-						);
-						std::shared_ptr<gko::matrix::Csr<float, int>> gradient_fluid = gko::share(
-							gko::matrix::Csr<float, int>::create(
-								  ginkgo_executor
-								, gko::dim<2>(3 * exterior_block_count * config::G_BLOCKVOLUME, exterior_block_count * config::G_BLOCKVOLUME)
-								, iq_lhs_gradient_fluid_values.as_view()
-								, iq_lhs_3_1_columns.as_view()
-								, iq_lhs_3_1_rows.as_view()
-							)
-						);
-						
-						std::shared_ptr<gko::matrix::Csr<float, int>> coupling_solid = gko::share(
-							gko::matrix::Csr<float, int>::create(
-								  ginkgo_executor
-								, gko::dim<2>(3 * exterior_block_count * config::G_BLOCKVOLUME, exterior_block_count * config::G_BLOCKVOLUME)
-								, iq_lhs_coupling_solid_values.as_view()
-								, iq_lhs_3_1_columns.as_view()
-								, iq_lhs_3_1_rows.as_view()
-							)
-						);
-						std::shared_ptr<gko::matrix::Csr<float, int>> coupling_fluid = gko::share(
-							gko::matrix::Csr<float, int>::create(
-								  ginkgo_executor
-								, gko::dim<2>(3 * exterior_block_count * config::G_BLOCKVOLUME, exterior_block_count * config::G_BLOCKVOLUME)
-								, iq_lhs_coupling_fluid_values.as_view()
-								, iq_lhs_3_1_columns.as_view()
-								, iq_lhs_3_1_rows.as_view()
-							)
-						);
-						
-						std::shared_ptr<gko::matrix::Csr<float, int>> boundary_fluid = gko::share(
-							gko::matrix::Csr<float, int>::create(
-								  ginkgo_executor
-								, gko::dim<2>(3 * exterior_block_count * config::G_BLOCKVOLUME, exterior_block_count * config::G_BLOCKVOLUME)
-								, iq_lhs_boundary_fluid_values.as_view()
-								, iq_lhs_3_1_columns.as_view()
-								, iq_lhs_3_1_rows.as_view()
-							)
-						);
-						
-						std::shared_ptr<gko::matrix::Dense<float>> pressure_solid = gko::share(
-							gko::matrix::Dense<float>::create(
-								  ginkgo_executor
-								, gko::dim<2>(exterior_block_count * config::G_BLOCKVOLUME, 1)
-								, std::move(gko::array<float>::view(ginkgo_executor, exterior_block_count * config::G_BLOCKVOLUME, iq_rhs_array.get_data()))
-								, 1
-							)
-						);
-						
-						std::shared_ptr<gko::matrix::Dense<float>> pressure_fluid = gko::share(
-							gko::matrix::Dense<float>::create(
-								  ginkgo_executor
-								, gko::dim<2>(exterior_block_count * config::G_BLOCKVOLUME, 1)
-								, std::move(gko::array<float>::view(ginkgo_executor, exterior_block_count * config::G_BLOCKVOLUME, iq_rhs_array.get_data() + 1 * exterior_block_count * config::G_BLOCKVOLUME))
-								, 1
-							)
-						);
-						
-						std::shared_ptr<gko::matrix::Dense<float>> iq_rhs_2 = gko::share(
-							gko::matrix::Dense<float>::create(
-								  ginkgo_executor
-								, gko::dim<2>(exterior_block_count * config::G_BLOCKVOLUME, 1)
-								, std::move(gko::array<float>::view(ginkgo_executor, exterior_block_count * config::G_BLOCKVOLUME, iq_rhs_array.get_data() + 2 * exterior_block_count * config::G_BLOCKVOLUME))
-								, 1
-							)
-						);
-						
-						std::shared_ptr<gko::matrix::Dense<float>> iq_rhs_3 = gko::share(
-							gko::matrix::Dense<float>::create(
-								  ginkgo_executor
-								, gko::dim<2>(exterior_block_count * config::G_BLOCKVOLUME, 1)
-								, std::move(gko::array<float>::view(ginkgo_executor, exterior_block_count * config::G_BLOCKVOLUME, iq_rhs_array.get_data() + 3 * exterior_block_count * config::G_BLOCKVOLUME))
-								, 1
-							)
-						);
-						
-						std::shared_ptr<gko::matrix::Dense<float>> velocity_fluid = gko::share(
-							gko::matrix::Dense<float>::create(
-								  ginkgo_executor
-								, gko::dim<2>(3 * exterior_block_count * config::G_BLOCKVOLUME, 1)
-								, std::move(gko::array<float>::view(ginkgo_executor, 3 * exterior_block_count * config::G_BLOCKVOLUME, iq_solve_velocity_result_array.get_data()))
-								, 1
-							)
-						);
-						
-						std::shared_ptr<gko::matrix::Dense<float>> velocity_solid = gko::share(
-							gko::matrix::Dense<float>::create(
-								  ginkgo_executor
-								, gko::dim<2>(3 * exterior_block_count * config::G_BLOCKVOLUME, 1)
-								, std::move(gko::array<float>::view(ginkgo_executor, 3 * exterior_block_count * config::G_BLOCKVOLUME, iq_solve_velocity_result_array.get_data() + 3 * exterior_block_count * config::G_BLOCKVOLUME))
-								, 1
-							)
-						);
-						
-						const std::shared_ptr<const gko::matrix::Diagonal<float>> gko_identity = gko::share(
-							gko::matrix::Diagonal<float>::create_const(
-								  ginkgo_executor
-								, exterior_block_count * config::G_BLOCKVOLUME
-								, gko_identity_values.as_const_view()
-							)
-						);
+						for(size_t temporary_block = 0; temporary_block < lhs_matrix_size_y; ++temporary_block){
+							iq_rhs_parts[temporary_block] = gko::share(
+								gko::matrix::Dense<float>::create(
+									  ginkgo_executor
+									, std::move(gko::array<float>::view(ginkgo_executor, exterior_block_count * config::G_BLOCKVOLUME, iq_rhs_array.get_data() + temporary_block * exterior_block_count * config::G_BLOCKVOLUME))
+									, 1
+								)
+							);
+						}
 						
 						//FIXME: Using own matrix_matrix_multiplication cause Ginkgos version (which uses CUDA) fails to produce a symmetric matrix for A * A^T
-						//Create solve velocity and rhs
+						//Create system matric components
 						
-						/*
-							rhs[0](p^s) = S^s/dt * p^s - G^s^T * v^s
-							rhs[1](p^f) = S^f/dt * p^f - G^f^T * v^f
-							rhs[2] = B * v^f - b
-							rhs[3] = H^s * v^s - H^f * v^f
-						*/
-						scaling_solid->apply(pressure_solid, pressure_solid);
-						temporary_matrices[0]->copy_from(std::move(gradient_solid->transpose()));
-						temporary_matrices[0]->apply(gko_neg_one_dense, velocity_solid, gko_one_dense, pressure_solid);
-						
-						scaling_fluid->apply(pressure_fluid, pressure_fluid);
-						temporary_matrices[0]->copy_from(std::move(gradient_fluid->transpose()));
-						temporary_matrices[0]->apply(gko_neg_one_dense, velocity_fluid, gko_one_dense, pressure_fluid);
-						
-						temporary_matrices[0]->copy_from(std::move(boundary_fluid->transpose()));
-						temporary_matrices[0]->apply(velocity_fluid, iq_rhs_2);
-						//FIXME: Use b! identity->apply(gko_neg_one_dense, b, gko_one_dense, iq_rhs_2);
-						
-						temporary_matrices[0]->copy_from(std::move(coupling_solid->transpose()));
-						temporary_matrices[0]->apply(velocity_solid, iq_rhs_3);
-						
-						temporary_matrices[0]->copy_from(std::move(coupling_fluid->transpose()));
-						temporary_matrices[0]->apply(gko_neg_one_dense, velocity_fluid, gko_one_dense, iq_rhs_3);
-						
-						/*
-							solve_velocity[0][0] = -dt * M^s^-1 * G^s
-							solve_velocity[0][3] = dt * M^s^-1 * H^s^T
-							solve_velocity[1][1] = -dt * M^f^-1 * G^f
-							solve_velocity[1][2] = -dt * M^f^-1 * B
-							solve_velocity[1][3] = -dt * M^f^-1 * H^f^T
-						*/
-						mass_solid->apply(gradient_solid, iq_solve_velocity_parts[0]);
-						iq_solve_velocity_parts[0]->scale(gko_neg_one_dense);
-						mass_solid->apply(coupling_solid, iq_solve_velocity_parts[1]);
-						mass_fluid->apply(gradient_fluid, iq_solve_velocity_parts[2]);
-						iq_solve_velocity_parts[2]->scale(gko_neg_one_dense);
-						mass_fluid->apply(boundary_fluid, iq_solve_velocity_parts[3]);
-						iq_solve_velocity_parts[3]->scale(gko_neg_one_dense);
-						mass_fluid->apply(coupling_fluid, iq_solve_velocity_parts[4]);
-						iq_solve_velocity_parts[4]->scale(gko_neg_one_dense);
-						
-						//Create lhs
-						
-						/*
-							lhs[0][0] = S^s/dt + dt * G^s^T * M^s^-1 * G^s
-							lhs[0][3] = -dt * G^s^T * M^s^-1 * H^s^T
+						//If we have a surface flow model, it will generate our system
+						if(has_surface_flow){
+							surface_flow_models[surface_flow_model_id].generate_system_matrices();
+						}else{
+							const std::shared_ptr<const gko::matrix::Diagonal<float>> scaling_solid = gko::share(
+								gko::matrix::Diagonal<float>::create_const(
+									  ginkgo_executor
+									, exterior_block_count * config::G_BLOCKVOLUME
+									, iq_lhs_scaling_solid_values.as_const_view()
+								)
+							);
+							const std::shared_ptr<const gko::matrix::Diagonal<float>> scaling_fluid = gko::share(
+								gko::matrix::Diagonal<float>::create_const(
+									  ginkgo_executor
+									, exterior_block_count * config::G_BLOCKVOLUME
+									, iq_lhs_scaling_fluid_values.as_const_view()
+								)
+							);
 							
-						*/
-						temporary_matrices[0]->copy_from(std::move(gradient_solid->transpose()));
-						//mass_solid->rapply(temporary_matrices[0], temporary_matrices[0]);
-						
-						//NOTE: Using iq_lhs_parts[5] and iq_lhs_parts[8] as scratch
-						matrix_matrix_multiplication_a_at_with_diagonal(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, gradient_solid, iq_lhs_parts[0], cu_dev);
-						//matrix_matrix_multiplication_with_diagonal<false>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, temporary_matrices[0], iq_lhs_parts[0], cu_dev);
-						//matrix_matrix_multiplication_with_diagonal<true>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, gradient_solid, iq_lhs_parts[0], cu_dev);
-						//temporary_matrices[0]->apply(gradient_solid, iq_lhs_parts[0]);
-						iq_lhs_parts[5]->copy_from(std::move(scaling_solid));
-						iq_lhs_parts[8]->copy_from(gko_identity);
-						iq_lhs_parts[8]->apply(gko_one_dense, iq_lhs_parts[5], gko_one_dense, iq_lhs_parts[0]);
-						
-						//temporary_matrices[1]->copy_from(std::move(coupling_solid->transpose()));
-						//matrix_matrix_multiplication_with_diagonal<false>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, temporary_matrices[1], iq_lhs_parts[1], cu_dev);
-						matrix_matrix_multiplication_with_diagonal<true>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, coupling_solid, iq_lhs_parts[1], cu_dev);
-						iq_lhs_parts[1]->scale(gko_neg_one_dense);
-						//temporary_matrices[0]->apply(gko_neg_one_dense, coupling_solid, gko_zero_dense, iq_lhs_parts[1]);
-						
-						/*
-							lhs[1][1] = S^f/dt + dt * G^f^T * M^f^-1 * G^f
-							lhs[1][2] = dt * G^f^T * M^f^-1 * B
-							lhs[1][3] = dt * G^f^T * M^f^-1 * H^f^T
+							const std::shared_ptr<const gko::matrix::Diagonal<float>> mass_solid = gko::share(
+								gko::matrix::Diagonal<float>::create_const(
+									  ginkgo_executor
+									, 3 * exterior_block_count * config::G_BLOCKVOLUME
+									, iq_lhs_mass_solid_values.as_const_view()
+								)
+							);
+							const std::shared_ptr<const gko::matrix::Diagonal<float>> mass_fluid = gko::share(
+								gko::matrix::Diagonal<float>::create_const(
+									  ginkgo_executor
+									, 3 * exterior_block_count * config::G_BLOCKVOLUME
+									, iq_lhs_mass_fluid_values.as_const_view()
+								)
+							);
 							
-						*/
-						temporary_matrices[0]->copy_from(std::move(gradient_fluid->transpose()));
-						//mass_fluid->rapply(temporary_matrices[0], temporary_matrices[0]);
+							std::shared_ptr<gko::matrix::Csr<float, int>> gradient_solid = gko::share(
+								gko::matrix::Csr<float, int>::create(
+									  ginkgo_executor
+									, gko::dim<2>(3 * exterior_block_count * config::G_BLOCKVOLUME, exterior_block_count * config::G_BLOCKVOLUME)
+									, iq_lhs_gradient_solid_values.as_view()
+									, iq_lhs_3_1_columns.as_view()
+									, iq_lhs_3_1_rows.as_view()
+								)
+							);
+							std::shared_ptr<gko::matrix::Csr<float, int>> gradient_fluid = gko::share(
+								gko::matrix::Csr<float, int>::create(
+									  ginkgo_executor
+									, gko::dim<2>(3 * exterior_block_count * config::G_BLOCKVOLUME, exterior_block_count * config::G_BLOCKVOLUME)
+									, iq_lhs_gradient_fluid_values.as_view()
+									, iq_lhs_3_1_columns.as_view()
+									, iq_lhs_3_1_rows.as_view()
+								)
+							);
+							
+							std::shared_ptr<gko::matrix::Csr<float, int>> coupling_solid = gko::share(
+								gko::matrix::Csr<float, int>::create(
+									  ginkgo_executor
+									, gko::dim<2>(3 * exterior_block_count * config::G_BLOCKVOLUME, exterior_block_count * config::G_BLOCKVOLUME)
+									, iq_lhs_coupling_solid_values.as_view()
+									, iq_lhs_3_1_columns.as_view()
+									, iq_lhs_3_1_rows.as_view()
+								)
+							);
+							std::shared_ptr<gko::matrix::Csr<float, int>> coupling_fluid = gko::share(
+								gko::matrix::Csr<float, int>::create(
+									  ginkgo_executor
+									, gko::dim<2>(3 * exterior_block_count * config::G_BLOCKVOLUME, exterior_block_count * config::G_BLOCKVOLUME)
+									, iq_lhs_coupling_fluid_values.as_view()
+									, iq_lhs_3_1_columns.as_view()
+									, iq_lhs_3_1_rows.as_view()
+								)
+							);
+							
+							std::shared_ptr<gko::matrix::Csr<float, int>> boundary_fluid = gko::share(
+								gko::matrix::Csr<float, int>::create(
+									  ginkgo_executor
+									, gko::dim<2>(3 * exterior_block_count * config::G_BLOCKVOLUME, exterior_block_count * config::G_BLOCKVOLUME)
+									, iq_lhs_boundary_fluid_values.as_view()
+									, iq_lhs_3_1_columns.as_view()
+									, iq_lhs_3_1_rows.as_view()
+								)
+							);
+							
+							std::shared_ptr<gko::matrix::Dense<float>> velocity_fluid = gko::share(
+								gko::matrix::Dense<float>::create(
+									  ginkgo_executor
+									, gko::dim<2>(3 * exterior_block_count * config::G_BLOCKVOLUME, 1)
+									, std::move(gko::array<float>::view(ginkgo_executor, 3 * exterior_block_count * config::G_BLOCKVOLUME, iq_solve_velocity_result_array.get_data()))
+									, 1
+								)
+							);
+							
+							std::shared_ptr<gko::matrix::Dense<float>> velocity_solid = gko::share(
+								gko::matrix::Dense<float>::create(
+									  ginkgo_executor
+									, gko::dim<2>(3 * exterior_block_count * config::G_BLOCKVOLUME, 1)
+									, std::move(gko::array<float>::view(ginkgo_executor, 3 * exterior_block_count * config::G_BLOCKVOLUME, iq_solve_velocity_result_array.get_data() + 3 * exterior_block_count * config::G_BLOCKVOLUME))
+									, 1
+								)
+							);
+							
+							const std::shared_ptr<const gko::matrix::Diagonal<float>> gko_identity = gko::share(
+								gko::matrix::Diagonal<float>::create_const(
+									  ginkgo_executor
+									, exterior_block_count * config::G_BLOCKVOLUME
+									, gko_identity_values.as_const_view()
+								)
+							);
+							
+							//Create solve velocity and rhs
+							
+							/*
+								solve_velocity[0][0] = -dt * M^s^-1 * G^s
+								solve_velocity[0][3] = dt * M^s^-1 * H^s^T
+								solve_velocity[1][1] = -dt * M^f^-1 * G^f
+								solve_velocity[1][2] = -dt * M^f^-1 * B
+								solve_velocity[1][3] = -dt * M^f^-1 * H^f^T
+							*/
+							mass_solid->apply(gradient_solid, iq_solve_velocity_parts[0]);
+							iq_solve_velocity_parts[0]->scale(gko_neg_one_dense);
+							mass_solid->apply(coupling_solid, iq_solve_velocity_parts[1]);
+							mass_fluid->apply(gradient_fluid, iq_solve_velocity_parts[2]);
+							iq_solve_velocity_parts[2]->scale(gko_neg_one_dense);
+							mass_fluid->apply(boundary_fluid, iq_solve_velocity_parts[3]);
+							iq_solve_velocity_parts[3]->scale(gko_neg_one_dense);
+							mass_fluid->apply(coupling_fluid, iq_solve_velocity_parts[4]);
+							iq_solve_velocity_parts[4]->scale(gko_neg_one_dense);
+							
+							/*
+								rhs[0](p^s) = S^s/dt * p^s - G^s^T * v^s
+								rhs[1](p^f) = S^f/dt * p^f - G^f^T * v^f
+								rhs[2] = B * v^f - b
+								rhs[3] = H^s * v^s - H^f * v^f
+							*/
+							scaling_solid->apply(iq_rhs_parts[0], iq_rhs_parts[0]);
+							temporary_matrices[0]->copy_from(std::move(gradient_solid->transpose()));
+							temporary_matrices[0]->apply(gko_neg_one_dense, velocity_solid, gko_one_dense, iq_rhs_parts[0]);
+							
+							scaling_fluid->apply(iq_rhs_parts[1], iq_rhs_parts[1]);
+							temporary_matrices[0]->copy_from(std::move(gradient_fluid->transpose()));
+							temporary_matrices[0]->apply(gko_neg_one_dense, velocity_fluid, gko_one_dense, iq_rhs_parts[1]);
+							
+							temporary_matrices[0]->copy_from(std::move(boundary_fluid->transpose()));
+							temporary_matrices[0]->apply(velocity_fluid, iq_rhs_parts[2]);
+							//FIXME: Use b! identity->apply(gko_neg_one_dense, b, gko_one_dense, iq_rhs_parts[2]);
+							
+							temporary_matrices[0]->copy_from(std::move(coupling_solid->transpose()));
+							temporary_matrices[0]->apply(velocity_solid, iq_rhs_parts[3]);
+							
+							temporary_matrices[0]->copy_from(std::move(coupling_fluid->transpose()));
+							temporary_matrices[0]->apply(gko_neg_one_dense, velocity_fluid, gko_one_dense, iq_rhs_parts[3]);
+							
+							//Create lhs
+							
+							/*
+								lhs[0][0] = S^s/dt + dt * G^s^T * M^s^-1 * G^s
+								lhs[0][3] = -dt * G^s^T * M^s^-1 * H^s^T
+								
+							*/
+							temporary_matrices[0]->copy_from(std::move(gradient_solid->transpose()));
+							//mass_solid->rapply(temporary_matrices[0], temporary_matrices[0]);
+							
+							//NOTE: Using iq_lhs_parts[5] and iq_lhs_parts[8] as scratch
+							matrix_matrix_multiplication_a_at_with_diagonal(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, gradient_solid, iq_lhs_parts[0], cu_dev);
+							//matrix_matrix_multiplication_with_diagonal<false>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, temporary_matrices[0], iq_lhs_parts[0], cu_dev);
+							//matrix_matrix_multiplication_with_diagonal<true>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, gradient_solid, iq_lhs_parts[0], cu_dev);
+							//temporary_matrices[0]->apply(gradient_solid, iq_lhs_parts[0]);
+							iq_lhs_parts[5]->copy_from(std::move(scaling_solid));
+							iq_lhs_parts[8]->copy_from(gko_identity);
+							iq_lhs_parts[8]->apply(gko_one_dense, iq_lhs_parts[5], gko_one_dense, iq_lhs_parts[0]);
+							
+							//temporary_matrices[1]->copy_from(std::move(coupling_solid->transpose()));
+							//matrix_matrix_multiplication_with_diagonal<false>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, temporary_matrices[1], iq_lhs_parts[1], cu_dev);
+							matrix_matrix_multiplication_with_diagonal<true>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, coupling_solid, iq_lhs_parts[1], cu_dev);
+							iq_lhs_parts[1]->scale(gko_neg_one_dense);
+							//temporary_matrices[0]->apply(gko_neg_one_dense, coupling_solid, gko_zero_dense, iq_lhs_parts[1]);
+							
+							/*
+								lhs[1][1] = S^f/dt + dt * G^f^T * M^f^-1 * G^f
+								lhs[1][2] = dt * G^f^T * M^f^-1 * B
+								lhs[1][3] = dt * G^f^T * M^f^-1 * H^f^T
+								
+							*/
+							temporary_matrices[0]->copy_from(std::move(gradient_fluid->transpose()));
+							//mass_fluid->rapply(temporary_matrices[0], temporary_matrices[0]);
+							
+							//NOTE: Using iq_lhs_parts[5] and iq_lhs_parts[8] as scratch
+							//NOTE: iq_lhs_parts[8] already set to identity
+							matrix_matrix_multiplication_a_at_with_diagonal(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, gradient_fluid, iq_lhs_parts[2], cu_dev);
+							//matrix_matrix_multiplication_with_diagonal<false>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, temporary_matrices[0], iq_lhs_parts[2], cu_dev);
+							//matrix_matrix_multiplication_with_diagonal<true>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, gradient_fluid, iq_lhs_parts[2], cu_dev);
+							//temporary_matrices[0]->apply(gradient_fluid, iq_lhs_parts[2]);
+							iq_lhs_parts[5]->copy_from(std::move(scaling_fluid));
+							iq_lhs_parts[8]->apply(gko_one_dense, iq_lhs_parts[5], gko_one_dense, iq_lhs_parts[2]);
+							
+							//temporary_matrices[1]->copy_from(std::move(boundary_fluid->transpose()));
+							//matrix_matrix_multiplication_with_diagonal<false>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, temporary_matrices[1], iq_lhs_parts[3], cu_dev);
+							matrix_matrix_multiplication_with_diagonal<true>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, boundary_fluid, iq_lhs_parts[3], cu_dev);
+							//temporary_matrices[0]->apply(boundary_fluid, iq_lhs_parts[3]);
+							
+							//temporary_matrices[1]->copy_from(std::move(coupling_fluid->transpose()));
+							//matrix_matrix_multiplication_with_diagonal<false>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, temporary_matrices[1], iq_lhs_parts[4], cu_dev);
+							matrix_matrix_multiplication_with_diagonal<true>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, coupling_fluid, iq_lhs_parts[4], cu_dev);
+							//temporary_matrices[0]->apply(coupling_fluid, iq_lhs_parts[4]);
+							
+							/*
+								lhs[2][3] = dt * B^T * M^f^-1 * H^f^T
+								lhs[2][2] = dt * B^T * M^f^-1 * B
+							*/
+							temporary_matrices[0]->copy_from(std::move(boundary_fluid->transpose()));
+							//mass_fluid->rapply(temporary_matrices[0], temporary_matrices[0]);
+							
+							//NOTE: temporary_matrices[1] already set to coupling_fluid->transpose()
+							//matrix_matrix_multiplication_with_diagonal<false>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, temporary_matrices[1], iq_lhs_parts[7], cu_dev);
+							matrix_matrix_multiplication_with_diagonal<true>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, coupling_fluid, iq_lhs_parts[7], cu_dev);
+							//temporary_matrices[0]->apply(coupling_fluid, iq_lhs_parts[7]);
+							
+							matrix_matrix_multiplication_a_at_with_diagonal(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, boundary_fluid, iq_lhs_parts[6], cu_dev);
+							//matrix_matrix_multiplication_with_diagonal<false>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, temporary_matrices[0], iq_lhs_parts[6], cu_dev);
+							//matrix_matrix_multiplication_with_diagonal<true>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, boundary_fluid, iq_lhs_parts[6], cu_dev);
+							//temporary_matrices[0]->apply(boundary_fluid, iq_lhs_parts[6]);
+							
+							
+							
+							/*
+								lhs[3][3] = dt * H^s * M^s^-1 * H^s^T
+							*/
+							temporary_matrices[0]->copy_from(std::move(coupling_solid->transpose()));
+							//mass_solid->rapply(temporary_matrices[0], temporary_matrices[0]);
+							
+							matrix_matrix_multiplication_a_at_with_diagonal(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, coupling_solid, iq_lhs_parts[11], cu_dev);
+							//matrix_matrix_multiplication_with_diagonal<false>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, temporary_matrices[0], iq_lhs_parts[11], cu_dev);
+							//matrix_matrix_multiplication_with_diagonal<true>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, coupling_solid, iq_lhs_parts[11], cu_dev);
+							//temporary_matrices[0]->apply(coupling_solid, iq_lhs_parts[11]);
+							
+							/*
+								lhs[3][3] = dt * H^f * M^f^-1 * H^f^T
+							*/
+							temporary_matrices[0]->copy_from(std::move(coupling_fluid->transpose()));
+							//mass_fluid->rapply(temporary_matrices[0], temporary_matrices[0]);
+							
+							//NOTE: Using iq_lhs_parts[5] and iq_lhs_parts[8] as scratch
+							//NOTE: iq_lhs_parts[8] already set to identity
+							matrix_matrix_multiplication_a_at_with_diagonal(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, coupling_fluid, iq_lhs_parts[5], cu_dev);
+							//matrix_matrix_multiplication_with_diagonal<false>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, temporary_matrices[0], iq_lhs_parts[5], cu_dev);
+							//matrix_matrix_multiplication_with_diagonal<true>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, coupling_fluid, iq_lhs_parts[5], cu_dev);
+							
+							iq_lhs_parts[8]->apply(gko_one_dense, iq_lhs_parts[5], gko_one_dense, iq_lhs_parts[11]);
+							//temporary_matrices[0]->apply(gko_one_dense, coupling_fluid, gko_one_dense, iq_lhs_parts[11]);
+							
+							/*
+								Current state:
+								{
+									A11 0   0   A14
+									0   A22 A23 A24
+									0   -   A33 A34
+									-   -   -   A44
+								}
+							*/
+							
+							//Fill transposed
+							/*
+								lhs[2][1] = lhs[1][2]^T
+								lhs[3][0] = lhs[0][3]^T
+								lhs[3][1] = lhs[1][3]^T
+								lhs[3][2] = lhs[2][3]^T
+							*/
+							iq_lhs_parts[5]->copy_from(std::move(iq_lhs_parts[3]->transpose()));
+							iq_lhs_parts[8]->copy_from(std::move(iq_lhs_parts[1]->transpose()));
+							iq_lhs_parts[9]->copy_from(std::move(iq_lhs_parts[4]->transpose()));
+							iq_lhs_parts[10]->copy_from(std::move(iq_lhs_parts[7]->transpose()));
+							
+							ginkgo_executor->synchronize();
 						
-						//NOTE: Using iq_lhs_parts[5] and iq_lhs_parts[8] as scratch
-						//NOTE: iq_lhs_parts[8] already set to identity
-						matrix_matrix_multiplication_a_at_with_diagonal(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, gradient_fluid, iq_lhs_parts[2], cu_dev);
-						//matrix_matrix_multiplication_with_diagonal<false>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, temporary_matrices[0], iq_lhs_parts[2], cu_dev);
-						//matrix_matrix_multiplication_with_diagonal<true>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, gradient_fluid, iq_lhs_parts[2], cu_dev);
-						//temporary_matrices[0]->apply(gradient_fluid, iq_lhs_parts[2]);
-						iq_lhs_parts[5]->copy_from(std::move(scaling_fluid));
-						iq_lhs_parts[8]->apply(gko_one_dense, iq_lhs_parts[5], gko_one_dense, iq_lhs_parts[2]);
-						
-						//temporary_matrices[1]->copy_from(std::move(boundary_fluid->transpose()));
-						//matrix_matrix_multiplication_with_diagonal<false>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, temporary_matrices[1], iq_lhs_parts[3], cu_dev);
-						matrix_matrix_multiplication_with_diagonal<true>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, boundary_fluid, iq_lhs_parts[3], cu_dev);
-						//temporary_matrices[0]->apply(boundary_fluid, iq_lhs_parts[3]);
-						
-						//temporary_matrices[1]->copy_from(std::move(coupling_fluid->transpose()));
-						//matrix_matrix_multiplication_with_diagonal<false>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, temporary_matrices[1], iq_lhs_parts[4], cu_dev);
-						matrix_matrix_multiplication_with_diagonal<true>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, coupling_fluid, iq_lhs_parts[4], cu_dev);
-						//temporary_matrices[0]->apply(coupling_fluid, iq_lhs_parts[4]);
-						
-						/*
-							lhs[2][3] = dt * B^T * M^f^-1 * H^f^T
-							lhs[2][2] = dt * B^T * M^f^-1 * B
-						*/
-						temporary_matrices[0]->copy_from(std::move(boundary_fluid->transpose()));
-						//mass_fluid->rapply(temporary_matrices[0], temporary_matrices[0]);
-						
-						//NOTE: temporary_matrices[1] already set to coupling_fluid->transpose()
-						//matrix_matrix_multiplication_with_diagonal<false>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, temporary_matrices[1], iq_lhs_parts[7], cu_dev);
-						matrix_matrix_multiplication_with_diagonal<true>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, coupling_fluid, iq_lhs_parts[7], cu_dev);
-						//temporary_matrices[0]->apply(coupling_fluid, iq_lhs_parts[7]);
-						
-						matrix_matrix_multiplication_a_at_with_diagonal(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, boundary_fluid, iq_lhs_parts[6], cu_dev);
-						//matrix_matrix_multiplication_with_diagonal<false>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, temporary_matrices[0], iq_lhs_parts[6], cu_dev);
-						//matrix_matrix_multiplication_with_diagonal<true>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, boundary_fluid, iq_lhs_parts[6], cu_dev);
-						//temporary_matrices[0]->apply(boundary_fluid, iq_lhs_parts[6]);
-						
-						
-						
-						/*
-							lhs[3][3] = dt * H^s * M^s^-1 * H^s^T
-						*/
-						temporary_matrices[0]->copy_from(std::move(coupling_solid->transpose()));
-						//mass_solid->rapply(temporary_matrices[0], temporary_matrices[0]);
-						
-						matrix_matrix_multiplication_a_at_with_diagonal(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, coupling_solid, iq_lhs_parts[11], cu_dev);
-						//matrix_matrix_multiplication_with_diagonal<false>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, temporary_matrices[0], iq_lhs_parts[11], cu_dev);
-						//matrix_matrix_multiplication_with_diagonal<true>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, coupling_solid, iq_lhs_parts[11], cu_dev);
-						//temporary_matrices[0]->apply(coupling_solid, iq_lhs_parts[11]);
-						
-						/*
-							lhs[3][3] = dt * H^f * M^f^-1 * H^f^T
-						*/
-						temporary_matrices[0]->copy_from(std::move(coupling_fluid->transpose()));
-						//mass_fluid->rapply(temporary_matrices[0], temporary_matrices[0]);
-						
-						//NOTE: Using iq_lhs_parts[5] and iq_lhs_parts[8] as scratch
-						//NOTE: iq_lhs_parts[8] already set to identity
-						matrix_matrix_multiplication_a_at_with_diagonal(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, coupling_fluid, iq_lhs_parts[5], cu_dev);
-						//matrix_matrix_multiplication_with_diagonal<false>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, temporary_matrices[0], iq_lhs_parts[5], cu_dev);
-						//matrix_matrix_multiplication_with_diagonal<true>(exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, coupling_fluid, iq_lhs_parts[5], cu_dev);
-						
-						iq_lhs_parts[8]->apply(gko_one_dense, iq_lhs_parts[5], gko_one_dense, iq_lhs_parts[11]);
-						//temporary_matrices[0]->apply(gko_one_dense, coupling_fluid, gko_one_dense, iq_lhs_parts[11]);
-						
-						/*
-							Current state:
-							{
-								A11 0   0   A14
-								0   A22 A23 A24
-								0   -   A33 A34
-								-   -   -   A44
-							}
-						*/
-						
-						//Fill transposed
-						/*
-							lhs[2][1] = lhs[1][2]^T
-							lhs[3][0] = lhs[0][3]^T
-							lhs[3][1] = lhs[1][3]^T
-							lhs[3][2] = lhs[2][3]^T
-						*/
-						iq_lhs_parts[5]->copy_from(std::move(iq_lhs_parts[3]->transpose()));
-						iq_lhs_parts[8]->copy_from(std::move(iq_lhs_parts[1]->transpose()));
-						iq_lhs_parts[9]->copy_from(std::move(iq_lhs_parts[4]->transpose()));
-						iq_lhs_parts[10]->copy_from(std::move(iq_lhs_parts[7]->transpose()));
-						
-						ginkgo_executor->synchronize();
+						}
 						
 						//Move from temporary to actual arrays
 						{
-							//Fill arrays
-							std::array<const int*, iq::LHS_MATRIX_TOTAL_BLOCK_COUNT> iq_lhs_parts_rows;
-							std::array<const int*, iq::LHS_MATRIX_TOTAL_BLOCK_COUNT> iq_lhs_parts_columns;
-							std::array<const float*, iq::LHS_MATRIX_TOTAL_BLOCK_COUNT> iq_lhs_parts_values;
+							size_t* lhs_num_blocks_per_row_ptr;
+							std::array<size_t, lhs_matrix_size_x>* lhs_block_offsets_per_row_ptr;
+							if(has_surface_flow){
+								lhs_num_blocks_per_row_ptr = surface_flow_models[surface_flow_model_id].get_lhs_num_blocks_per_row_ptr();
+								lhs_block_offsets_per_row_ptr = surface_flow_models[surface_flow_model_id].get_lhs_block_offsets_per_row_ptr();
+							}else{
+								cudaGetSymbolAddress(reinterpret_cast<void**>(&lhs_num_blocks_per_row_ptr), iq::lhs_num_blocks_per_row);
+								cudaGetSymbolAddress(reinterpret_cast<void**>(&lhs_block_offsets_per_row_ptr), iq::lhs_block_offsets_per_row);
+							}
 							
-							for(size_t j = 0; j < iq::LHS_MATRIX_TOTAL_BLOCK_COUNT; ++j){
+							//Fill arrays
+							std::array<const int*, lhs_matrix_total_block_count> iq_lhs_parts_rows;
+							std::array<const int*, lhs_matrix_total_block_count> iq_lhs_parts_columns;
+							std::array<const float*, lhs_matrix_total_block_count> iq_lhs_parts_values;
+							
+							for(size_t j = 0; j < lhs_matrix_total_block_count ++j){
 								iq_lhs_parts_rows[j] = iq_lhs_parts[j]->get_const_row_ptrs();
 								iq_lhs_parts_columns[j] = iq_lhs_parts[j]->get_const_col_idxs();
 								iq_lhs_parts_values[j] = iq_lhs_parts[j]->get_const_values();
@@ -1921,7 +1980,7 @@ struct OasisSimulator {
 							//Verify rows match
 							const size_t row_count = exterior_block_count * config::G_BLOCKVOLUME;
 							size_t lhs_number_of_nonzeros = 0;
-							for(size_t j = 0; j < iq::LHS_MATRIX_TOTAL_BLOCK_COUNT; ++j){
+							for(size_t j = 0; j < lhs_matrix_total_block_count; ++j){
 								if(iq_lhs_parts[j]->get_size()[0] != row_count){
 									std::cout << "ERROR - Mismatch in row count(" << j << "). Should be " << row_count << " but is " << iq_lhs_parts[j]->get_size()[0] << std::endl;
 								}
@@ -1947,22 +2006,32 @@ struct OasisSimulator {
 							ginkgo_executor->synchronize();
 							
 							//Add rows
-							cu_dev.compute_launch({exterior_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::add_block_rows<iq::LHS_MATRIX_SIZE_Y, iq::NUM_ROWS_PER_BLOCK, 1, iq::LHS_MATRIX_TOTAL_BLOCK_COUNT, Partition<1>>, lhs_num_blocks_per_row_ptr, static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_lhs_parts_rows, iq_lhs_rows.get_data());
+							cu_dev.compute_launch({exterior_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::add_block_rows<lhs_matrix_size_y, iq::NUM_ROWS_PER_BLOCK, 1, lhs_matrix_total_block_count, Partition<1>>, lhs_num_blocks_per_row_ptr, static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_lhs_parts_rows, iq_lhs_rows.get_data());
 							
 							//Scan rows
-							exclusive_scan(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1, iq_lhs_rows.get_data(), iq_lhs_rows.get_data(), cu_dev);
+							exclusive_scan(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1, iq_lhs_rows.get_data(), iq_lhs_rows.get_data(), cu_dev);
 							
 							//Copy columns and values
-							cu_dev.compute_launch({exterior_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::copy_values<iq::LHS_MATRIX_SIZE_X, iq::LHS_MATRIX_SIZE_Y, iq::NUM_ROWS_PER_BLOCK, 1, iq::LHS_MATRIX_TOTAL_BLOCK_COUNT, Partition<1>>, lhs_num_blocks_per_row_ptr, lhs_block_offsets_per_row_ptr, static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_lhs_parts_rows, iq_lhs_parts_columns, iq_lhs_parts_values, iq_lhs_rows.get_const_data(), iq_lhs_columns.get_data(), iq_lhs_values.get_data());
+							cu_dev.compute_launch({exterior_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::copy_values<lhs_matrix_size_x, lhs_matrix_size_y, iq::NUM_ROWS_PER_BLOCK, 1, lhs_matrix_total_block_count, Partition<1>>, lhs_num_blocks_per_row_ptr, lhs_block_offsets_per_row_ptr, static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_lhs_parts_rows, iq_lhs_parts_columns, iq_lhs_parts_values, iq_lhs_rows.get_const_data(), iq_lhs_columns.get_data(), iq_lhs_values.get_data());
 						}
 						
 						{
-							//Fill arrays
-							std::array<const int*, iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT> iq_solve_velocity_parts_rows;
-							std::array<const int*, iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT> iq_solve_velocity_parts_columns;
-							std::array<const float*, iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT> iq_solve_velocity_parts_values;
+							size_t* solve_velocity_num_blocks_per_row_ptr;
+							std::array<size_t, solve_velocity_matrix_size_x>* solve_velocity_block_offsets_per_row_ptr;
+							if(has_surface_flow){
+								solve_velocity_num_blocks_per_row_ptr = surface_flow_models[surface_flow_model_id].get_solve_velocity_num_blocks_per_row_ptr();
+								solve_velocity_block_offsets_per_row_ptr = surface_flow_models[surface_flow_model_id].get_solve_velocity_block_offsets_per_row_ptr();
+							}else{
+								cudaGetSymbolAddress(reinterpret_cast<void**>(&solve_velocity_num_blocks_per_row_ptr), iq::solve_velocity_num_blocks_per_row);
+								cudaGetSymbolAddress(reinterpret_cast<void**>(&solve_velocity_block_offsets_per_row_ptr), iq::solve_velocity_block_offsets_per_row);
+							}
 							
-							for(size_t j = 0; j < iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT; ++j){
+							//Fill arrays
+							std::array<const int*, solve_velocity_matrix_total_block_count> iq_solve_velocity_parts_rows;
+							std::array<const int*, solve_velocity_matrix_total_block_count> iq_solve_velocity_parts_columns;
+							std::array<const float*, solve_velocity_matrix_total_block_count> iq_solve_velocity_parts_values;
+							
+							for(size_t j = 0; j < solve_velocity_matrix_total_block_count; ++j){
 								iq_solve_velocity_parts_rows[j] = iq_solve_velocity_parts[j]->get_const_row_ptrs();
 								iq_solve_velocity_parts_columns[j] = iq_solve_velocity_parts[j]->get_const_col_idxs();
 								iq_solve_velocity_parts_values[j] = iq_solve_velocity_parts[j]->get_const_values();
@@ -1971,7 +2040,7 @@ struct OasisSimulator {
 							//Verify rows match
 							const size_t row_count = 3 * exterior_block_count * config::G_BLOCKVOLUME;
 							size_t solve_velocity_number_of_nonzeros = 0;
-							for(size_t j = 0; j < iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT; ++j){
+							for(size_t j = 0; j < solve_velocity_matrix_total_block_count; ++j){
 								if(iq_solve_velocity_parts[j]->get_size()[0] != row_count){
 									std::cout << "ERROR - Mismatch in row count(" << j << "). Should be " << row_count << " but is " << iq_solve_velocity_parts[j]->get_size()[0] << std::endl;
 								}
@@ -1997,13 +2066,13 @@ struct OasisSimulator {
 							ginkgo_executor->synchronize();
 							
 							//Add rows
-							cu_dev.compute_launch({exterior_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::add_block_rows<iq::SOLVE_VELOCITY_MATRIX_SIZE_Y, iq::NUM_ROWS_PER_BLOCK, 3, iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT, Partition<1>>, solve_velocity_num_blocks_per_row_ptr, static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_solve_velocity_parts_rows, iq_solve_velocity_rows.get_data());
+							cu_dev.compute_launch({exterior_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::add_block_rows<solve_velocity_matrix_size_y, iq::NUM_ROWS_PER_BLOCK, 3, solve_velocity_matrix_total_block_count, Partition<1>>, solve_velocity_num_blocks_per_row_ptr, static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_solve_velocity_parts_rows, iq_solve_velocity_rows.get_data());
 							
 							//Scan rows
-							exclusive_scan(3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1, iq_solve_velocity_rows.get_data(), iq_solve_velocity_rows.get_data(), cu_dev);
+							exclusive_scan(3 * solve_velocity_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1, iq_solve_velocity_rows.get_data(), iq_solve_velocity_rows.get_data(), cu_dev);
 							
 							//Copy columns and values
-							cu_dev.compute_launch({exterior_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::copy_values<iq::SOLVE_VELOCITY_MATRIX_SIZE_X, iq::SOLVE_VELOCITY_MATRIX_SIZE_Y, iq::NUM_ROWS_PER_BLOCK, 3, iq::SOLVE_VELOCITY_MATRIX_TOTAL_BLOCK_COUNT, Partition<1>>, solve_velocity_num_blocks_per_row_ptr, solve_velocity_block_offsets_per_row_ptr, static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_solve_velocity_parts_rows, iq_solve_velocity_parts_columns, iq_solve_velocity_parts_values, iq_solve_velocity_rows.get_const_data(), iq_solve_velocity_columns.get_data(), iq_solve_velocity_values.get_data());
+							cu_dev.compute_launch({exterior_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::copy_values<solve_velocity_matrix_size_x, solve_velocity_matrix_size_y, iq::NUM_ROWS_PER_BLOCK, 3, solve_velocity_matrix_total_block_count, Partition<1>>, solve_velocity_num_blocks_per_row_ptr, solve_velocity_block_offsets_per_row_ptr, static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_solve_velocity_parts_rows, iq_solve_velocity_parts_columns, iq_solve_velocity_parts_values, iq_solve_velocity_rows.get_const_data(), iq_solve_velocity_columns.get_data(), iq_solve_velocity_values.get_data());
 						}
 						
 						cu_dev.syncStream<streamIdx::COMPUTE>();
@@ -2017,7 +2086,7 @@ struct OasisSimulator {
 						const std::shared_ptr<const gko::matrix::Csr<float, int>> iq_lhs = gko::share(
 							gko::matrix::Csr<float, int>::create_const(
 								  ginkgo_executor
-								, gko::dim<2>(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, iq::LHS_MATRIX_SIZE_X * exterior_block_count * config::G_BLOCKVOLUME)
+								, gko::dim<2>(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME, lhs_matrix_size_x * exterior_block_count * config::G_BLOCKVOLUME)
 								, iq_lhs_values.as_const_view()
 								, iq_lhs_columns.as_const_view()
 								, iq_lhs_rows.as_const_view()
@@ -2026,7 +2095,7 @@ struct OasisSimulator {
 						const std::shared_ptr<const gko::matrix::Dense<float>> iq_rhs = gko::share(
 							gko::matrix::Dense<float>::create_const(
 								  ginkgo_executor
-								, gko::dim<2>(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, 1)
+								, gko::dim<2>(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME, 1)
 								, iq_rhs_array.as_const_view()
 								, 1
 							)
@@ -2034,7 +2103,7 @@ struct OasisSimulator {
 						std::shared_ptr<gko::matrix::Dense<float>> iq_result = gko::share(
 							gko::matrix::Dense<float>::create(
 								  ginkgo_executor
-								, gko::dim<2>(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, 1)
+								, gko::dim<2>(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME, 1)
 								, std::move(iq_result_array.as_view())
 								, 1
 							)
@@ -2043,7 +2112,7 @@ struct OasisSimulator {
 						const std::shared_ptr<const gko::matrix::Csr<float, int>> iq_solve_velocity = gko::share(
 							gko::matrix::Csr<float, int>::create_const(
 								  ginkgo_executor
-								, gko::dim<2>(3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, iq::SOLVE_VELOCITY_MATRIX_SIZE_X * exterior_block_count * config::G_BLOCKVOLUME)
+								, gko::dim<2>(3 * solve_velocity_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME, solve_velocity_matrix_size_x * exterior_block_count * config::G_BLOCKVOLUME)
 								, iq_solve_velocity_values.as_const_view()
 								, iq_solve_velocity_columns.as_const_view()
 								, iq_solve_velocity_rows.as_const_view()
@@ -2052,7 +2121,7 @@ struct OasisSimulator {
 						std::shared_ptr<gko::matrix::Dense<float>> iq_solve_velocity_result = gko::share(
 							gko::matrix::Dense<float>::create(
 								  ginkgo_executor
-								, gko::dim<2>(3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, 1)
+								, gko::dim<2>(3 * solve_velocity_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME, 1)
 								, std::move(iq_solve_velocity_result_array.as_view())
 								, 1
 							)
@@ -2089,7 +2158,9 @@ struct OasisSimulator {
 							
 							//Test if symmetric
 							iq_lhs->apply(gko_one_dense, gko::matrix::Identity<float>::create(ginkgo_executor, iq_lhs->get_size()[0]), gko_neg_one_dense, iq_lhs_transposed_csr);//iq_lhs_transposed_csr = iq_lhs - iq_lhs_transposed_csr;
+							std::cout << "Thrust call 1 Start. Count: " << iq_lhs_transposed_csr->get_num_stored_elements() << std::endl;
 							thrust::pair<const float*, const float*> min_max_device = thrust::minmax_element(thrust::device, iq_lhs_transposed_csr->get_const_values(), iq_lhs_transposed_csr->get_const_values() + iq_lhs_transposed_csr->get_num_stored_elements());
+							std::cout << "Thrust call 1 End." << std::endl;
 							
 							if(min_max_device.first != (iq_lhs_transposed_csr->get_const_values() + iq_lhs_transposed_csr->get_num_stored_elements())){
 								std::pair<float, float> min_max;
@@ -2132,27 +2203,27 @@ struct OasisSimulator {
 							//Write out matrix for further external checks
 							std::string fn = std::string {"matrix"} + "_id[" + std::to_string(i) + "]_step[" + std::to_string(cur_step) + "].txt";
 							IO::insert_job([this, coupling_block_count, cu_dev, iq_lhs, fn]() {
-								std::vector<int> printout_tmp0(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1);
+								std::vector<int> printout_tmp0(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1);
 								std::vector<int> printout_tmp1(iq_lhs->get_num_stored_elements());
 								std::vector<float> printout_tmp2(iq_lhs->get_num_stored_elements());
 								
-								cudaMemcpyAsync(printout_tmp0.data(), iq_lhs->get_const_row_ptrs(), sizeof(int) * iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1, cudaMemcpyDefault, cu_dev.stream_compute());
+								cudaMemcpyAsync(printout_tmp0.data(), iq_lhs->get_const_row_ptrs(), sizeof(int) * lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1, cudaMemcpyDefault, cu_dev.stream_compute());
 								cudaMemcpyAsync(printout_tmp1.data(), iq_lhs->get_const_col_idxs(), sizeof(int) * iq_lhs->get_num_stored_elements(), cudaMemcpyDefault, cu_dev.stream_compute());
 								cudaMemcpyAsync(printout_tmp2.data(), iq_lhs->get_const_values(), sizeof(float) * iq_lhs->get_num_stored_elements(), cudaMemcpyDefault, cu_dev.stream_compute());
 								
 								cudaDeviceSynchronize();
 								
-								printout_tmp0[iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME] = iq_lhs->get_num_stored_elements();
+								printout_tmp0[lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME] = iq_lhs->get_num_stored_elements();
 								
 								std::ofstream matrix_file;
 								matrix_file.open(fn);
 								
 								matrix_file << std::setprecision(std::numeric_limits<float>::digits10 + 1);
 								
-								for(size_t j = 0; j < iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME; ++j){
+								for(size_t j = 0; j < lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME; ++j){
 									matrix_file << printout_tmp0[j] << " ";
 								}
-								matrix_file << printout_tmp0[iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME] << std::endl;
+								matrix_file << printout_tmp0[lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME] << std::endl;
 								for(size_t j = 0; j < iq_lhs->get_num_stored_elements() - 1; ++j){
 									matrix_file << printout_tmp1[j] << " ";
 								}
@@ -2169,20 +2240,20 @@ struct OasisSimulator {
 						#endif
 						
 						/*
-						std::vector<int> printout_tmp0(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1);
+						std::vector<int> printout_tmp0(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1);
 						std::vector<int> printout_tmp1(iq_lhs->get_num_stored_elements());
 						std::vector<float> printout_tmp2(iq_lhs->get_num_stored_elements());
-						std::vector<float> printout_tmp3(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
+						std::vector<float> printout_tmp3(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME);
 						
-						cudaMemcpyAsync(printout_tmp0.data(), iq_lhs->get_const_row_ptrs(), sizeof(int) * (iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1), cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp0.data(), iq_lhs->get_const_row_ptrs(), sizeof(int) * (lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1), cudaMemcpyDefault, cu_dev.stream_compute());
 						cudaMemcpyAsync(printout_tmp1.data(), iq_lhs->get_const_col_idxs(), sizeof(int) * iq_lhs->get_num_stored_elements(), cudaMemcpyDefault, cu_dev.stream_compute());
 						cudaMemcpyAsync(printout_tmp2.data(), iq_lhs->get_const_values(), sizeof(float) * iq_lhs->get_num_stored_elements(), cudaMemcpyDefault, cu_dev.stream_compute());
-						cudaMemcpyAsync(printout_tmp3.data(), iq_rhs_array.get_const_data(), sizeof(float) * iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp3.data(), iq_rhs_array.get_const_data(), sizeof(float) * lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
 						
 						cudaDeviceSynchronize();
 						
 						//std::cout << std::endl;
-						//for(size_t j = 0; j < iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1; ++j){
+						//for(size_t j = 0; j < lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1; ++j){
 						//	std::cout << printout_tmp0[j] << " ";
 						//}
 						//std::cout << std::endl;
@@ -2191,8 +2262,8 @@ struct OasisSimulator {
 						//}
 						std::cout << std::endl;
 						
-						printout_tmp0[iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME] = iq_lhs->get_num_stored_elements();
-						for(size_t j = 0; j < iq::LHS_MATRIX_SIZE_Y; ++j){
+						printout_tmp0[lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME] = iq_lhs->get_num_stored_elements();
+						for(size_t j = 0; j < lhs_matrix_size_y; ++j){
 							for(size_t k = 0; k < exterior_block_count * config::G_BLOCKVOLUME; ++k){
 								const size_t row_length = (printout_tmp0[j * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + k + 1] - printout_tmp0[j * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + k]);
 								if(row_length > 0){
@@ -2218,7 +2289,7 @@ struct OasisSimulator {
 						}
 						std::cout << std::endl;
 						
-						for(size_t j = 0; j < iq::LHS_MATRIX_SIZE_Y; ++j){
+						for(size_t j = 0; j < lhs_matrix_size_y; ++j){
 							for(size_t k = 0; k < exterior_block_count * config::G_BLOCKVOLUME; ++k){
 								std::cout << printout_tmp3[j * exterior_block_count * config::G_BLOCKVOLUME + k] << " ";
 							}
@@ -2229,18 +2300,18 @@ struct OasisSimulator {
 						
 						
 						/*
-						std::vector<int> printout_tmp0(3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1);
+						std::vector<int> printout_tmp0(3 * solve_velocity_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1);
 						std::vector<int> printout_tmp1(iq_solve_velocity->get_num_stored_elements());
 						std::vector<float> printout_tmp2(iq_solve_velocity->get_num_stored_elements());
 						
-						cudaMemcpyAsync(printout_tmp0.data(), iq_solve_velocity->get_const_row_ptrs(), sizeof(int) * (3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1), cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp0.data(), iq_solve_velocity->get_const_row_ptrs(), sizeof(int) * (3 * solve_velocity_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1), cudaMemcpyDefault, cu_dev.stream_compute());
 						cudaMemcpyAsync(printout_tmp1.data(), iq_solve_velocity->get_const_col_idxs(), sizeof(int) * iq_solve_velocity->get_num_stored_elements(), cudaMemcpyDefault, cu_dev.stream_compute());
 						cudaMemcpyAsync(printout_tmp2.data(), iq_solve_velocity->get_const_values(), sizeof(float) * iq_solve_velocity->get_num_stored_elements(), cudaMemcpyDefault, cu_dev.stream_compute());
 						
 						cudaDeviceSynchronize();
 						
 						//std::cout << std::endl;
-						//for(size_t j = 0; j < 3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1; ++j){
+						//for(size_t j = 0; j < 3 * solve_velocity_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1; ++j){
 						//	std::cout << printout_tmp0[j] << " ";
 						//}
 						//std::cout << std::endl;
@@ -2249,7 +2320,7 @@ struct OasisSimulator {
 						//}
 						std::cout << std::endl;
 						
-						for(size_t j = 0; j < iq::SOLVE_VELOCITY_MATRIX_SIZE_Y; ++j){
+						for(size_t j = 0; j < solve_velocity_matrix_size_y; ++j){
 							for(size_t k = 0; k < exterior_block_count * config::G_BLOCKVOLUME; ++k){
 								for(size_t m = 0; m < 3; ++m){
 									const size_t row_length = (printout_tmp0[j * 3 * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + 3 * k + m + 1] - printout_tmp0[j * 3 * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + 3 * k + m]);
@@ -2311,22 +2382,28 @@ struct OasisSimulator {
 						//v_s,t+1 = v_s,t + (- dt * M_s^-1 * G_s * p_g,t+1 + dt * M_s^-1 * H_s^T * h,t+1)
 						//v_f,t+1 = v_f,t + (- dt * M_f^-1 * G_f * p_f,t+1 - dt * M_f^-1 * B * y,t+1 - dt * M_f^-1 * H_f^T * h,t+1)
 						
+						
+						//If we have a surface flow apply mass transfer here before updating velocity
+						if(has_surface_flow){
+							surface_flow_models[surface_flow_model_id].mass_transfer();
+						}
+						
 						//Calculate delta_v
 						iq_solve_velocity->apply(iq_result, iq_solve_velocity_result);
 						
 						ginkgo_executor->synchronize();
 						
 						/*
-						std::vector<float> printout_tmp4(3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
-						std::vector<float> printout_tmp5(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
+						std::vector<float> printout_tmp4(3 * solve_velocity_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME);
+						std::vector<float> printout_tmp5(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME);
 						
-						cudaMemcpyAsync(printout_tmp4.data(), iq_solve_velocity_result->get_const_values(), sizeof(float) * 3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
-						cudaMemcpyAsync(printout_tmp5.data(), iq_result->get_const_values(), sizeof(float) * iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp4.data(), iq_solve_velocity_result->get_const_values(), sizeof(float) * 3 * solve_velocity_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp5.data(), iq_result->get_const_values(), sizeof(float) * lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
 						
 						cudaDeviceSynchronize();
 						
 						std::cout << std::endl;
-						for(size_t k = 0; k < iq::SOLVE_VELOCITY_MATRIX_SIZE_Y; ++k){
+						for(size_t k = 0; k < solve_velocity_matrix_size_y; ++k){
 							for(size_t j = 0; j < exterior_block_count * config::G_BLOCKVOLUME; ++j){
 								std::cout << '{';
 								std::cout << printout_tmp4[3 * k * exterior_block_count * config::G_BLOCKVOLUME + 3 * j + 0] << ", ";
@@ -2337,7 +2414,7 @@ struct OasisSimulator {
 							std::cout << std::endl;
 						}
 						std::cout << std::endl;
-						for(size_t k = 0; k < iq::LHS_MATRIX_SIZE_Y; ++k){
+						for(size_t k = 0; k < lhs_matrix_size_y; ++k){
 							for(size_t j = 0; j < exterior_block_count * config::G_BLOCKVOLUME; ++j){
 								std::cout << printout_tmp5[k * exterior_block_count * config::G_BLOCKVOLUME + j] << " ";
 							}
@@ -2346,39 +2423,39 @@ struct OasisSimulator {
 						
 						
 						/*
-						std::vector<int> printout_tmp0(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1);
+						std::vector<int> printout_tmp0(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1);
 						std::vector<int> printout_tmp1(iq_lhs->get_num_stored_elements());
 						std::vector<float> printout_tmp2(iq_lhs->get_num_stored_elements());
-						std::vector<float> printout_tmp3(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
-						std::vector<float> printout_tmp4(3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
-						std::vector<float> printout_tmp5(iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME);
+						std::vector<float> printout_tmp3(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME);
+						std::vector<float> printout_tmp4(3 * solve_velocity_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME);
+						std::vector<float> printout_tmp5(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME);
 						
-						cudaMemcpyAsync(printout_tmp0.data(), iq_lhs->get_const_row_ptrs(), sizeof(int) * (iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME + 1), cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp0.data(), iq_lhs->get_const_row_ptrs(), sizeof(int) * (lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1), cudaMemcpyDefault, cu_dev.stream_compute());
 						cudaMemcpyAsync(printout_tmp1.data(), iq_lhs->get_const_col_idxs(), sizeof(int) iq_lhs->get_num_stored_elements(), cudaMemcpyDefault, cu_dev.stream_compute());
 						cudaMemcpyAsync(printout_tmp2.data(), iq_lhs->get_const_values(), sizeof(float) * iq_lhs->get_num_stored_elements(), cudaMemcpyDefault, cu_dev.stream_compute());
-						cudaMemcpyAsync(printout_tmp3.data(), iq_rhs_array.get_const_data(), sizeof(float) * iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
-						cudaMemcpyAsync(printout_tmp4.data(), iq_solve_velocity_result->get_const_values(), sizeof(float) * 3 * iq::SOLVE_VELOCITY_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
-						cudaMemcpyAsync(printout_tmp5.data(), iq_result->get_const_values(), sizeof(float) * iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp3.data(), iq_rhs_array.get_const_data(), sizeof(float) * lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp4.data(), iq_solve_velocity_result->get_const_values(), sizeof(float) * 3 * solve_velocity_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp5.data(), iq_result->get_const_values(), sizeof(float) * lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME, cudaMemcpyDefault, cu_dev.stream_compute());
 						
 						cudaDeviceSynchronize();
 						
-						const std::array<size_t, iq::LHS_MATRIX_SIZE_Y> tmp_num_blocks_per_row = {
+						const std::array<size_t, lhs_matrix_size_y> tmp_num_blocks_per_row = {
 							  2
 							, 3
 							, 3
 							, 4
 						};
-						printout_tmp0[iq::LHS_MATRIX_SIZE_Y * exterior_block_count * config::G_BLOCKVOLUME] = iq_lhs->get_num_stored_elements();
+						printout_tmp0[lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME] = iq_lhs->get_num_stored_elements();
 						
 						std::cout << std::endl;
-						for(size_t k = 0; k < iq::LHS_MATRIX_SIZE_Y; ++k){
+						for(size_t k = 0; k < lhs_matrix_size_y; ++k){
 							for(size_t j = 0; j < exterior_block_count * config::G_BLOCKVOLUME; ++j){
 								//if(printout_tmp5[k * exterior_block_count * config::G_BLOCKVOLUME + j] > 1e4){
 								if(printout_tmp5[k * exterior_block_count * config::G_BLOCKVOLUME + j] != 0.0f){
 									std::cout << "P: " << printout_tmp5[k * exterior_block_count * config::G_BLOCKVOLUME + j] << std::endl;
 									
 									std::cout << "A: " << std::endl;
-									for(size_t k1 = 0; k1 < iq::LHS_MATRIX_SIZE_Y; ++k1){
+									for(size_t k1 = 0; k1 < lhs_matrix_size_y; ++k1){
 										for(size_t j1 = 0; j1 < exterior_block_count * config::G_BLOCKVOLUME; ++j1){
 											const size_t row_length = (printout_tmp0[k1 * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + j1 + 1] - printout_tmp0[k1 * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + j1]);
 											if(row_length > 0){
@@ -2409,35 +2486,42 @@ struct OasisSimulator {
 						}
 						*/
 						
-						//Update velocity and strain
-						match(particle_bins[rollid][solid_id])([this, &cu_dev, &solid_id, &fluid_id, &iq_solve_velocity_result, &iq_result](auto& particle_buffer_solid) {
-							auto& next_particle_buffer_solid = get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]);
-							
-							particle_buffer_solid.bin_offsets = particle_buffer_solid.bin_offsets_virtual;
-							next_particle_buffer_solid.particle_bucket_sizes = next_particle_buffer_solid.particle_bucket_sizes_virtual;
-							next_particle_buffer_solid.blockbuckets = next_particle_buffer_solid.blockbuckets_virtual;
-							managed_memory.acquire<MemoryType::DEVICE>(
-								  particle_buffer_solid.acquire()
-								, next_particle_buffer_solid.acquire()
-								, grid_blocks[0][solid_id].acquire()
-								, grid_blocks[0][fluid_id].acquire()
-								, reinterpret_cast<void**>(&particle_buffer_solid.bin_offsets)
-								, reinterpret_cast<void**>(&next_particle_buffer_solid.particle_bucket_sizes)
-								, reinterpret_cast<void**>(&next_particle_buffer_solid.blockbuckets)
-							);
-							
-							cu_dev.compute_launch({partition_block_count, iq::BLOCK_SIZE}, iq::update_velocity_and_strain, particle_buffer_solid, get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_solve_velocity_result->get_const_values(), iq_solve_velocity_result->get_const_values() + 3 * exterior_block_count * config::G_BLOCKVOLUME, iq_result->get_const_values());
 						
-							managed_memory.release(
-								  particle_buffer_solid.release()
-								, next_particle_buffer_solid.release()
-								, grid_blocks[0][solid_id].release()
-								, grid_blocks[0][fluid_id].release()
-								, particle_buffer_solid.bin_offsets_virtual
-								, next_particle_buffer_solid.particle_bucket_sizes_virtual
-								, next_particle_buffer_solid.blockbuckets_virtual
-							);
-						});
+						
+						//If we have a surface flow, apply update step. This may be a noop or just a value copy.
+						if(has_surface_flow){
+							surface_flow_models[surface_flow_model_id].update_after_solve();
+						}else{
+							//Update velocity and strain
+							match(particle_bins[rollid][solid_id])([this, &cu_dev, &solid_id, &fluid_id, &iq_solve_velocity_result, &iq_result](auto& particle_buffer_solid) {
+								auto& next_particle_buffer_solid = get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]);
+								
+								particle_buffer_solid.bin_offsets = particle_buffer_solid.bin_offsets_virtual;
+								next_particle_buffer_solid.particle_bucket_sizes = next_particle_buffer_solid.particle_bucket_sizes_virtual;
+								next_particle_buffer_solid.blockbuckets = next_particle_buffer_solid.blockbuckets_virtual;
+								managed_memory.acquire<MemoryType::DEVICE>(
+									  particle_buffer_solid.acquire()
+									, next_particle_buffer_solid.acquire()
+									, grid_blocks[0][solid_id].acquire()
+									, grid_blocks[0][fluid_id].acquire()
+									, reinterpret_cast<void**>(&particle_buffer_solid.bin_offsets)
+									, reinterpret_cast<void**>(&next_particle_buffer_solid.particle_bucket_sizes)
+									, reinterpret_cast<void**>(&next_particle_buffer_solid.blockbuckets)
+								);
+								
+								cu_dev.compute_launch({partition_block_count, iq::BLOCK_SIZE}, iq::update_velocity_and_strain, particle_buffer_solid, get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_solve_velocity_result->get_const_values(), iq_solve_velocity_result->get_const_values() + 3 * exterior_block_count * config::G_BLOCKVOLUME, iq_result->get_const_values());
+							
+								managed_memory.release(
+									  particle_buffer_solid.release()
+									, next_particle_buffer_solid.release()
+									, grid_blocks[0][solid_id].release()
+									, grid_blocks[0][fluid_id].release()
+									, particle_buffer_solid.bin_offsets_virtual
+									, next_particle_buffer_solid.particle_bucket_sizes_virtual
+									, next_particle_buffer_solid.blockbuckets_virtual
+								);
+							});
+						}
 						
 						cu_dev.syncStream<streamIdx::COMPUTE>();
 					}
@@ -2452,6 +2536,12 @@ struct OasisSimulator {
 
 					//Resize particle buffers if we increased the size of active bins
 					//This also removes all particle data of next particle buffer but does not clear it
+					for(int i = 0; i < surface_flows.size(); ++i) {
+						if(checked_bin_counts[surface_flows[i][0]] > 0) {
+							surface_flow_particle_buffers[(rollid + 1) % BIN_COUNT][i].resize(managed_memory_allocator, checked_bin_counts[surface_flows[i][0]]);
+						}
+					}
+					
 					for(int i = 0; i < get_model_count(); ++i) {
 						if(checked_bin_counts[i] > 0) {
 							match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &i, &cu_dev](auto& particle_buffer) {
@@ -3258,6 +3348,14 @@ struct OasisSimulator {
 		timer.tick();
 
 		for(int i = 0; i < get_model_count(); ++i) {
+			int surface_flow_id = -1;
+			for(int j = 0; j < surface_flows.size(); ++j) {
+				if(surface_flows[j][0] == i){
+					surface_flow_id = j;
+					break;
+				}
+			}
+			
 			int particle_count	  = 0;
 			int* d_particle_count = static_cast<int*>(cu_dev.borrow(sizeof(int)));
 			
@@ -3272,7 +3370,7 @@ struct OasisSimulator {
 			void* surface_vertex_count_ptr = surface_vertex_count;
 			void* surface_triangle_count_ptr = surface_triangle_count;
 			
-			match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &particle_count, &i, &particle_id_mapping_buffer, &surface_vertex_count_ptr, &surface_triangle_count_ptr](auto& particle_buffer) {
+			match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &surface_flow_id, &particle_count, &i, &particle_id_mapping_buffer, &surface_vertex_count_ptr, &surface_triangle_count_ptr](auto& particle_buffer) {
 				auto& prev_particle_buffer = get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[rollid][i]);
 				
 				prev_particle_buffer.cellbuckets = prev_particle_buffer.cellbuckets_virtual;
@@ -3281,7 +3379,8 @@ struct OasisSimulator {
 				particle_buffer.particle_bucket_sizes = particle_buffer.particle_bucket_sizes_virtual;
 				particle_buffer.blockbuckets = particle_buffer.blockbuckets_virtual;
 				managed_memory.acquire<MemoryType::DEVICE>(
-					  particle_buffer.acquire()
+					  surface_flow_particle_buffers[rollid][surface_flow_id].acquire()
+					, particle_buffer.acquire()
 					, prev_particle_buffer.acquire()
 					//, grid_blocks[0][i].acquire()
 					, reinterpret_cast<void**>(&surface_vertex_count_ptr)
@@ -3293,10 +3392,11 @@ struct OasisSimulator {
 					, reinterpret_cast<void**>(&particle_buffer.particle_bucket_sizes)
 					, reinterpret_cast<void**>(&particle_buffer.blockbuckets)
 				);
-				
+				std::cout << "Thrust call 2 Start. Count: " << partition_block_count << std::endl;
 				auto policy = thrust::cuda::par.on(static_cast<cudaStream_t>(cu_dev.stream_compute()));
 				thrust::device_ptr<int> host_particle_bucket_sizes = thrust::device_pointer_cast(particle_buffer.particle_bucket_sizes);
 				particle_count = thrust::reduce(policy, host_particle_bucket_sizes, host_particle_bucket_sizes + partition_block_count);
+				std::cout << "Thrust call 2 End." << std::endl;
 			});
 			
 			cu_dev.syncStream<streamIdx::COMPUTE>();
@@ -3323,6 +3423,10 @@ struct OasisSimulator {
 			surface_normal_transfer_host_buffer.resize(particle_count);
 			surface_mean_curvature_transfer_host_buffer.resize(particle_count);
 			surface_gauss_curvature_transfer_host_buffer.resize(particle_count);
+			
+			if(surface_flow_id != -1){
+				surface_flow_mass_transfer_host_buffer.resize(particle_count);
+			}
 			
 			fmt::print(fg(fmt::color::red), "total number of particles {}\n", particle_count);
 			
@@ -3678,11 +3782,24 @@ struct OasisSimulator {
 				check_cuda_errors(cudaMemcpyAsync(surface_gauss_curvature_transfer_host_buffer.data(), surface_transfer_device_buffer_ptr, sizeof(float) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
 			}
 			
-			match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &particle_count, &i, &particle_id_mapping_buffer, &surface_transfer_device_buffer_ptr](auto& particle_buffer) {
+			if(surface_flow_id != -1){
+				match(particle_bins[rollid][i])([this, &cu_dev, &surface_flow_id, &i, &d_particle_count, &particle_id_mapping_buffer, &surface_transfer_device_buffer_ptr](const auto& particle_buffer) {
+					//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer_surface_flow, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), surface_flow_particle_buffers[rollid][surface_flow_id], particle_id_mapping_buffer, static_cast<float*>(surface_transfer_device_buffer_ptr));
+				});
+				
+				cu_dev.syncStream<streamIdx::COMPUTE>();
+				
+				//Copy the data to the output model
+				check_cuda_errors(cudaMemcpyAsync(surface_flow_mass_transfer_host_buffer.data(), surface_transfer_device_buffer_ptr, sizeof(float) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
+			}
+			
+			match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &surface_flow_id, &particle_count, &i, &particle_id_mapping_buffer, &surface_transfer_device_buffer_ptr](auto& particle_buffer) {
 				auto& prev_particle_buffer = get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[rollid][i]);
 			
 				managed_memory.release(
 					  (surface_particle_buffers[i].is_locked() ? surface_particle_buffers[i].release() : nullptr)
+					, (surface_flow_particle_buffers[rollid][surface_flow_id].is_locked() ? surface_flow_particle_buffers[rollid][surface_flow_id].release() : nullptr)
 					, particle_buffer.release()
 					, prev_particle_buffer.release()
 					, surface_vertex_count
@@ -3703,7 +3820,7 @@ struct OasisSimulator {
 			std::string fn = std::string {"model"} + "_id[" + std::to_string(i) + "]_frame[" + std::to_string(cur_frame) + "].bgeo";
 
 			//Write back file
-			IO::insert_job([fn, m = model, surface_point_type = surface_point_type_transfer_host_buffer, surface_normal = surface_normal_transfer_host_buffer, surface_mean_curvature = surface_mean_curvature_transfer_host_buffer, surface_gauss_curvature = surface_gauss_curvature_transfer_host_buffer]() {
+			IO::insert_job([surface_flow_id, fn, m = model, surface_point_type = surface_point_type_transfer_host_buffer, surface_normal = surface_normal_transfer_host_buffer, surface_mean_curvature = surface_mean_curvature_transfer_host_buffer, surface_gauss_curvature = surface_gauss_curvature_transfer_host_buffer, surface_flow_mass = surface_flow_mass_transfer_host_buffer]() {
 				Partio::ParticlesDataMutable* parts;
 				begin_write_partio(&parts, m.size());
 				
@@ -3712,6 +3829,9 @@ struct OasisSimulator {
 				write_partio_add(surface_normal, std::string("N"), parts);
 				write_partio_add(surface_mean_curvature, std::string("mean_curvature"), parts);
 				write_partio_add(surface_gauss_curvature, std::string("gauss_curvature"), parts);
+				if(surface_flow_id != -1){
+					write_partio_add(surface_flow_mass, std::string("surface_flow_mass"), parts);
+				}
 
 				end_write_partio(fn, parts);
 			});
