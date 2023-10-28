@@ -1,6 +1,8 @@
 #ifndef CSR_UTILS_CUH
 #define CSR_UTILS_CUH
 
+#include "iq.cuh"
+
 namespace mn {
 using namespace placeholder;//NOLINT(google-build-using-namespace) Allow placeholders to be included generally for simplification
 
@@ -552,7 +554,239 @@ __global__ void csr_mirror(const int* a_rows, const int* a_columns, float* a_val
 	}
 }
 
-
+class MatrixOperations{
+public:
+	using streamIdx		 = Cuda::StreamIndex;
+	using eventIdx		 = Cuda::EventIndex;
+		
+	gko::array<int> temporary_rows;
+	gko::array<int> temporary_columns;
+	gko::array<float> temporary_values;
+	
+	void initialize(std::shared_ptr<gko::Executor>& ginkgo_executor){
+		temporary_rows = gko::array<int>(ginkgo_executor, 32 * config::G_BLOCKVOLUME + 1);
+		temporary_columns = gko::array<int>(ginkgo_executor, 32 * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+		temporary_values = gko::array<float>(ginkgo_executor,  32 * config::G_BLOCKVOLUME * iq::NUM_COLUMNS_PER_BLOCK);
+	}
+	
+	//Sum up count values from in and store them in out
+	template<typename CudaContext>
+	void exclusive_scan(int count, int const* const in, int* out, CudaContext& cu_dev) {
+		std::cout << "Thrust call 0 Start. Count: " << count << std::endl;
+		auto policy = thrust::cuda::par.on(static_cast<cudaStream_t>(cu_dev.stream_compute()));
+		thrust::exclusive_scan(policy, get_device_ptr(in), get_device_ptr(in) + count, get_device_ptr(out));
+		std::cout << "Thrust call 0 End." << std::endl;
+		/*
+		std::size_t temp_storage_bytes = 0;
+		auto plus_op				   = [] __device__(const int& a, const int& b) {
+			  return a + b;
+		};
+		check_cuda_errors(cub::DeviceScan::ExclusiveScan(nullptr, temp_storage_bytes, in, out, plus_op, 0, count, cu_dev.stream_compute()));
+		void* d_tmp = tmps[cu_dev.get_dev_id()].d_tmp;
+		check_cuda_errors(cub::DeviceScan::ExclusiveScan(d_tmp, temp_storage_bytes, in, out, plus_op, 0, count, cu_dev.stream_compute()));
+		*/
+	}
+	
+	//FIXME: Untested
+	void matrix_transpose(std::shared_ptr<gko::Executor>& ginkgo_executor, const size_t num_blocks, const size_t num_columns, std::shared_ptr<gko::matrix::Csr<float, int>>& a, std::shared_ptr<gko::matrix::Csr<float, int>>& b, Cuda::CudaContext& cu_dev){	
+		temporary_rows.resize_and_reset(num_columns + 1);
+		
+		temporary_rows.fill(0);
+		
+		ginkgo_executor->synchronize();
+		
+		//Copy last rows value
+		const int number_of_nonzeros_a = a->get_num_stored_elements();
+		cudaMemcpyAsync(a->get_row_ptrs() + (num_blocks * config::G_BLOCKVOLUME), &number_of_nonzeros_a, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute());
+		
+		//Resize matrix
+		temporary_columns.resize_and_reset(number_of_nonzeros_a);
+		temporary_values.resize_and_reset(number_of_nonzeros_a);
+		
+		temporary_columns.fill(0);
+		temporary_values.fill(0.0f);
+		
+		if(number_of_nonzeros_a > 0){
+			//Transpose
+			cu_dev.compute_launch({num_blocks, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, csr_transpose<iq::NUM_ROWS_PER_BLOCK, 1>, a->get_const_row_ptrs(), a->get_const_col_idxs(), a->get_const_values(), temporary_rows.get_data(), temporary_columns.get_data(), temporary_values.get_data());
+			
+			//Scan rows
+			exclusive_scan(num_columns + 1, temporary_rows.get_data(), temporary_rows.get_data(), cu_dev);
+		}
+		
+		//Copy to output
+		b->copy_from(std::move(gko::share(gko::matrix::Csr<float, int>::create_const(
+			  ginkgo_executor
+			, gko::dim<2>(num_columns, num_blocks * config::G_BLOCKVOLUME)
+			, temporary_values.as_const_view()
+			, temporary_columns.as_const_view()
+			, temporary_rows.as_const_view()
+		))));
+		
+		//Sort columns and values
+		b->sort_by_column_index();
+		
+		ginkgo_executor->synchronize();
+	}
+	
+	//Calculates C = A * B (Gustavson == true) or C = A * B^T
+	template<bool Gustavson = false>
+	void matrix_matrix_multiplication(std::shared_ptr<gko::Executor>& ginkgo_executor, const size_t num_blocks, const size_t num_columns, std::shared_ptr<gko::matrix::Csr<float, int>>& a, std::shared_ptr<gko::matrix::Csr<float, int>>& b, std::shared_ptr<gko::matrix::Csr<float, int>>& c, Cuda::CudaContext& cu_dev){					
+		temporary_rows.resize_and_reset(num_blocks * config::G_BLOCKVOLUME + 1);
+		
+		temporary_rows.fill(0);
+		
+		ginkgo_executor->synchronize();
+		
+		//Copy last rows value
+		const int number_of_nonzeros_a = a->get_num_stored_elements();
+		const int number_of_nonzeros_b = b->get_num_stored_elements();
+		cudaMemcpyAsync(a->get_row_ptrs() + num_blocks * config::G_BLOCKVOLUME, &number_of_nonzeros_a, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute());
+		cudaMemcpyAsync(b->get_row_ptrs() + num_blocks * config::G_BLOCKVOLUME, &number_of_nonzeros_b, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute());
+		
+		if(Gustavson){
+			//Resize temporary memory
+			temporary_columns.resize_and_reset(num_blocks * num_columns);
+			
+			ginkgo_executor->synchronize();
+		}
+		
+		//Calculate amount of memory
+		if(Gustavson){
+			cu_dev.compute_launch({num_blocks, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, csr_matrix_matrix_multiplication_gustavson_calculate_rows<iq::NUM_ROWS_PER_BLOCK, 1>, num_columns, a->get_const_row_ptrs(), a->get_const_col_idxs(), a->get_const_values(), b->get_const_row_ptrs(), b->get_const_col_idxs(), b->get_const_values(), temporary_rows.get_data(), temporary_columns.get_data());
+		}else{
+			cu_dev.compute_launch({num_blocks, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, csr_matrix_matrix_multiplication<iq::NUM_ROWS_PER_BLOCK, 1, true>, a->get_const_row_ptrs(), a->get_const_col_idxs(), a->get_const_values(), b->get_const_row_ptrs(), b->get_const_col_idxs(), b->get_const_values(), temporary_rows.get_data(), nullptr, nullptr);
+		}
+		
+		//Scan rows
+		exclusive_scan(num_blocks * config::G_BLOCKVOLUME + 1, temporary_rows.get_data(), temporary_rows.get_data(), cu_dev);
+		
+		//Resize matrix
+		int number_of_nonzeros_host;
+		
+		cudaMemcpyAsync(&number_of_nonzeros_host, temporary_rows.get_data() + (num_blocks * config::G_BLOCKVOLUME), sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute());
+		
+		cu_dev.syncStream<streamIdx::COMPUTE>();
+		
+		temporary_columns.resize_and_reset(number_of_nonzeros_host);
+		temporary_values.resize_and_reset(number_of_nonzeros_host);
+		
+		temporary_columns.fill(0);
+		temporary_values.fill(0.0f);
+		
+		ginkgo_executor->synchronize();
+		
+		//Perform matrix multiplication
+		if(number_of_nonzeros_host > 0){
+			if(Gustavson){
+				cu_dev.compute_launch({num_blocks, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, csr_matrix_matrix_multiplication_gustavson<iq::NUM_ROWS_PER_BLOCK, 1>, a->get_const_row_ptrs(), a->get_const_col_idxs(), a->get_const_values(), b->get_const_row_ptrs(), b->get_const_col_idxs(), b->get_const_values(), temporary_rows.get_data(), temporary_columns.get_data(), temporary_values.get_data());
+			}else{
+				cu_dev.compute_launch({num_blocks, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, csr_matrix_matrix_multiplication<iq::NUM_ROWS_PER_BLOCK, 1, false>, a->get_const_row_ptrs(), a->get_const_col_idxs(), a->get_const_values(), b->get_const_row_ptrs(), b->get_const_col_idxs(), b->get_const_values(), temporary_rows.get_data(), temporary_columns.get_data(), temporary_values.get_data());
+			}
+		}
+		
+		//Copy to output
+		c->copy_from(std::move(gko::share(gko::matrix::Csr<float, int>::create_const(
+			  ginkgo_executor
+			, gko::dim<2>(num_blocks * config::G_BLOCKVOLUME, num_columns)
+			, temporary_values.as_const_view()
+			, temporary_columns.as_const_view()
+			, temporary_rows.as_const_view()
+		))));
+		
+		ginkgo_executor->synchronize();
+		//NOTE: Columns already sorted
+	}
+	
+	//Calculates C = A * D * B (Gustavson == true) or C = A * D * B^T
+	template<bool Gustavson = false>
+	void matrix_matrix_multiplication_with_diagonal(std::shared_ptr<gko::Executor>& ginkgo_executor, const size_t num_blocks, const size_t num_columns, std::shared_ptr<gko::matrix::Csr<float, int>>& a, const std::shared_ptr<const gko::matrix::Diagonal<float>>& d, std::shared_ptr<gko::matrix::Csr<float, int>>& b, std::shared_ptr<gko::matrix::Csr<float, int>>& c, Cuda::CudaContext& cu_dev){					
+		temporary_rows.resize_and_reset(num_blocks * config::G_BLOCKVOLUME + 1);
+		
+		temporary_rows.fill(0);
+		
+		ginkgo_executor->synchronize();
+		
+		//Copy last rows value
+		const int number_of_nonzeros_a = a->get_num_stored_elements();
+		const int number_of_nonzeros_b = b->get_num_stored_elements();
+		cudaMemcpyAsync(a->get_row_ptrs() + num_blocks * config::G_BLOCKVOLUME, &number_of_nonzeros_a, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute());
+		cudaMemcpyAsync(b->get_row_ptrs() + num_blocks * config::G_BLOCKVOLUME, &number_of_nonzeros_b, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute());
+		
+		if(Gustavson){
+			//Resize temporary memory
+			temporary_columns.resize_and_reset(num_blocks * num_columns);
+			
+			ginkgo_executor->synchronize();
+		}
+		
+		//Calculate amount of memory
+		if(Gustavson){
+			cu_dev.compute_launch({num_blocks, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, csr_matrix_matrix_multiplication_with_diagonal_gustavson_calculate_rows<iq::NUM_ROWS_PER_BLOCK, 1>, num_columns, a->get_const_row_ptrs(), a->get_const_col_idxs(), a->get_const_values(), d->get_const_values(), b->get_const_row_ptrs(), b->get_const_col_idxs(), b->get_const_values(), temporary_rows.get_data(), temporary_columns.get_data());
+		}else{
+			cu_dev.compute_launch({num_blocks, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, csr_matrix_matrix_multiplication_with_diagonal<iq::NUM_ROWS_PER_BLOCK, 1, true>, a->get_const_row_ptrs(), a->get_const_col_idxs(), a->get_const_values(), d->get_const_values(), b->get_const_row_ptrs(), b->get_const_col_idxs(), b->get_const_values(), temporary_rows.get_data(), nullptr, nullptr);
+		}
+		
+		//Scan rows
+		exclusive_scan(num_blocks * config::G_BLOCKVOLUME + 1, temporary_rows.get_data(), temporary_rows.get_data(), cu_dev);
+		
+		//Resize matrix
+		int number_of_nonzeros_host;
+		
+		cudaMemcpyAsync(&number_of_nonzeros_host, temporary_rows.get_data() + (num_blocks * config::G_BLOCKVOLUME), sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute());
+		
+		cu_dev.syncStream<streamIdx::COMPUTE>();
+		
+		temporary_columns.resize_and_reset(number_of_nonzeros_host);
+		temporary_values.resize_and_reset(number_of_nonzeros_host);
+		
+		temporary_columns.fill(0);
+		temporary_values.fill(0.0f);
+		
+		ginkgo_executor->synchronize();
+		
+		//Perform matrix multiplication
+		if(number_of_nonzeros_host > 0){
+			if(Gustavson){
+				cu_dev.compute_launch({num_blocks, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, csr_matrix_matrix_multiplication_with_diagonal_gustavson<iq::NUM_ROWS_PER_BLOCK, 1>, a->get_const_row_ptrs(), a->get_const_col_idxs(), a->get_const_values(), d->get_const_values(), b->get_const_row_ptrs(), b->get_const_col_idxs(), b->get_const_values(), temporary_rows.get_data(), temporary_columns.get_data(), temporary_values.get_data());
+			}else{
+				cu_dev.compute_launch({num_blocks, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, csr_matrix_matrix_multiplication_with_diagonal<iq::NUM_ROWS_PER_BLOCK, 1, false>, a->get_const_row_ptrs(), a->get_const_col_idxs(), a->get_const_values(), d->get_const_values(), b->get_const_row_ptrs(), b->get_const_col_idxs(), b->get_const_values(), temporary_rows.get_data(), temporary_columns.get_data(), temporary_values.get_data());
+			}
+		}
+		
+		//Copy to output
+		c->copy_from(std::move(gko::share(gko::matrix::Csr<float, int>::create_const(
+			  ginkgo_executor
+			, gko::dim<2>(num_blocks * config::G_BLOCKVOLUME, num_columns)
+			, temporary_values.as_const_view()
+			, temporary_columns.as_const_view()
+			, temporary_rows.as_const_view()
+		))));
+		
+		ginkgo_executor->synchronize();
+		//NOTE: Columns already sorted
+	}
+	
+	//Calculates C = A * A^T
+	void matrix_matrix_multiplication_a_at(std::shared_ptr<gko::Executor>& ginkgo_executor, const size_t num_blocks, const size_t num_columns, std::shared_ptr<gko::matrix::Csr<float, int>>& a, std::shared_ptr<gko::matrix::Csr<float, int>>& a_transposed, std::shared_ptr<gko::matrix::Csr<float, int>>& c, Cuda::CudaContext& cu_dev){					
+		matrix_matrix_multiplication<true>(ginkgo_executor, num_blocks, num_columns, a, a_transposed, c, cu_dev);
+		
+		if(c->get_num_stored_elements() > 0){
+			//Mirror
+			cu_dev.compute_launch({num_blocks, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, csr_mirror<iq::NUM_ROWS_PER_BLOCK, 1>, c->get_const_row_ptrs(), c->get_const_col_idxs(), c->get_values());
+		}
+	}
+	
+	//Calculates C = A * D * A^T
+	void matrix_matrix_multiplication_a_at_with_diagonal(std::shared_ptr<gko::Executor>& ginkgo_executor, const size_t num_blocks, const size_t num_columns, std::shared_ptr<gko::matrix::Csr<float, int>>& a, const std::shared_ptr<const gko::matrix::Diagonal<float>>& d, std::shared_ptr<gko::matrix::Csr<float, int>>& a_transposed, std::shared_ptr<gko::matrix::Csr<float, int>>& c, Cuda::CudaContext& cu_dev){					
+		matrix_matrix_multiplication_with_diagonal<true>(ginkgo_executor, num_blocks, num_columns, a, d, a_transposed, c, cu_dev);
+		
+		if(c->get_num_stored_elements() > 0){
+			//Mirror
+			cu_dev.compute_launch({num_blocks, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, csr_mirror<iq::NUM_ROWS_PER_BLOCK, 1>, c->get_const_row_ptrs(), c->get_const_col_idxs(), c->get_values());
+		}
+	}
+};
 
 //NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic, readability-magic-numbers, readability-identifier-naming, misc-definitions-in-headers)
 }// namespace mn

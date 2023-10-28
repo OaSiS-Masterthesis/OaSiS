@@ -230,8 +230,8 @@ __global__ void fill_empty_rows(const uint32_t num_blocks, const Partition parti
 	}
 }
 
-template<size_t MatrixSizeY, size_t NumRowsPerBlock, size_t NumDimensionsPerRow, size_t TotalNumBlocks, typename Partition>
-__global__ void add_block_rows(const size_t* num_blocks_per_row, const uint32_t num_blocks, const Partition partition, const std::array<const int*, TotalNumBlocks> iq_parts_rows, int* iq_rows) {
+template<size_t NumRowsPerBlock, size_t NumDimensionsPerRow, typename Partition>
+__global__ void add_block_rows(const size_t matrix_size_y, size_t* num_blocks_per_row, const uint32_t num_blocks, const Partition partition, const int** iq_parts_rows, int* iq_rows) {
 	//const int src_blockno		   = static_cast<int>(blockIdx.x);
 	//const auto blockid			   = partition.active_keys[blockIdx.x];
 	
@@ -239,19 +239,18 @@ __global__ void add_block_rows(const size_t* num_blocks_per_row, const uint32_t 
 	//We can calculate the offset in the column array by our id and the amount of neighbour cells (=columns)
 	const size_t base_row = NumRowsPerBlock * blockIdx.x;
 	
-	//Accumulate blocks per row
-	std::array<size_t, MatrixSizeY> accumulated_blocks_per_row;
-	accumulated_blocks_per_row[0] = 0;
-	for(size_t i = 1; i < MatrixSizeY; ++i){
-		accumulated_blocks_per_row[i] = accumulated_blocks_per_row[i - 1] + num_blocks_per_row[i - 1];
-	}
-	
 	for(size_t row = static_cast<int>(threadIdx.x); row < NumRowsPerBlock; row += static_cast<int>(blockDim.x)){
 		for(size_t dimension = 0; dimension < NumDimensionsPerRow; ++dimension){
-			for(size_t row_offset = 0; row_offset < MatrixSizeY; ++row_offset){
+			for(size_t row_offset = 0; row_offset < matrix_size_y; ++row_offset){
+				//Accumulate blocks per row
+				size_t accumulated_blocks_per_row = 0;
+				for(size_t i = 0; i < row_offset; ++i){
+					accumulated_blocks_per_row += num_blocks_per_row[i];
+				}
+				
 				size_t elements_in_row = 0;
 				for(size_t column_offset_index = 0; column_offset_index < num_blocks_per_row[row_offset]; ++column_offset_index){
-					const size_t block_index = accumulated_blocks_per_row[row_offset] + column_offset_index;
+					const size_t block_index = accumulated_blocks_per_row + column_offset_index;
 					
 					elements_in_row += (iq_parts_rows[block_index][NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension + 1] - iq_parts_rows[block_index][NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension]);
 				}
@@ -262,8 +261,8 @@ __global__ void add_block_rows(const size_t* num_blocks_per_row, const uint32_t 
 	}
 }
 
-template<size_t MatrixSizeX, size_t MatrixSizeY, size_t NumRowsPerBlock, size_t NumDimensionsPerRow, size_t TotalNumBlocks, typename Partition>
-__global__ void copy_values(const size_t* num_blocks_per_row, const std::array<size_t, MatrixSizeX>* block_offsets_per_row, const uint32_t num_blocks, const Partition partition, const std::array<const int*, TotalNumBlocks> iq_parts_rows, const std::array<const int*, TotalNumBlocks> iq_parts_columns, const std::array<const float*, TotalNumBlocks> iq_parts_values, const int* iq_rows, int* iq_columns, float* iq_values) {
+template<size_t NumRowsPerBlock, size_t NumDimensionsPerRow, typename Partition>
+__global__ void copy_values(const size_t matrix_size_y, size_t* num_blocks_per_row, size_t** block_offsets_per_row, const uint32_t num_blocks, const Partition partition, const int** iq_parts_rows, const int** iq_parts_columns, const float** iq_parts_values, const int* iq_rows, int* iq_columns, float* iq_values) {
 	//const int src_blockno		   = static_cast<int>(blockIdx.x);
 	//const auto blockid			   = partition.active_keys[blockIdx.x];
 	
@@ -271,19 +270,20 @@ __global__ void copy_values(const size_t* num_blocks_per_row, const std::array<s
 	//We can calculate the offset in the column array by our id and the amount of neighbour cells (=columns)
 	const size_t base_row = NumRowsPerBlock * blockIdx.x;
 	
-	//Accumulate blocks per row
-	std::array<size_t, MatrixSizeY> accumulated_blocks_per_row;
-	accumulated_blocks_per_row[0] = 0;
-	for(size_t i = 1; i < MatrixSizeY; ++i){
-		accumulated_blocks_per_row[i] = accumulated_blocks_per_row[i - 1] + num_blocks_per_row[i - 1];
-	}
+	
 	
 	for(size_t row = static_cast<int>(threadIdx.x); row < NumRowsPerBlock; row += static_cast<int>(blockDim.x)){
 		for(size_t dimension = 0; dimension < NumDimensionsPerRow; ++dimension){
-			for(size_t row_offset = 0; row_offset < MatrixSizeY; ++row_offset){
+			for(size_t row_offset = 0; row_offset < matrix_size_y; ++row_offset){
+				//Accumulate blocks per row
+				size_t accumulated_blocks_per_row = 0;
+				for(size_t i = 0; i < row_offset; ++i){
+					accumulated_blocks_per_row += num_blocks_per_row[i];
+				}
+				
 				size_t offset_in_row = 0;
 				for(size_t column_offset_index = 0; column_offset_index < num_blocks_per_row[row_offset]; ++column_offset_index){
-					const size_t block_index = accumulated_blocks_per_row[row_offset] + column_offset_index;
+					const size_t block_index = accumulated_blocks_per_row + column_offset_index;
 					const int values_offset = iq_rows[row_offset * NumDimensionsPerRow * NumRowsPerBlock * num_blocks + NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension] + offset_in_row;
 					
 					const size_t values_in_row = iq_parts_rows[block_index][NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension + 1] - iq_parts_rows[block_index][NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension];
@@ -445,7 +445,9 @@ __forceinline__ __device__ void store_data_neigbours_fluid<MaterialE::J_FLUID>(c
 	(*gradient_fluid) += -(mass / particle_buffer_fluid.rho) * J * W1_pressure * delta_W_velocity;
 	
 	//FIXME: Is that correct?  Actually also not particle based maybe? And just add once?
+	//if(boundary_fluid != nullptr){
 	//(*boundary_fluid) += W_velocity * W1_pressure * boundary_normal[alpha];
+	//}
 }
 
 template<>
@@ -533,7 +535,7 @@ __forceinline__ __device__ void update_strain(const ParticleBuffer<MaterialE::FI
 }
 
 template<typename Partition, typename Grid, MaterialE MaterialTypeSolid, MaterialE MaterialTypeFluid>
-__forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, const SurfaceParticleBuffer surface_particle_buffer, const std::array<float, 3>* __restrict__ position_shared, const float* __restrict__ mass_shared, const float* __restrict__ J_shared, const std::array<float, 3>* __restrict__ normal_shared, const SurfacePointType* __restrict__ point_type_shared, const float* __restrict__ contact_area_shared, const int particle_offset, const int current_blockno, const ivec3 current_blockid, const ivec3 block_cellid, const int particle_id_in_block, float* __restrict__ scaling_solid, float* __restrict__ pressure_solid_nominator, float* __restrict__ pressure_solid_denominator, float* __restrict__ mass_solid, float* __restrict__ gradient_solid, float* __restrict__ coupling_solid, float* __restrict__ coupling_fluid) {
+__forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, const std::array<float, 3>* __restrict__ position_shared, const float* __restrict__ mass_shared, const float* __restrict__ J_shared, const std::array<float, 3>* __restrict__ normal_shared, const SurfacePointType* __restrict__ point_type_shared, const float* __restrict__ contact_area_shared, const int particle_offset, const int current_blockno, const ivec3 current_blockid, const ivec3 block_cellid, const int particle_id_in_block, float* __restrict__ scaling_solid, float* __restrict__ pressure_solid_nominator, float* __restrict__ pressure_solid_denominator, float* __restrict__ mass_solid, float* __restrict__ gradient_solid, float* __restrict__ coupling_solid, float* __restrict__ coupling_fluid) {
 	const vec3 normal {normal_shared[particle_id_in_block - particle_offset][0], normal_shared[particle_id_in_block - particle_offset][1], normal_shared[particle_id_in_block - particle_offset][2]};
 	//const SurfacePointType point_type = point_type_shared[particle_id_in_block - particle_offset];
 	const float contact_area = contact_area_shared[particle_id_in_block - particle_offset];
@@ -1037,7 +1039,6 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 								, prev_partition
 								, grid_solid
 								, grid_fluid
-								, surface_particle_buffer_solid
 								, &(position_shared[0])
 								, &(mass_shared[0])
 								, &(J_shared[0])
@@ -1255,6 +1256,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 		atomicAdd(&(iq_pointers.boundary_fluid_values[column_index]), boundary_fluid_local[local_cell_index]);
 	}
 }
+
 template<typename Partition, typename Grid, MaterialE MaterialTypeSolid>
 __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, ParticleBuffer<MaterialTypeSolid> next_particle_buffer_soild, const Partition prev_partition, Partition partition, Grid grid_solid, Grid grid_fluid, const float* delta_v_solid, const float* delta_v_fluid, const float* pressure_solid) {
 	const int src_blockno		   = static_cast<int>(blockIdx.x);

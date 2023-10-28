@@ -123,6 +123,9 @@ using GridDomain	   = CompactDomain<int, config::G_GRID_SIZE, config::G_GRID_SIZ
 using GridBufferDomain = CompactDomain<int, config::G_MAX_ACTIVE_BLOCK>;
 
 //FIXME: Move to another place
+constexpr size_t BIN_COUNT = 2;
+
+//FIXME: Move to another place
 struct CustomDeviceAllocator {			   // hide the global one
 	int gpuid;
 
