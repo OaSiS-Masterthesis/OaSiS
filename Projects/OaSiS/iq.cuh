@@ -262,16 +262,14 @@ __global__ void add_block_rows(const size_t matrix_size_y, size_t* num_blocks_pe
 }
 
 template<size_t NumRowsPerBlock, size_t NumDimensionsPerRow, typename Partition>
-__global__ void copy_values(const size_t matrix_size_y, size_t* num_blocks_per_row, size_t** block_offsets_per_row, const uint32_t num_blocks, const Partition partition, const int** iq_parts_rows, const int** iq_parts_columns, const float** iq_parts_values, const int* iq_rows, int* iq_columns, float* iq_values) {
+__global__ void copy_values(const size_t matrix_size_x, const size_t matrix_size_y, size_t* num_blocks_per_row, size_t* block_offsets_per_row, const uint32_t num_blocks, const Partition partition, const int** iq_parts_rows, const int** iq_parts_columns, const float** iq_parts_values, const int* iq_rows, int* iq_columns, float* iq_values) {
 	//const int src_blockno		   = static_cast<int>(blockIdx.x);
 	//const auto blockid			   = partition.active_keys[blockIdx.x];
 	
 	//Handle own rows and add column data for all neighbour cells of each cell (fixed amount)
 	//We can calculate the offset in the column array by our id and the amount of neighbour cells (=columns)
 	const size_t base_row = NumRowsPerBlock * blockIdx.x;
-	
-	
-	
+
 	for(size_t row = static_cast<int>(threadIdx.x); row < NumRowsPerBlock; row += static_cast<int>(blockDim.x)){
 		for(size_t dimension = 0; dimension < NumDimensionsPerRow; ++dimension){
 			for(size_t row_offset = 0; row_offset < matrix_size_y; ++row_offset){
@@ -291,8 +289,8 @@ __global__ void copy_values(const size_t matrix_size_y, size_t* num_blocks_per_r
 					const int* columns_ptr_src = &(iq_parts_columns[block_index][iq_parts_rows[block_index][NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension]]);
 					const float* values_ptr_src = &(iq_parts_values[block_index][iq_parts_rows[block_index][NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension]]);
 				
-					thrust::transform(thrust::seq, columns_ptr_src, columns_ptr_src + values_in_row, &(iq_columns[values_offset]), [&block_offsets_per_row, &num_blocks, &row_offset, &column_offset_index](const int& column){
-						return block_offsets_per_row[row_offset][column_offset_index] * num_blocks * NumRowsPerBlock + column;
+					thrust::transform(thrust::seq, columns_ptr_src, columns_ptr_src + values_in_row, &(iq_columns[values_offset]), [&matrix_size_x, &block_offsets_per_row, &num_blocks, &row_offset, &column_offset_index](const int& column){
+						return block_offsets_per_row[row_offset * matrix_size_x + column_offset_index] * num_blocks * NumRowsPerBlock + column;
 					});
 					thrust::copy(thrust::seq, values_ptr_src, values_ptr_src + values_in_row, &(iq_values[values_offset]));
 					
@@ -416,6 +414,7 @@ __forceinline__ __device__ void store_data_fluid<MaterialE::J_FLUID>(const Parti
 	
 	//Volume weighted average of pressure;
 	(*scaling_fluid) += (volume_0 / lambda) * W_pressure;
+	//printf("TMP1 %.28f %.28f %.28f %.28f\n", volume_0, J, pressure, W_pressure);
 	(*pressure_fluid_nominator) += volume_0 * J * pressure * W_pressure;
 	(*pressure_fluid_denominator) += volume_0 * J * W_pressure;
 }
@@ -1258,7 +1257,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 }
 
 template<typename Partition, typename Grid, MaterialE MaterialTypeSolid>
-__global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, ParticleBuffer<MaterialTypeSolid> next_particle_buffer_soild, const Partition prev_partition, Partition partition, Grid grid_solid, Grid grid_fluid, const float* delta_v_solid, const float* delta_v_fluid, const float* pressure_solid) {
+__global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const Partition prev_partition, Partition partition, Grid grid_solid, Grid grid_fluid, const float* delta_v_solid, const float* delta_v_fluid, const float* pressure_solid) {
 	const int src_blockno		   = static_cast<int>(blockIdx.x);
 	const auto blockid			   = partition.active_keys[blockIdx.x];
 	const ivec3 block_cellid = blockid * static_cast<int>(config::G_BLOCKSIZE);
@@ -1312,7 +1311,7 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 	
 	constexpr size_t CELL_COUNT = KERNEL_SIZE * KERNEL_SIZE * KERNEL_SIZE;
 	
-	const int particle_bucket_size_solid = next_particle_buffer_soild.particle_bucket_sizes[src_blockno];
+	const int particle_bucket_size_solid = next_particle_buffer_solid.particle_bucket_sizes[src_blockno];
 	
 	__shared__ float pressure_solid_shared[KERNEL_SIZE][KERNEL_SIZE][KERNEL_SIZE];
 	
@@ -1344,7 +1343,7 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 		int source_pidib;
 		{
 			//Fetch advection (direction at high bits, particle in in cell at low bits)
-			const int advect = next_particle_buffer_soild.blockbuckets[src_blockno * config::G_PARTICLE_NUM_PER_BLOCK + particle_id_in_block];
+			const int advect = next_particle_buffer_solid.blockbuckets[src_blockno * config::G_PARTICLE_NUM_PER_BLOCK + particle_id_in_block];
 
 			//Retrieve the direction (first stripping the particle id by division)
 			ivec3 offset;
@@ -1366,17 +1365,17 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 		vec3 pos {fetch_particle_buffer_tmp.pos[0], fetch_particle_buffer_tmp.pos[1], fetch_particle_buffer_tmp.pos[2]};
 		
 		//Get position of grid cell
-		const ivec3 global_base_index_solid_0 = get_cell_id<0>(pos.data_arr(), grid_solid.get_offset());
+		const ivec3 global_base_index_solid_pressure = get_cell_id<INTERPOLATION_DEGREE_SOLID_PRESSURE>(pos.data_arr(), grid_solid.get_offset());
 		
 		//Get position relative to grid cell
-		const vec3 local_pos_solid_0 = pos - (global_base_index_solid_0 + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2])) * config::G_DX;
+		const vec3 local_pos_solid_pressure = pos - (global_base_index_solid_pressure + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2])) * config::G_DX;
 
 		//Calculate weights
 		vec3x3 weight_solid_pressure;
 		
 		#pragma unroll 3
 		for(int dd = 0; dd < 3; ++dd) {
-			const std::array<float, INTERPOLATION_DEGREE_SOLID_PRESSURE + 1> current_weight_solid_pressure = bspline_weight<float, INTERPOLATION_DEGREE_SOLID_PRESSURE>(local_pos_solid_0[dd]);
+			const std::array<float, INTERPOLATION_DEGREE_SOLID_PRESSURE + 1> current_weight_solid_pressure = bspline_weight<float, INTERPOLATION_DEGREE_SOLID_PRESSURE>(local_pos_solid_pressure[dd]);
 			for(int i = 0; i < INTERPOLATION_DEGREE_SOLID_PRESSURE + 1; ++i){
 				weight_solid_pressure(dd, i)		  = current_weight_solid_pressure[i];
 			}
@@ -1392,7 +1391,7 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 		for(char i = -static_cast<char>(INTERPOLATION_DEGREE_MAX); i < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; i++) {
 			for(char j = -static_cast<char>(INTERPOLATION_DEGREE_MAX); j < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; j++) {
 				for(char k = -static_cast<char>(INTERPOLATION_DEGREE_MAX); k < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; k++) {
-					const ivec3 local_id = (global_base_index_solid_0 - block_cellid) + ivec3(i, j, k);
+					const ivec3 local_id = (global_base_index_solid_pressure - block_cellid) + ivec3(i, j, k);
 					const ivec3 absolute_local_id = local_id + ivec3(static_cast<int>(KERNEL_OFFSET), static_cast<int>(KERNEL_OFFSET), static_cast<int>(KERNEL_OFFSET));
 					
 					if(

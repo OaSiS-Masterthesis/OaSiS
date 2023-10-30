@@ -9,6 +9,36 @@
 		{
 			"type": "particle",
 			"file": "two_dragons.sdf",
+			"constitutive": "jfluid",
+			"volume": 7.4505806e-9,
+			"rho": 1e3,
+			"bulk_viscosity": 2.47e-3,
+			"gamma": 7.0,
+			"viscosity": 1.0016e-3,
+			"offset": [
+				0.1,
+				0.056,
+				0.1
+			],
+			"grid_offset": [
+				0.5,
+				0.5,
+				0.5
+			],
+			"span": [
+				10.0,
+				10.0,
+				10.0
+			],
+			"velocity": [
+				0.0,
+				-3.0,
+				0.0
+			]
+		},
+		{
+			"type": "particle",
+			"file": "two_dragons.sdf",
 			"constitutive": "fixed_corotated_ghost",
 			"volume": 7.4505806e-9,
 			"rho": 1e3,
@@ -36,8 +66,13 @@
 	],
 	"physical_systems": [
 		{
+			"type": "solid-fluid coupling",
+			"solid": 1,
+			"fluid": 0
+		},
+		{
 			"type": "surface flow",
-			"surface": 0,
+			"surface": 1,
 			"flow": 0
 		}
 	]

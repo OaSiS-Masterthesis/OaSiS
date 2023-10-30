@@ -360,12 +360,6 @@ struct OasisSimulator {
 		gko_neg_one_dense = gko::share(gko::initialize<gko::matrix::Dense<float>>({-1.0f}, ginkgo_executor));
 		gko_zero_dense = gko::share(gko::initialize<gko::matrix::Dense<float>>({0.0f}, ginkgo_executor));
 		
-		for(size_t i = 0; i < surface_flow_models.size(); i++) {
-			match(surface_flow_models[i])([this](auto& surface_flow_model) {
-				surface_flow_model.initialize(ginkgo_executor);
-			});
-		}
-		
 		//Create IQ-Solver
 		{
 			const gko::remove_complex<float> tolerance = 1e-8f;
@@ -637,7 +631,7 @@ struct OasisSimulator {
 	
 	//TODO: Allow choice of type and parameters, etc.
 	void init_surface_flow_model() {
-		surface_flow_models.emplace_back(SimpleSurfaceFlowModel());
+		surface_flow_models.emplace_back(SimpleSurfaceFlowModel(ginkgo_executor));
 	}
 	
 	void init_solid_fluid_coupling(const int solid_id, const int fluid_id) {
@@ -675,6 +669,7 @@ struct OasisSimulator {
 				
 				for(int copyid = 0; copyid < BIN_COUNT; ++copyid) {
 					surface_flow_particle_buffers[copyid].emplace_back(SurfaceFlowParticleBuffer(managed_memory_allocator, &managed_memory, particle_counts[surface_id] / config::G_BIN_CAPACITY + config::G_MAX_ACTIVE_BLOCK));
+					
 				}
 			}
 		}else{
@@ -916,7 +911,7 @@ struct OasisSimulator {
 				next_dt = compute_dt(max_vel, current_step_time, seconds_per_frame, dt_default);
 				fmt::print(fmt::emphasis::bold, "{} --{}--> {}, defaultDt: {}, max_vel: {}\n", cur_time.count(), next_dt.count(), next_time.count(), dt_default.count(), max_vel);
 				
-				//TODO: IQ-Solve!
+				//IQ-Solve!
 				{
 					auto& cu_dev = Cuda::ref_cuda_context(gpuid);
 					CudaTimer timer {cu_dev.stream_compute()};
@@ -1357,9 +1352,7 @@ struct OasisSimulator {
 						
 						cu_dev.syncStream<streamIdx::COMPUTE>();
 						
-						
-						
-						//If we have a surface flow model, let it generate its matrices
+						//If we have a surface flow model, let it generate all matrices
 						if(has_surface_flow){
 							match(surface_flow_models[surface_flow_model_id])([this, &coupling_block_count, &solid_id, &fluid_id, &surface_flow_id, &cu_dev](auto& surface_flow_model) {
 								surface_flow_model.fill_matrices(managed_memory, particle_bins, partitions, grid_blocks, surface_particle_buffers, surface_flow_particle_buffers, rollid, dt, exterior_block_count, coupling_block_count, solid_id, fluid_id, surface_flow_id, iq_lhs_scaling_solid_values, iq_lhs_scaling_fluid_values, iq_lhs_mass_solid_values, iq_lhs_mass_fluid_values, iq_lhs_3_1_rows, iq_lhs_3_1_columns, iq_lhs_gradient_solid_values, iq_lhs_gradient_fluid_values, iq_lhs_coupling_solid_values, iq_lhs_coupling_fluid_values, iq_rhs_array, iq_solve_velocity_result_array, cu_dev);
@@ -1796,7 +1789,7 @@ struct OasisSimulator {
 						//Move from temporary to actual arrays
 						{
 							size_t* lhs_num_blocks_per_row_ptr;
-							size_t** lhs_block_offsets_per_row_ptr;
+							size_t* lhs_block_offsets_per_row_ptr;
 							if(has_surface_flow){
 								match(surface_flow_models[surface_flow_model_id])([&lhs_num_blocks_per_row_ptr, &lhs_block_offsets_per_row_ptr](const auto& surface_flow_model) {
 									lhs_num_blocks_per_row_ptr = surface_flow_model.get_lhs_num_blocks_per_row_ptr();
@@ -1817,6 +1810,14 @@ struct OasisSimulator {
 								iq_lhs_parts_columns[j] = iq_lhs_parts[j]->get_const_col_idxs();
 								iq_lhs_parts_values[j] = iq_lhs_parts[j]->get_const_values();
 							}
+							
+							const int** iq_lhs_parts_rows_device = static_cast<const int**>(cu_dev.borrow(sizeof(const int*) * lhs_matrix_total_block_count));
+							const int** iq_lhs_parts_columns_device = static_cast<const int**>(cu_dev.borrow(sizeof(const int*) * lhs_matrix_total_block_count));
+							const float** iq_lhs_parts_values_device = static_cast<const float**>(cu_dev.borrow(sizeof(const float*) * lhs_matrix_total_block_count));
+							
+							cudaMemcpyAsync(iq_lhs_parts_rows_device, iq_lhs_parts_rows.data(), sizeof(const int*) * lhs_matrix_total_block_count, cudaMemcpyDefault, cu_dev.stream_compute());
+							cudaMemcpyAsync(iq_lhs_parts_columns_device, iq_lhs_parts_columns.data(), sizeof(const int*) * lhs_matrix_total_block_count, cudaMemcpyDefault, cu_dev.stream_compute());
+							cudaMemcpyAsync(iq_lhs_parts_values_device, iq_lhs_parts_values.data(), sizeof(const float*) * lhs_matrix_total_block_count, cudaMemcpyDefault, cu_dev.stream_compute());
 							
 							//Verify rows match
 							const size_t row_count = exterior_block_count * config::G_BLOCKVOLUME;
@@ -1847,18 +1848,17 @@ struct OasisSimulator {
 							ginkgo_executor->synchronize();
 							
 							//Add rows
-							cu_dev.compute_launch({exterior_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::add_block_rows<iq::NUM_ROWS_PER_BLOCK, 1, Partition<1>>, lhs_matrix_size_y, lhs_num_blocks_per_row_ptr, static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_lhs_parts_rows.data(), iq_lhs_rows.get_data());
+							cu_dev.compute_launch({exterior_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::add_block_rows<iq::NUM_ROWS_PER_BLOCK, 1, Partition<1>>, lhs_matrix_size_y, lhs_num_blocks_per_row_ptr, static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_lhs_parts_rows_device, iq_lhs_rows.get_data());
 							
 							//Scan rows
 							exclusive_scan(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1, iq_lhs_rows.get_data(), iq_lhs_rows.get_data(), cu_dev);
 							
 							//Copy columns and values
-							cu_dev.compute_launch({exterior_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::copy_values<iq::NUM_ROWS_PER_BLOCK, 1, Partition<1>>, lhs_matrix_size_y, lhs_num_blocks_per_row_ptr, lhs_block_offsets_per_row_ptr, static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_lhs_parts_rows.data(), iq_lhs_parts_columns.data(), iq_lhs_parts_values.data(), iq_lhs_rows.get_const_data(), iq_lhs_columns.get_data(), iq_lhs_values.get_data());
+							cu_dev.compute_launch({exterior_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::copy_values<iq::NUM_ROWS_PER_BLOCK, 1, Partition<1>>, lhs_matrix_size_x, lhs_matrix_size_y, lhs_num_blocks_per_row_ptr, lhs_block_offsets_per_row_ptr, static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_lhs_parts_rows_device, iq_lhs_parts_columns_device, iq_lhs_parts_values_device, iq_lhs_rows.get_const_data(), iq_lhs_columns.get_data(), iq_lhs_values.get_data());
 						}
-						
 						{
 							size_t* solve_velocity_num_blocks_per_row_ptr;
-							size_t** solve_velocity_block_offsets_per_row_ptr;
+							size_t* solve_velocity_block_offsets_per_row_ptr;
 							if(has_surface_flow){
 								match(surface_flow_models[surface_flow_model_id])([&solve_velocity_num_blocks_per_row_ptr, &solve_velocity_block_offsets_per_row_ptr](const auto& surface_flow_model) {
 									solve_velocity_num_blocks_per_row_ptr = surface_flow_model.get_solve_velocity_num_blocks_per_row_ptr();
@@ -1880,6 +1880,14 @@ struct OasisSimulator {
 								iq_solve_velocity_parts_values[j] = iq_solve_velocity_parts[j]->get_const_values();
 							}
 							
+							const int** iq_solve_velocity_parts_rows_device = static_cast<const int**>(cu_dev.borrow(sizeof(const int*) * solve_velocity_matrix_total_block_count));
+							const int** iq_solve_velocity_parts_columns_device = static_cast<const int**>(cu_dev.borrow(sizeof(const int*) * solve_velocity_matrix_total_block_count));
+							const float** iq_solve_velocity_parts_values_device = static_cast<const float**>(cu_dev.borrow(sizeof(const float*) * solve_velocity_matrix_total_block_count));
+							
+							cudaMemcpyAsync(iq_solve_velocity_parts_rows_device, iq_solve_velocity_parts_rows.data(), sizeof(const int*) * solve_velocity_matrix_total_block_count, cudaMemcpyDefault, cu_dev.stream_compute());
+							cudaMemcpyAsync(iq_solve_velocity_parts_columns_device, iq_solve_velocity_parts_columns.data(), sizeof(const int*) * solve_velocity_matrix_total_block_count, cudaMemcpyDefault, cu_dev.stream_compute());
+							cudaMemcpyAsync(iq_solve_velocity_parts_values_device, iq_solve_velocity_parts_values.data(), sizeof(const float*) * solve_velocity_matrix_total_block_count, cudaMemcpyDefault, cu_dev.stream_compute());
+							
 							//Verify rows match
 							const size_t row_count = 3 * exterior_block_count * config::G_BLOCKVOLUME;
 							size_t solve_velocity_number_of_nonzeros = 0;
@@ -1896,8 +1904,6 @@ struct OasisSimulator {
 								cudaMemcpyAsync(iq_solve_velocity_parts[j]->get_row_ptrs() + row_count, &current_number_of_nonzeros, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute());
 							}
 							
-							cu_dev.syncStream<streamIdx::COMPUTE>();
-							
 							//Resize values and columns array; Clear rows array
 							iq_solve_velocity_columns.resize_and_reset(solve_velocity_number_of_nonzeros);
 							iq_solve_velocity_values.resize_and_reset(solve_velocity_number_of_nonzeros);
@@ -1909,13 +1915,13 @@ struct OasisSimulator {
 							ginkgo_executor->synchronize();
 							
 							//Add rows
-							cu_dev.compute_launch({exterior_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::add_block_rows<iq::NUM_ROWS_PER_BLOCK, 3, Partition<1>>, solve_velocity_matrix_size_y, solve_velocity_num_blocks_per_row_ptr, static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_solve_velocity_parts_rows.data(), iq_solve_velocity_rows.get_data());
+							cu_dev.compute_launch({exterior_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::add_block_rows<iq::NUM_ROWS_PER_BLOCK, 3, Partition<1>>, solve_velocity_matrix_size_y, solve_velocity_num_blocks_per_row_ptr, static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_solve_velocity_parts_rows_device, iq_solve_velocity_rows.get_data());
 							
 							//Scan rows
-							exclusive_scan(3 * solve_velocity_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1, iq_solve_velocity_rows.get_data(), iq_solve_velocity_rows.get_data(), cu_dev);
+							exclusive_scan(3 * solve_velocity_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1, iq_solve_velocity_rows.get_data(), iq_solve_velocity_rows.get_data(), cu_dev);;
 							
 							//Copy columns and values
-							cu_dev.compute_launch({exterior_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::copy_values<iq::NUM_ROWS_PER_BLOCK, 3, Partition<1>>, solve_velocity_matrix_size_x, solve_velocity_num_blocks_per_row_ptr, solve_velocity_block_offsets_per_row_ptr, static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_solve_velocity_parts_rows.data(), iq_solve_velocity_parts_columns.data(), iq_solve_velocity_parts_values.data(), iq_solve_velocity_rows.get_const_data(), iq_solve_velocity_columns.get_data(), iq_solve_velocity_values.get_data());
+							cu_dev.compute_launch({exterior_block_count, config::G_NUM_WARPS_PER_CUDA_BLOCK * config::CUDA_WARP_SIZE * config::G_NUM_WARPS_PER_GRID_BLOCK}, iq::copy_values<iq::NUM_ROWS_PER_BLOCK, 3, Partition<1>>, solve_velocity_matrix_size_x, solve_velocity_matrix_size_y, solve_velocity_num_blocks_per_row_ptr, solve_velocity_block_offsets_per_row_ptr, static_cast<uint32_t>(exterior_block_count), partitions[rollid], iq_solve_velocity_parts_rows_device, iq_solve_velocity_parts_columns_device, iq_solve_velocity_parts_values_device, iq_solve_velocity_rows.get_const_data(), iq_solve_velocity_columns.get_data(), iq_solve_velocity_values.get_data());
 						}
 						
 						cu_dev.syncStream<streamIdx::COMPUTE>();
@@ -2045,7 +2051,7 @@ struct OasisSimulator {
 							
 							//Write out matrix for further external checks
 							std::string fn = std::string {"matrix"} + "_id[" + std::to_string(i) + "]_step[" + std::to_string(cur_step) + "].txt";
-							IO::insert_job([this, coupling_block_count, cu_dev, iq_lhs, fn]() {
+							IO::insert_job([this, &coupling_block_count, &cu_dev, &iq_lhs, &fn, &lhs_matrix_size_y]() {
 								std::vector<int> printout_tmp0(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1);
 								std::vector<int> printout_tmp1(iq_lhs->get_num_stored_elements());
 								std::vector<float> printout_tmp2(iq_lhs->get_num_stored_elements());
@@ -2082,7 +2088,7 @@ struct OasisSimulator {
 							
 						#endif
 						
-						/*
+						
 						std::vector<int> printout_tmp0(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1);
 						std::vector<int> printout_tmp1(iq_lhs->get_num_stored_elements());
 						std::vector<float> printout_tmp2(iq_lhs->get_num_stored_elements());
@@ -2139,7 +2145,7 @@ struct OasisSimulator {
 							std::cout << std::endl;
 						}
 						std::cout << std::endl;
-						*/
+						
 						
 						
 						/*
@@ -2221,15 +2227,10 @@ struct OasisSimulator {
 							gko::write(std::cout, res);
 						}
 						
-						//Update velocity and ghost matrix strain
-						//v_s,t+1 = v_s,t + (- dt * M_s^-1 * G_s * p_g,t+1 + dt * M_s^-1 * H_s^T * h,t+1)
-						//v_f,t+1 = v_f,t + (- dt * M_f^-1 * G_f * p_f,t+1 - dt * M_f^-1 * B * y,t+1 - dt * M_f^-1 * H_f^T * h,t+1)
-						
-						
-						//If we have a surface flow apply mass transfer here before updating velocity
+						//If we have a surface flow apply mass transfer here before updating velocities
 						if(has_surface_flow){
-							match(surface_flow_models[surface_flow_model_id])([](auto& surface_flow_model) {
-								surface_flow_model.mass_transfer();
+							match(surface_flow_models[surface_flow_model_id])([this, &cu_dev, &solid_id, &fluid_id, &surface_flow_id, &iq_result, &iq_lhs_parts](auto& surface_flow_model) {
+								surface_flow_model.mass_transfer(managed_memory, particle_bins, partitions, grid_blocks, surface_flow_particle_buffers, rollid, partition_block_count, solid_id, fluid_id, surface_flow_id, ginkgo_executor, exterior_block_count, iq_result, gko_identity_values, gko_neg_one_dense, iq_lhs_parts, cu_dev);
 							});
 						}
 						
@@ -2238,7 +2239,7 @@ struct OasisSimulator {
 						
 						ginkgo_executor->synchronize();
 						
-						/*
+						
 						std::vector<float> printout_tmp4(3 * solve_velocity_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME);
 						std::vector<float> printout_tmp5(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME);
 						
@@ -2264,7 +2265,7 @@ struct OasisSimulator {
 								std::cout << printout_tmp5[k * exterior_block_count * config::G_BLOCKVOLUME + j] << " ";
 							}
 							std::cout << std::endl;
-						}*/
+						}
 						
 						
 						/*
@@ -2339,7 +2340,9 @@ struct OasisSimulator {
 								surface_flow_model.update_after_solve(managed_memory, particle_bins, partitions, grid_blocks, rollid, exterior_block_count, partition_block_count, solid_id, fluid_id, iq_solve_velocity_result, iq_result, cu_dev);
 							});
 						}else{
-							//Update velocity and strain
+							//Update velocity and ghost matrix strain
+							//v_s,t+1 = v_s,t + (- dt * M_s^-1 * G_s * p_g,t+1 + dt * M_s^-1 * H_s^T * h,t+1)
+							//v_f,t+1 = v_f,t + (- dt * M_f^-1 * G_f * p_f,t+1 - dt * M_f^-1 * B * y,t+1 - dt * M_f^-1 * H_f^T * h,t+1)
 							match(particle_bins[rollid][solid_id])([this, &cu_dev, &solid_id, &fluid_id, &iq_solve_velocity_result, &iq_result](auto& particle_buffer_solid) {
 								auto& next_particle_buffer_solid = get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]);
 								
@@ -2513,6 +2516,33 @@ struct OasisSimulator {
 								, particle_buffer.bin_offsets_virtual
 								, particle_buffer.cell_particle_counts_virtual
 								, particle_buffer.cellbuckets_virtual
+							);
+						});
+						
+						cu_dev.syncStream<streamIdx::COMPUTE>();
+					}
+					
+					//FIXME: Replace by surface flow update
+					for(int i = 0; i < surface_flows.size(); ++i) {
+						match(particle_bins[(rollid + 1) % BIN_COUNT][surface_flows[i][0]])([this, &cu_dev, &i](auto& particle_buffer) {
+							particle_buffer.particle_bucket_sizes = particle_buffer.particle_bucket_sizes_virtual;
+							particle_buffer.bin_offsets = particle_buffer.bin_offsets_virtual;
+							managed_memory.acquire<MemoryType::DEVICE>(
+								  particle_buffer.acquire()
+								, surface_flow_particle_buffers[(rollid + 1) % BIN_COUNT][i].acquire()
+								, reinterpret_cast<void**>(&particle_buffer.particle_bucket_sizes)
+								, reinterpret_cast<void**>(&particle_buffer.bin_offsets)
+							);
+
+							//Initialize surface flow particle buffer
+							//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+							cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, clear_surface_flow_particle_buffer, particle_buffer, surface_flow_particle_buffers[(rollid + 1) % BIN_COUNT][i]);
+							
+							managed_memory.release(
+								  particle_buffer.release()
+								, surface_flow_particle_buffers[(rollid + 1) % BIN_COUNT][i].release()
+								, reinterpret_cast<void**>(&particle_buffer.particle_bucket_sizes_virtual)
+								, reinterpret_cast<void**>(&particle_buffer.bin_offsets_virtual)
 							);
 						});
 						
@@ -3197,11 +3227,13 @@ struct OasisSimulator {
 		for(int i = 0; i < get_model_count(); ++i) {
 			int surface_flow_id = -1;
 			for(int j = 0; j < surface_flows.size(); ++j) {
+				std::cout << i << " " << j << " " << surface_flows[j][0] << std::endl;
 				if(surface_flows[j][0] == i){
 					surface_flow_id = j;
 					break;
 				}
 			}
+			std::cout << surface_flow_id << std::endl;
 			
 			int particle_count	  = 0;
 			int* d_particle_count = static_cast<int*>(cu_dev.borrow(sizeof(int)));
@@ -3226,7 +3258,7 @@ struct OasisSimulator {
 				particle_buffer.particle_bucket_sizes = particle_buffer.particle_bucket_sizes_virtual;
 				particle_buffer.blockbuckets = particle_buffer.blockbuckets_virtual;
 				managed_memory.acquire<MemoryType::DEVICE>(
-					  surface_flow_particle_buffers[rollid][surface_flow_id].acquire()
+					  (surface_flow_id != -1 ? surface_flow_particle_buffers[rollid][surface_flow_id].acquire() : nullptr)
 					, particle_buffer.acquire()
 					, prev_particle_buffer.acquire()
 					//, grid_blocks[0][i].acquire()
@@ -3646,7 +3678,7 @@ struct OasisSimulator {
 			
 				managed_memory.release(
 					  (surface_particle_buffers[i].is_locked() ? surface_particle_buffers[i].release() : nullptr)
-					, (surface_flow_particle_buffers[rollid][surface_flow_id].is_locked() ? surface_flow_particle_buffers[rollid][surface_flow_id].release() : nullptr)
+					, (surface_flow_id != -1 && surface_flow_particle_buffers[rollid][surface_flow_id].is_locked() ? surface_flow_particle_buffers[rollid][surface_flow_id].release() : nullptr)
 					, particle_buffer.release()
 					, prev_particle_buffer.release()
 					, surface_vertex_count
@@ -3677,6 +3709,7 @@ struct OasisSimulator {
 				write_partio_add(surface_mean_curvature, std::string("mean_curvature"), parts);
 				write_partio_add(surface_gauss_curvature, std::string("gauss_curvature"), parts);
 				if(surface_flow_id != -1){
+					std::cout << "TEST0" << std::endl;
 					write_partio_add(surface_flow_mass, std::string("surface_flow_mass"), parts);
 				}
 
@@ -3948,11 +3981,13 @@ struct OasisSimulator {
 				match(particle_bins[rollid][i])([this, &cu_dev, &bin_sizes, &i](auto& particle_buffer) {
 					particle_buffer.particle_bucket_sizes = particle_buffer.particle_bucket_sizes_virtual;
 					particle_buffer.bin_offsets = particle_buffer.bin_offsets_virtual;
+					particle_buffer.blockbuckets = particle_buffer.blockbuckets_virtual;
 					managed_memory.acquire<MemoryType::DEVICE>(
 						  particles[i].acquire()
 						, particle_buffer.acquire()
 						, reinterpret_cast<void**>(&particle_buffer.particle_bucket_sizes)
 						, reinterpret_cast<void**>(&particle_buffer.bin_offsets)
+						, reinterpret_cast<void**>(&particle_buffer.blockbuckets)
 					);
 					
 					//floor((partition_block_count + 1)/G_PARTICLE_BATCH_CAPACITY); G_PARTICLE_BATCH_CAPACITY
@@ -3993,6 +4028,7 @@ struct OasisSimulator {
 						, particle_buffer.release()
 						, reinterpret_cast<void**>(&particle_buffer.particle_bucket_sizes_virtual)
 						, reinterpret_cast<void**>(&particle_buffer.bin_offsets_virtual)
+						, reinterpret_cast<void**>(&particle_buffer.blockbuckets_virtual)
 					);
 				});
 				
@@ -4002,6 +4038,34 @@ struct OasisSimulator {
 			managed_memory.release(
 				  tmps.bin_sizes
 			);
+			
+			for(int i = 0; i < surface_flows.size(); ++i) {
+				match(particle_bins[rollid][surface_flows[i][0]])([this, &cu_dev, &i](auto& particle_buffer) {
+					particle_buffer.particle_bucket_sizes = particle_buffer.particle_bucket_sizes_virtual;
+					particle_buffer.bin_offsets = particle_buffer.bin_offsets_virtual;
+					managed_memory.acquire<MemoryType::DEVICE>(
+						  particle_buffer.acquire()
+						, surface_flow_particle_buffers[rollid][i].acquire()
+						, reinterpret_cast<void**>(&particle_buffer.particle_bucket_sizes)
+						, reinterpret_cast<void**>(&particle_buffer.bin_offsets)
+					);
+
+					//Initialize surface flow particle buffer
+					//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, clear_surface_flow_particle_buffer, particle_buffer, surface_flow_particle_buffers[rollid][i]);
+					
+					managed_memory.release(
+						  particle_buffer.release()
+						, surface_flow_particle_buffers[rollid][i].release()
+						, reinterpret_cast<void**>(&particle_buffer.particle_bucket_sizes_virtual)
+						, reinterpret_cast<void**>(&particle_buffer.bin_offsets_virtual)
+					);
+				});
+				
+				cu_dev.syncStream<streamIdx::COMPUTE>();
+			}
+			
+			
 
 			//Activate blocks near active blocks
 			//floor(partition_block_count/G_PARTICLE_BATCH_CAPACITY); G_PARTICLE_BATCH_CAPACITY
