@@ -159,8 +159,8 @@ __forceinline__ __device__ void store_data_neigbours_surface_flow_coupling<Mater
 	printf("Material type not supported for coupling as fluid.");
 }
 
-template<typename Partition, typename Grid, MaterialE MaterialTypeSolid, MaterialE MaterialTypeFluid>
-__forceinline__ __device__ void simple_surface_flow_aggregate_data_solid(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, const std::array<float, 3>* __restrict__ position_shared, const float* __restrict__ mass_shared, const float* __restrict__ J_shared, const std::array<float, 3>* __restrict__ normal_shared, const SurfacePointType* __restrict__ point_type_shared, const float* __restrict__ contact_area_shared, const float* __restrict__ mass_surface_flow_shared, const float* __restrict__ J_surface_flow_shared, const std::array<float, 3>* __restrict__ velocity_surface_flow_shared, const int particle_offset, const int current_blockno, const ivec3 current_blockid, const ivec3 block_cellid, const int particle_id_in_block
+template<typename Partition, typename Grid, MaterialE MaterialTypeSolid, MaterialE MaterialTypeFluid, typename SurfaceFlowParticleBuffer>
+__forceinline__ __device__ void simple_surface_flow_aggregate_data_solid(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, const SurfaceFlowParticleBuffer surface_flow_particle_buffer, const std::array<float, 3>* __restrict__ position_shared, const float* __restrict__ mass_shared, const float* __restrict__ J_shared, const std::array<float, 3>* __restrict__ normal_shared, const SurfacePointType* __restrict__ point_type_shared, const float* __restrict__ contact_area_shared, const float* __restrict__ mass_surface_flow_shared, const float* __restrict__ J_surface_flow_shared, const std::array<float, 3>* __restrict__ velocity_surface_flow_shared, const int particle_offset, const int current_blockno, const ivec3 current_blockid, const ivec3 block_cellid, const int particle_id_in_block
 , float* __restrict__ scaling_solid, float* __restrict__ pressure_solid_nominator, float* __restrict__ pressure_solid_denominator, float* __restrict__ mass_solid, float* __restrict__ gradient_solid, float* __restrict__ coupling_solid_domain, float* __restrict__ coupling_solid_surface
 , float* __restrict__ coupling_fluid
 , float* __restrict__ velocity_surface, float* __restrict__ scaling_surface, float* __restrict__ pressure_surface_nominator, float* __restrict__ pressure_surface_denominator, float* __restrict__ mass_surface, float* __restrict__ gradient_surface, float* __restrict__ coupling_surface, float* __restrict__ surface_flow_coupling_surface
@@ -306,7 +306,7 @@ __forceinline__ __device__ void simple_surface_flow_aggregate_data_solid(const P
 					fetch_particle_buffer_data<MaterialTypeFluid>(particle_buffer_fluid, advection_source_blockno_fluid, source_pidib_fluid, fetch_particle_buffer_tmp);
 					//const float mass_fluid = fetch_particle_buffer_tmp.mass;
 					vec3 pos_fluid {fetch_particle_buffer_tmp.pos[0], fetch_particle_buffer_tmp.pos[1], fetch_particle_buffer_tmp.pos[2]};
-					//float J_fluid	 = fetch_particle_buffer_tmp.J;
+					//const float J_fluid	 = fetch_particle_buffer_tmp.J;
 					
 					const vec3 diff = pos - pos_fluid;
 					const float distance = std::sqrt(diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]);
@@ -321,6 +321,67 @@ __forceinline__ __device__ void simple_surface_flow_aggregate_data_solid(const P
 	}
 	
 	const bool has_neighbours = (__syncthreads_or(has_neighbours_local ? 1 : 0) == 1);
+	
+	//Get near surface particles
+	bool has_neighbours_surface_local = false;
+	for(int grid_x = -4; grid_x <= 1; ++grid_x){
+		for(int grid_y = -4; grid_y <= 1; ++grid_y){
+			for(int grid_z = -4; grid_z <= 1; ++grid_z){
+				const ivec3 cell_offset {grid_x, grid_y, grid_z};
+				const ivec3 current_cellid = global_base_index_solid_2 + cell_offset;
+				const ivec3 current_blockid = current_cellid / static_cast<int>(config::G_BLOCKSIZE);
+				const int current_blockno_surface = prev_partition.query(current_blockid);
+				
+				//Skip empty blocks
+				if(current_blockno_surface == -1){
+					continue;
+				}
+				
+				for(int particle_id_in_block_surface = static_cast<int>(threadIdx.x); particle_id_in_block_surface <  next_particle_buffer_solid.particle_bucket_sizes[current_blockno_surface]; particle_id_in_block_surface += static_cast<int>(blockDim.x)) {
+					//Fetch index of the advection source
+					int advection_source_blockno_surface;
+					int source_pidib_surface;
+					{
+						//Fetch advection (direction at high bits, particle in in cell at low bits)
+						const int advect = next_particle_buffer_solid.blockbuckets[current_blockno_surface * config::G_PARTICLE_NUM_PER_BLOCK + particle_id_in_block_surface];
+
+						//Retrieve the direction (first stripping the particle id by division)
+						ivec3 offset;
+						dir_components<3>(advect / config::G_PARTICLE_NUM_PER_BLOCK, offset.data_arr());
+
+						//Retrieve the particle id by AND for lower bits
+						source_pidib_surface = advect & (config::G_PARTICLE_NUM_PER_BLOCK - 1);
+
+						//Get global index by adding blockid and offset
+						const ivec3 global_advection_index = current_blockid + offset;
+
+						//Get block_no from partition
+						advection_source_blockno_surface = prev_partition.query(global_advection_index);
+					}
+					
+					auto surface_flow_particle_bin = surface_flow_particle_buffer.ch(_0, particle_buffer_solid.bin_offsets[advection_source_blockno_surface] + source_pidib_surface / config::G_BIN_CAPACITY);
+					const int particle_id_in_bin = source_pidib_surface  % config::G_BIN_CAPACITY;
+
+					//Fetch position and determinant of deformation gradient
+					FetchParticleBufferDataIntermediate fetch_particle_buffer_tmp = {};
+					fetch_particle_buffer_data<MaterialTypeSolid>(particle_buffer_solid, advection_source_blockno_surface, source_pidib_surface, fetch_particle_buffer_tmp);
+					vec3 pos_fluid {fetch_particle_buffer_tmp.pos[0], fetch_particle_buffer_tmp.pos[1], fetch_particle_buffer_tmp.pos[2]};
+					const float mass_surface = surface_flow_particle_bin.val(_0, particle_id_in_bin);
+					//const float J_surface = surface_flow_particle_bin.val(_1, particle_id_in_bin);
+					
+					const vec3 diff = pos - pos_fluid;
+					const float distance = std::sqrt(diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]);
+					
+					if(distance <= 0.5f * config::G_DX && mass_surface > 0.0f){
+						has_neighbours_surface_local = true;
+						break;
+					}
+				}
+			}
+		}
+	}
+	
+	const bool has_neighbours_surface = (__syncthreads_or(has_neighbours_surface_local ? 1 : 0) == 1);
 	
 	//Store data
 	//Note: Weights are 0 if outside of interpolation degree/radius around particles cell
@@ -375,9 +436,7 @@ __forceinline__ __device__ void simple_surface_flow_aggregate_data_solid(const P
 		mass_solid[local_cell_index] += mass * W_velocity;
 		mass_surface[local_cell_index] += mass_surface_flow * W_velocity_surface;
 		
-		if(mass_surface_flow > 0.0f){
-			velocity_surface[local_cell_index] += velocity_surface_flow[alpha] * W_velocity_surface;
-		}
+		velocity_surface[local_cell_index] += mass_surface_flow * velocity_surface_flow[alpha] * W_velocity_surface;
 	}
 	
 	for(size_t local_cell_index = 0; local_cell_index < iq::get_thread_count<iq::BLOCK_SIZE, (3 * iq::NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + iq::BLOCK_SIZE - 1) / iq::BLOCK_SIZE>(threadIdx.x, 3 * iq::NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME); local_cell_index++){
@@ -454,8 +513,7 @@ __forceinline__ __device__ void simple_surface_flow_aggregate_data_solid(const P
 			iq::store_data_neigbours_coupling_fluid(particle_buffer_fluid, current_coupling_domain, W_velocity_fluid, W1_pressure_interface, contact_area, normal[alpha]);
 		}
 		
-		//FIXME: Also consider near solid particles!
-		if(mass_surface_flow > 0.0f){
+		if(has_neighbours_surface){
 			iq::store_data_neigbours_coupling_solid(particle_buffer_solid, current_coupling_solid_surface, W_velocity_solid, W1_pressure_interface, contact_area, normal[alpha]);
 			iq::store_data_neigbours_coupling_fluid(particle_buffer_fluid, current_coupling_surface, W_velocity_fluid, W1_pressure_interface, contact_area, normal[alpha]);
 		}
@@ -663,6 +721,8 @@ __global__ void simple_surface_flow_create_iq_system(const uint32_t num_blocks, 
 				velocity_solid_local[i] = grid_block_solid.val_1d(_3, iq::get_global_index<iq::BLOCK_SIZE, (3 * config::G_BLOCKVOLUME + iq::BLOCK_SIZE - 1) / iq::BLOCK_SIZE>(threadIdx.x, i) / 3);
 				velocity_domain_local[i] = grid_block_fluid.val_1d(_3, iq::get_global_index<iq::BLOCK_SIZE, (3 * config::G_BLOCKVOLUME + iq::BLOCK_SIZE - 1) / iq::BLOCK_SIZE>(threadIdx.x, i) / 3);
 			}
+			
+			velocity_surface_local[i] = 0.0f;
 		}
 	}		
 	for(size_t i = 0; i < (3 * iq::NUM_COLUMNS_PER_BLOCK * config::G_BLOCKVOLUME + iq::BLOCK_SIZE - 1) / iq::BLOCK_SIZE; ++i){				
@@ -767,6 +827,7 @@ __global__ void simple_surface_flow_create_iq_system(const uint32_t num_blocks, 
 								, prev_partition
 								, grid_solid
 								, grid_fluid
+								, surface_flow_particle_buffer
 								, &(position_shared[0])
 								, &(mass_shared[0])
 								, &(J_shared[0])
@@ -956,6 +1017,8 @@ __global__ void simple_surface_flow_create_iq_system(const uint32_t num_blocks, 
 		//FIXME:float mass_fluid;
 		float mass_domain;
 		float mass_surface;
+		
+		float velocity_surface;
 		//Only calculate for particles with mass bigger than 0 (otherwise we will divide by 0)
 		if(mass_solid_local[local_cell_index] > 0.0f){
 			mass_solid = dt.count() / mass_solid_local[local_cell_index];
@@ -973,8 +1036,10 @@ __global__ void simple_surface_flow_create_iq_system(const uint32_t num_blocks, 
 			mass_domain = 0.0f;
 		}
 		if(mass_surface_local[local_cell_index] > 0.0f){
+			velocity_surface = velocity_surface_local[local_cell_index] / mass_surface_local[local_cell_index];
 			mass_surface = dt.count() / mass_surface_local[local_cell_index];
 		}else{
+			velocity_surface = 0.0f;
 			mass_surface = 0.0f;
 		}
 		
@@ -986,7 +1051,7 @@ __global__ void simple_surface_flow_create_iq_system(const uint32_t num_blocks, 
 		atomicAdd(&(iq_pointers.iq_solve_velocity_result[row_index_velocity_solid]), velocity_solid_local[local_cell_index]);
 		//FIXME:atomicAdd(&(iq_pointers.iq_solve_velocity_result[row_index_velocity_fluid]), (velocity_domain_local[local_cell_index] + velocity_surface_local[local_cell_index]));
 		atomicAdd(&(iq_pointers.iq_solve_velocity_result[row_index_velocity_domain]), velocity_domain_local[local_cell_index]);
-		atomicAdd(&(iq_pointers.iq_solve_velocity_result[row_index_velocity_surface]), velocity_surface_local[local_cell_index]);
+		atomicAdd(&(iq_pointers.iq_solve_velocity_result[row_index_velocity_surface]), velocity_surface);
 		
 		//NOTE: Storing dt * M^-1
 		const int row_index_mass = 3 * (base_row + row) + alpha;
@@ -1038,8 +1103,8 @@ __global__ void simple_surface_flow_create_iq_system(const uint32_t num_blocks, 
 		atomicAdd(&(iq_pointers.coupling_solid_surface_values[column_index]), coupling_solid_surface_local[local_cell_index]);
 		
 		//NOTE: Storing C^T
-		//FIXME:atomicAdd(&(iq_pointers.surface_flow_coupling_domain_values[column_index]), surface_flow_coupling_domain_local[local_cell_index]);
-		//FIXME:atomicAdd(&(iq_pointers.surface_flow_coupling_surface_values[column_index]), surface_flow_coupling_surface_local[local_cell_index]);
+		atomicAdd(&(iq_pointers.surface_flow_coupling_domain_values[column_index]), surface_flow_coupling_domain_local[local_cell_index]);
+		atomicAdd(&(iq_pointers.surface_flow_coupling_surface_values[column_index]), surface_flow_coupling_surface_local[local_cell_index]);
 	}
 }
 

@@ -366,7 +366,7 @@ struct OasisSimulator {
 			//Maximum 100 iterations
 			std::shared_ptr<gko::stop::Iteration::Factory> iter_stop = gko::share(
 				gko::stop::Iteration::build()
-				.with_max_iters(10000u)
+				.with_max_iters(100000u)
 				.on(ginkgo_executor)
 			);
 			
@@ -1196,6 +1196,15 @@ struct OasisSimulator {
 					
 					//std::cout << "Coupling block count: " << coupling_block_count << std::endl;
 					
+					//FIXME: Equation for Boundary!!!
+					/*
+						NOTE: The implementation of IQ paper uses -h, what results in the solve velocity equation as used below when solving for v^n+1
+						These equations are then inserted:
+						(1)* = (1)'->(2)
+						(2)* = (3)'->(4)
+						
+						(4)* = (1)',(3)'->(4)
+					*/
 					for(int i = 0; i < solid_fluid_couplings.size(); ++i){
 						const int solid_id = solid_fluid_couplings[i][0];
 						const int fluid_id = solid_fluid_couplings[i][1];
@@ -1593,7 +1602,7 @@ struct OasisSimulator {
 								)
 							);
 							
-							std::shared_ptr<gko::matrix::Dense<float>> velocity_fluid = gko::share(
+							std::shared_ptr<gko::matrix::Dense<float>> velocity_solid = gko::share(
 								gko::matrix::Dense<float>::create(
 									  ginkgo_executor
 									, gko::dim<2>(3 * exterior_block_count * config::G_BLOCKVOLUME, 1)
@@ -1602,7 +1611,7 @@ struct OasisSimulator {
 								)
 							);
 							
-							std::shared_ptr<gko::matrix::Dense<float>> velocity_solid = gko::share(
+							std::shared_ptr<gko::matrix::Dense<float>> velocity_fluid = gko::share(
 								gko::matrix::Dense<float>::create(
 									  ginkgo_executor
 									, gko::dim<2>(3 * exterior_block_count * config::G_BLOCKVOLUME, 1)
@@ -1623,34 +1632,34 @@ struct OasisSimulator {
 							
 							/*
 								solve_velocity[0][0] = -dt * M^s^-1 * G^s
-								solve_velocity[0][3] = dt * M^s^-1 * H^s^T
+								solve_velocity[0][3] = -dt * M^s^-1 * H^s^T
 								solve_velocity[1][1] = -dt * M^f^-1 * G^f
 								solve_velocity[1][2] = -dt * M^f^-1 * B
-								solve_velocity[1][3] = -dt * M^f^-1 * H^f^T
+								solve_velocity[1][3] = dt * M^f^-1 * H^f^T
 							*/
 							mass_solid->apply(gradient_solid, iq_solve_velocity_parts[0]);
 							iq_solve_velocity_parts[0]->scale(gko_neg_one_dense);
 							mass_solid->apply(coupling_solid, iq_solve_velocity_parts[1]);
+							iq_solve_velocity_parts[1]->scale(gko_neg_one_dense);
 							mass_fluid->apply(gradient_fluid, iq_solve_velocity_parts[2]);
 							iq_solve_velocity_parts[2]->scale(gko_neg_one_dense);
 							mass_fluid->apply(boundary_fluid, iq_solve_velocity_parts[3]);
 							iq_solve_velocity_parts[3]->scale(gko_neg_one_dense);
 							mass_fluid->apply(coupling_fluid, iq_solve_velocity_parts[4]);
-							iq_solve_velocity_parts[4]->scale(gko_neg_one_dense);
 							
 							/*
-								rhs[0](p^s) = S^s/dt * p^s - G^s^T * v^s
-								rhs[1](p^f) = S^f/dt * p^f - G^f^T * v^f
+								rhs[0](p^s) = S^s/dt * p^s + G^s^T * v^s
+								rhs[1](p^f) = S^f/dt * p^f + G^f^T * v^f
 								rhs[2] = B * v^f - b
 								rhs[3] = H^s * v^s - H^f * v^f
 							*/
 							scaling_solid->apply(iq_rhs_parts[0], iq_rhs_parts[0]);
 							temporary_matrices[0]->copy_from(std::move(gradient_solid->transpose()));
-							temporary_matrices[0]->apply(gko_neg_one_dense, velocity_solid, gko_one_dense, iq_rhs_parts[0]);
+							temporary_matrices[0]->apply(gko_one_dense, velocity_solid, gko_one_dense, iq_rhs_parts[0]);
 							
 							scaling_fluid->apply(iq_rhs_parts[1], iq_rhs_parts[1]);
 							temporary_matrices[0]->copy_from(std::move(gradient_fluid->transpose()));
-							temporary_matrices[0]->apply(gko_neg_one_dense, velocity_fluid, gko_one_dense, iq_rhs_parts[1]);
+							temporary_matrices[0]->apply(gko_one_dense, velocity_fluid, gko_one_dense, iq_rhs_parts[1]);
 							
 							temporary_matrices[0]->copy_from(std::move(boundary_fluid->transpose()));
 							temporary_matrices[0]->apply(velocity_fluid, iq_rhs_parts[2]);
@@ -1666,7 +1675,7 @@ struct OasisSimulator {
 							
 							/*
 								lhs[0][0] = S^s/dt + dt * G^s^T * M^s^-1 * G^s
-								lhs[0][3] = -dt * G^s^T * M^s^-1 * H^s^T
+								lhs[0][3] = dt * G^s^T * M^s^-1 * H^s^T
 								
 							*/
 							temporary_matrices[0]->copy_from(std::move(gradient_solid->transpose()));
@@ -1684,13 +1693,12 @@ struct OasisSimulator {
 							//temporary_matrices[1]->copy_from(std::move(coupling_solid->transpose()));
 							//matrix_operations.matrix_matrix_multiplication_with_diagonal<false>(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, temporary_matrices[1], iq_lhs_parts[1], cu_dev);
 							matrix_operations.matrix_matrix_multiplication_with_diagonal<true>(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, coupling_solid, iq_lhs_parts[1], cu_dev);
-							iq_lhs_parts[1]->scale(gko_neg_one_dense);
 							//temporary_matrices[0]->apply(gko_neg_one_dense, coupling_solid, gko_zero_dense, iq_lhs_parts[1]);
 							
 							/*
 								lhs[1][1] = S^f/dt + dt * G^f^T * M^f^-1 * G^f
 								lhs[1][2] = dt * G^f^T * M^f^-1 * B
-								lhs[1][3] = dt * G^f^T * M^f^-1 * H^f^T
+								lhs[1][3] = -dt * G^f^T * M^f^-1 * H^f^T
 								
 							*/
 							temporary_matrices[0]->copy_from(std::move(gradient_fluid->transpose()));
@@ -1713,6 +1721,7 @@ struct OasisSimulator {
 							//temporary_matrices[1]->copy_from(std::move(coupling_fluid->transpose()));
 							//matrix_operations.matrix_matrix_multiplication_with_diagonal<false>(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, temporary_matrices[1], iq_lhs_parts[4], cu_dev);
 							matrix_operations.matrix_matrix_multiplication_with_diagonal<true>(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_fluid, coupling_fluid, iq_lhs_parts[4], cu_dev);
+							iq_lhs_parts[4]->scale(gko_neg_one_dense);
 							//temporary_matrices[0]->apply(coupling_fluid, iq_lhs_parts[4]);
 							
 							/*
@@ -2341,8 +2350,8 @@ struct OasisSimulator {
 							});
 						}else{
 							//Update velocity and ghost matrix strain
-							//v_s,t+1 = v_s,t + (- dt * M_s^-1 * G_s * p_g,t+1 + dt * M_s^-1 * H_s^T * h,t+1)
-							//v_f,t+1 = v_f,t + (- dt * M_f^-1 * G_f * p_f,t+1 - dt * M_f^-1 * B * y,t+1 - dt * M_f^-1 * H_f^T * h,t+1)
+							//v_s,t+1 = v_s,t + (- dt * M_s^-1 * G_s * p_g,t+1 - dt * M_s^-1 * H_s^T * h,t+1)
+							//v_f,t+1 = v_f,t + (- dt * M_f^-1 * G_f * p_f,t+1 - dt * M_f^-1 * B * y,t+1 + dt * M_f^-1 * H_f^T * h,t+1)
 							match(particle_bins[rollid][solid_id])([this, &cu_dev, &solid_id, &fluid_id, &iq_solve_velocity_result, &iq_result](auto& particle_buffer_solid) {
 								auto& next_particle_buffer_solid = get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]);
 								
@@ -3233,7 +3242,6 @@ struct OasisSimulator {
 					break;
 				}
 			}
-			std::cout << surface_flow_id << std::endl;
 			
 			int particle_count	  = 0;
 			int* d_particle_count = static_cast<int*>(cu_dev.borrow(sizeof(int)));
@@ -3709,7 +3717,6 @@ struct OasisSimulator {
 				write_partio_add(surface_mean_curvature, std::string("mean_curvature"), parts);
 				write_partio_add(surface_gauss_curvature, std::string("gauss_curvature"), parts);
 				if(surface_flow_id != -1){
-					std::cout << "TEST0" << std::endl;
 					write_partio_add(surface_flow_mass, std::string("surface_flow_mass"), parts);
 				}
 

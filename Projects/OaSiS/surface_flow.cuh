@@ -164,52 +164,57 @@ public:
 	(v^n+1_solid   - v^n+1_surface) * n = 0;  at interface solid-fluid
 	(p^n+1_solid   - p^n+1_domain  - p^n+1_surface) = 0;  at interface solid-fluid
 	
+	//NOTE: Using -h and -c!
+	
 	The matrices look like this:
 	Non-symmetric version:
-	1/dt * M_solid     G_solid             -                  -                   -                  -                   -H^T_solid_domain  -H^T_solid_surface   -                        v^n+1_solid                        1/dt * M_solid   * v^n_solid   
-	G^T_solid          -1/dt * S_solid     -                  -                   -                  -                   -                   -                   -                        p^n+1_solid                        -1/dt * S_solid   * p^n_solid  
-	-                  -                   1/dt * M_domain    G_domain            -                  -                   H^T_domain          -                   -C^T_domain              v^n+1_domain                       1/dt * M_domain  * v^n_domain  
-	-                  -                   G^T_domain         -1/dt * S_domain    -                  -                   -                   -                   -                        p^n+1_domain                       -1/dt * S_domain  * p^n_domain 
-	-                  -                   -                  -                   1/dt * M_surface   G_surface           -                   H^T_surface         C^T_surface              v^n+1_surface                      1/dt * M_solid   * v^n_solid   
-	-                  -                   -                  -                   G^T_surface        -1/dt * S_surface   -                   -                   -                        p^n+1_surface                      -1/dt * S_surface * p^n_surface
-	-H_solid_domain    -                   H_domain           -                   -                  -                   -                   -                   -                        h^n+1_interface_solid_domain       0                              
-	-H_solid_surface   -                   -                  -                   H_surface          -                   -                   -                   -                   	  h^n+1_interface_solid_surface      0                              
-	-                  -                   -C_domain          -                   C_surface          -                   -                   -                   -                   *    c^n+1_interface_domain_surface  =  0                              
+	1/dt * M_solid     G_solid             -                  -                   -                  -                   -H^T_solid_domain  -H^T_solid_surface   -                        v^n+1_solid                         1/dt * M_solid   * v^n_solid   
+	G^T_solid          -1/dt * S_solid     -                  -                   -                  -                   -                   -                   -                        p^n+1_solid                         -1/dt * S_solid   * p^n_solid  
+	-                  -                   1/dt * M_domain    G_domain            -                  -                   H^T_domain          -                   -C^T_domain              v^n+1_domain                        1/dt * M_domain  * v^n_domain  
+	-                  -                   G^T_domain         -1/dt * S_domain    -                  -                   -                   -                   -                        p^n+1_domain                        -1/dt * S_domain  * p^n_domain 
+	-                  -                   -                  -                   1/dt * M_surface   G_surface           -                   H^T_surface         C^T_surface              v^n+1_surface                       1/dt * M_solid   * v^n_solid   
+	-                  -                   -                  -                   G^T_surface        -1/dt * S_surface   -                   -                   -                        p^n+1_surface                       -1/dt * S_surface * p^n_surface
+	-H_solid_domain    -                   H_domain           -                   -                  -                   -                   -                   -                        -h^n+1_interface_solid_domain       0                              
+	-H_solid_surface   -                   -                  -                   H_surface          -                   -                   -                   -                   	  -h^n+1_interface_solid_surface      0                              
+	-                  -                   -C_domain          -                   C_surface          -                   -                   -                   -                   *    -c^n+1_interface_domain_surface  =  0                              
+	
+	Solve velocity:
+	
+	(1)': v^n+1_solid   = v^n_solid   + (-dt * M^-1_solid   * G_solid   * p^n+1_solid   - dt * M^-1_solid   * H^T_solid_domain * h^n+1_interface_solid_domain  - dt * M^-1_solid_surface * H^T_solid   * h^n+1_interface_solid_surface)
+	(3)': v^n+1_domain  = v^n_domain  + (-dt * M^-1_domain  * G_domain  * p^n+1_domain  + dt * M^-1_domain  * H^T_domain  * h^n+1_interface_solid_domain  - dt * M^-1_domain  * C^T_domain  * c^n+1_interface_domain_surface)
+	(5)': v^n+1_surface = v^n_surface + (-dt * M^-1_surface * G_surface * p^n+1_surface + dt * M^-1_surface * H^T_surface * h^n+1_interface_solid_surface + dt * M^-1_surface * C^T_surface * c^n+1_interface_domain_surface)
 	
 	Symmetric version:
-	(1)* = dt * M^-1_solid   * G^T_solid   * (1) - (2);
-	(2)* = dt * M^-1_domain  * G^T_domain  * (3) - (4);
-	(3)* = dt * M^-1_surface * G^T_surface * (5) - (6);
-	(4)* = -dt * H_solid_domain  * M^-1_solid   * (1) + dt * H_domain  * M^-1_domain  * (3) - dt * (7);
-	(5)* = -dt * H_solid_surface * M^-1_solid   * (1) + dt * H_surface * M^-1_surface * (5) - dt * (8);
-	(6)* = -dt * C_domain  * M^-1_domain  * (3) + dt * C_surface * M^-1_surface * (5) - dt * (9);
+	(1)*: (1)'->(2)';
+	(2)*: (3)'->(4)';
+	(3)*: (5)'->(6)';
+	(4)*: (1)',(3)'->(7)';
+	(5)*: (1)',(5)'->(8)';
+	(6)*: (3)',(5)'->(9)';
 	------------------------------------------------
-	A_11    -       -       A_14    A_15    -             p^n+1_solid                               S_solid/dt   * p^n_solid   - G^T_solid   * v^n_solid  
-	-       A_22    -       A_24    -       A_26          p^n+1_domain                              S_domain/dt  * p^n_domain  - G^T_domain  * v^n_domain 
-	-       -       A_33    -       A_35    A_36          p^n+1_surface                             S_surface/dt * p^n_surface - G^T_surface * v^n_surface
-	A^T_14  A^T_24  -       A_44    A_45    A_46          p^n+1_interface_solid_domain              H_solid_domain  * v^n_solid   - H_domain  * v^n_domain 
-	A^T_15  -       A^T_35  A^T_45  A_55    A_56          h^n+1_interface_solid_surface             H_solid_surface * v^n_solid   - H_surface * v^n_surface
-	-       A^T_26  A^T_36  A^T_46  A^T_56  A_66          h^n+1_domain_interface_domain_surface     C_domain  * v^n_domain  - C_surface * v^n_surface
+	A_11    -       -       A_14    A_15    -             p^n+1_solid                                S_solid/dt   * p^n_solid   + G^T_solid   * v^n_solid  
+	-       A_22    -       A_24    -       A_26          p^n+1_domain                               S_domain/dt  * p^n_domain  + G^T_domain  * v^n_domain 
+	-       -       A_33    -       A_35    A_36          p^n+1_surface                              S_surface/dt * p^n_surface + G^T_surface * v^n_surface
+	A^T_14  A^T_24  -       A_44    A_45    A_46          -h^n+1_interface_solid_domain              H_solid_domain  * v^n_solid   - H_domain  * v^n_domain 
+	A^T_15  -       A^T_35  A^T_45  A_55    A_56          -h^n+1_interface_solid_surface             H_solid_surface * v^n_solid   - H_surface * v^n_surface
+	-       A^T_26  A^T_36  A^T_46  A^T_56  A_66          -c^n+1_domain_interface_domain_surface     C_domain  * v^n_domain  - C_surface * v^n_surface
 	
 	A_11 = S_solid/dt   + dt * G^T_solid   * M^-1_solid   * G_solid  
-	A_14 = A_15 = -dt * G^T_solid   M^-1_solid   * H^T_solid  
+	A_14 = A_15 = dt * G^T_solid   M^-1_solid   * H^T_solid  
 	A_22 = S_domain/dt  + dt * G^T_domain  * M^-1_domain  * G_domain 
-	A_24 = dt * G^T_domain  * M^-1_domain  * H^T_domain 
-	A_26 = -dt * G^T_domain  * M^-1_domain  * C^T_domain 
+	A_24 = -dt * G^T_domain  * M^-1_domain  * H^T_domain 
+	A_26 = dt * G^T_domain  * M^-1_domain  * C^T_domain 
 	A_33 = S_surface/dt + dt * G^T_surface * M^-1_surface * G_surface
-	A_35 = dt * G^T_surface * M^-1_surface * H^T_surface
-	A_36 = dt * G^T_surface * M^-1_surface * C^T_surface
+	A_35 = -dt * G^T_surface * M^-1_surface * H^T_surface
+	A_36 = -dt * G^T_surface * M^-1_surface * C^T_surface
 	A_44 = dt * H_solid_domain  * M^-1_solid   * H^H_solid_domain  + dt * H_domain  * M^-1_domain  * H^T_domain 
 	A_45 = dt * H_solid_domain  * M^-1_solid   * H^T_solid_surface  
-	A_46 = dt * H_domain  * M^-1_domain  * C^T_domain 
+	A_46 = -dt * H_domain  * M^-1_domain  * C^T_domain 
 	A_55 = dt * H_solid_surface * M^-1_solid   * H^T_solid_surface  + dt * H_surface * M^-1_surface * H^T_surface
 	A_56 = dt * H_surface * M^-1_surface * C^T_surface
 	A_66 = dt * C_domain  * M^-1_domain  * C^T_domain + dt * C_surface * M^-1_surface * C^T_surface
 	
-	Solve velocity:
-	v^n+1_solid   = v^n_solid   + (-dt * M^-1_solid   * G_solid   * p^n+1_solid   + dt * M^-1_solid   * H^T_solid_domain * h^n+1_interface_solid_domain  + dt * M^-1_solid_surface * H^T_solid   * h^n+1_interface_solid_surface)
-	v^n+1_domain  = v^n_domain  + (-dt * M^-1_domain  * G_domain  * p^n+1_domain  - dt * M^-1_domain  * H^T_domain  * h^n+1_interface_solid_domain  + dt * M^-1_domain  * C^T_domain  * c^n+1_interface_domain_surface)
-	v^n+1_surface = v^n_surface + (-dt * M^-1_surface * G_surface * p^n+1_surface - dt * M^-1_surface * H^T_surface * h^n+1_interface_solid_surface - dt * M^-1_surface * C^T_surface * c^n+1_interface_domain_surface)
+	
 	
 	Mass transfer:
 	dphi/dt = p_0 / (lambda * J) * dp/dt;
@@ -555,8 +560,7 @@ public:
 		
 		cu_dev.syncStream<streamIdx::COMPUTE>();
 	}
-	
-	//FIXME: Don't pass functions, instead define them somewhere else
+
 	void generate_system_matrices(
 		std::shared_ptr<gko::Executor>& ginkgo_executor,
 		MatrixOperations& matrix_operations,
@@ -602,15 +606,6 @@ public:
 				  ginkgo_executor
 				, gko::dim<2>(3 * exterior_block_count * config::G_BLOCKVOLUME, exterior_block_count * config::G_BLOCKVOLUME)
 				, iq_lhs_gradient_solid_values.as_view()
-				, iq_lhs_3_1_columns.as_view()
-				, iq_lhs_3_1_rows.as_view()
-			)
-		);
-		std::shared_ptr<gko::matrix::Csr<float, int>> gradient_fluid = gko::share(
-			gko::matrix::Csr<float, int>::create(
-				  ginkgo_executor
-				, gko::dim<2>(3 * exterior_block_count * config::G_BLOCKVOLUME, exterior_block_count * config::G_BLOCKVOLUME)
-				, iq_lhs_gradient_fluid_values.as_view()
 				, iq_lhs_3_1_columns.as_view()
 				, iq_lhs_3_1_rows.as_view()
 			)
@@ -760,41 +755,42 @@ public:
 		
 		//Create solve velocity and rhs
 		
+		//NOTE: As coupling equations (4)*, (5)* and (6)* in our system is multiplied with -1 we have to swap the signs of the coupling part in solve velocities
 		/*
 			solve_velocity[0][0] = -dt * M^-1_solid * G_solid
-			solve_velocity[0][3] = dt * M^-1_solid * H^T_solid_domain
-			solve_velocity[0][4] = dt * M^-1_solid * H^T_solid_surface
+			solve_velocity[0][3] = -dt * M^-1_solid * H^T_solid_domain
+			solve_velocity[0][4] = -dt * M^-1_solid * H^T_solid_surface
 			
 			solve_velocity[1][1] = -dt * M^-1_domain * G_domain
-			solve_velocity[1][3] = -dt * M^-1_domain * H^T_domain
-			solve_velocity[1][5] = dt * M^-1_domain * C^T_domain
+			solve_velocity[1][3] = dt * M^-1_domain * H^T_domain
+			solve_velocity[1][5] = -dt * M^-1_domain * C^T_domain
 			
 			solve_velocity[2][2] = -dt * M^-1_surface * G_surface
-			solve_velocity[2][4] = -dt * M^-1_surface * H^T_surface
-			solve_velocity[2][5] = -dt * M^-1_surface * C^T_surface
+			solve_velocity[2][4] = dt * M^-1_surface * H^T_surface
+			solve_velocity[2][5] = dt * M^-1_surface * C^T_surface
 		*/
 		mass_solid->apply(gradient_solid, iq_solve_velocity_parts[0]);
 		iq_solve_velocity_parts[0]->scale(gko_neg_one_dense);
 		mass_solid->apply(coupling_solid_domain, iq_solve_velocity_parts[1]);
-		//FIXME:mass_solid->apply(coupling_solid_surface, iq_solve_velocity_parts[2]);
+		iq_solve_velocity_parts[1]->scale(gko_neg_one_dense);
+		mass_solid->apply(coupling_solid_surface, iq_solve_velocity_parts[2]);
+		iq_solve_velocity_parts[2]->scale(gko_neg_one_dense);
 		
 		mass_domain->apply(gradient_domain, iq_solve_velocity_parts[3]);
 		iq_solve_velocity_parts[3]->scale(gko_neg_one_dense);
 		mass_domain->apply(coupling_domain, iq_solve_velocity_parts[4]);
-		iq_solve_velocity_parts[4]->scale(gko_neg_one_dense);
-		//FIXME:mass_domain->apply(surface_flow_coupling_domain, iq_solve_velocity_parts[5]);
+		mass_domain->apply(surface_flow_coupling_domain, iq_solve_velocity_parts[5]);
+		iq_solve_velocity_parts[5]->scale(gko_neg_one_dense);
 		
-		//FIXME:mass_surface->apply(gradient_surface, iq_solve_velocity_parts[6]);
-		//FIXME:iq_solve_velocity_parts[6]->scale(gko_neg_one_dense);
-		//FIXME:mass_surface->apply(coupling_surface, iq_solve_velocity_parts[7]);
-		//FIXME:iq_solve_velocity_parts[7]->scale(gko_neg_one_dense);
-		//FIXME:mass_surface->apply(surface_flow_coupling_surface, iq_solve_velocity_parts[8]);
-		//FIXME:iq_solve_velocity_parts[8]->scale(gko_neg_one_dense);
+		mass_surface->apply(gradient_surface, iq_solve_velocity_parts[6]);
+		iq_solve_velocity_parts[6]->scale(gko_neg_one_dense);
+		mass_surface->apply(coupling_surface, iq_solve_velocity_parts[7]);
+		mass_surface->apply(surface_flow_coupling_surface, iq_solve_velocity_parts[8]);
 		
 		/*
-			rhs[0](p_solid) = S_solid/dt * p_solid - G_solid^T * v_solid
-			rhs[1](p_domain) = S_domain/dt * p_domain - G_domain^T * v_domain
-			rhs[2](p_surface) = S_surface/dt * p_surface - G_surface^T * v_surface
+			rhs[0](p_solid) = S_solid/dt * p_solid + G_solid^T * v_solid
+			rhs[1](p_domain) = S_domain/dt * p_domain + G_domain^T * v_domain
+			rhs[2](p_surface) = S_surface/dt * p_surface + G_surface^T * v_surface
 			
 			rhs[3] = H_solid_domain * v_solid  - H_domain  * v_domain 
 			rhs[4] = H_solid_surface * v_solid  - H_surface * v_surface
@@ -803,15 +799,15 @@ public:
 		*/
 		scaling_solid->apply(iq_rhs_parts[0], iq_rhs_parts[0]);
 		temporary_matrices[0]->copy_from(std::move(gradient_solid->transpose()));
-		temporary_matrices[0]->apply(gko_neg_one_dense, velocity_solid, gko_one_dense, iq_rhs_parts[0]);
+		temporary_matrices[0]->apply(gko_one_dense, velocity_solid, gko_one_dense, iq_rhs_parts[0]);
 		
 		scaling_domain->apply(iq_rhs_parts[1], iq_rhs_parts[1]);
 		temporary_matrices[0]->copy_from(std::move(gradient_domain->transpose()));
-		temporary_matrices[0]->apply(gko_neg_one_dense, velocity_domain, gko_one_dense, iq_rhs_parts[1]);
+		temporary_matrices[0]->apply(gko_one_dense, velocity_domain, gko_one_dense, iq_rhs_parts[1]);
 		
 		scaling_surface->apply(iq_rhs_parts[2], iq_rhs_parts[2]);
 		temporary_matrices[0]->copy_from(std::move(gradient_surface->transpose()));
-		temporary_matrices[0]->apply(gko_neg_one_dense, velocity_surface, gko_one_dense, iq_rhs_parts[2]);
+		temporary_matrices[0]->apply(gko_one_dense, velocity_surface, gko_one_dense, iq_rhs_parts[2]);
 		
 		temporary_matrices[0]->copy_from(std::move(coupling_solid_domain->transpose()));
 		temporary_matrices[0]->apply(velocity_solid, iq_rhs_parts[3]);
@@ -835,8 +831,8 @@ public:
 		
 		/*
 			lhs[0][0] = S_solid/dt + dt * G_solid^T * M^-1_solid * G_solid
-			lhs[0][3] = -dt * G_solid^T * M^-1_solid * H^T_solid_domain
-			lhs[0][4] = -dt * G_solid^T * M^-1_solid * H^T_solid_surface
+			lhs[0][3] = dt * G_solid^T * M^-1_solid * H^T_solid_domain
+			lhs[0][4] = dt * G_solid^T * M^-1_solid * H^T_solid_surface
 			
 		*/
 		temporary_matrices[0]->copy_from(std::move(gradient_solid->transpose()));
@@ -848,15 +844,13 @@ public:
 		iq_lhs_parts[10]->apply(gko_one_dense, iq_lhs_parts[9], gko_one_dense, iq_lhs_parts[0]);
 		
 		matrix_operations.matrix_matrix_multiplication_with_diagonal<true>(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, coupling_solid_domain, iq_lhs_parts[1], cu_dev);
-		iq_lhs_parts[1]->scale(gko_neg_one_dense);
 		
-		//FIXME:matrix_operations.matrix_matrix_multiplication_with_diagonal<true>(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, coupling_solid_surface, iq_lhs_parts[2], cu_dev);
-		//FIXME:iq_lhs_parts[2]->scale(gko_neg_one_dense);
+		matrix_operations.matrix_matrix_multiplication_with_diagonal<true>(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, coupling_solid_surface, iq_lhs_parts[2], cu_dev);
 		
 		/*
 			lhs[1][1] = S_domain/dt + dt * G_domain^T * M^-1_domain * G_domain
-			lhs[1][3] = dt * G_domain^T * M^-1_domain * H^T_domain
-			lhs[1][5] = -dt * G_domain^T * M^-1_domain * C^T_domain
+			lhs[1][3] = -dt * G_domain^T * M^-1_domain * H^T_domain
+			lhs[1][5] = dt * G_domain^T * M^-1_domain * C^T_domain
 			
 		*/
 		temporary_matrices[0]->copy_from(std::move(gradient_domain->transpose()));
@@ -868,14 +862,15 @@ public:
 		iq_lhs_parts[10]->apply(gko_one_dense, iq_lhs_parts[9], gko_one_dense, iq_lhs_parts[3]);
 		
 		matrix_operations.matrix_matrix_multiplication_with_diagonal<true>(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_domain, coupling_domain, iq_lhs_parts[4], cu_dev);
+		iq_lhs_parts[4]->scale(gko_neg_one_dense);
 		
-		//FIXME:matrix_operations.matrix_matrix_multiplication_with_diagonal<true>(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_domain, surface_flow_coupling_domain, iq_lhs_parts[5], cu_dev);
-		//FIXME:iq_lhs_parts[5]->scale(gko_neg_one_dense);
+		matrix_operations.matrix_matrix_multiplication_with_diagonal<true>(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_domain, surface_flow_coupling_domain, iq_lhs_parts[5], cu_dev);
+		
 		
 		/*
 			lhs[2][2] = S_surface/dt + dt * G_surface^T * M^-1_surface * G_surface
-			lhs[2][4] = dt * G_surface^T * M^-1_surface * H^T_surface
-			lhs[2][5] = dt * G_surface^T * M^-1_surface * C^T_surface
+			lhs[2][4] = -dt * G_surface^T * M^-1_surface * H^T_surface
+			lhs[2][5] = -dt * G_surface^T * M^-1_surface * C^T_surface
 			
 		*/
 		temporary_matrices[0]->copy_from(std::move(gradient_surface->transpose()));
@@ -887,9 +882,10 @@ public:
 		iq_lhs_parts[10]->apply(gko_one_dense, iq_lhs_parts[9], gko_one_dense, iq_lhs_parts[6]);
 		
 		matrix_operations.matrix_matrix_multiplication_with_diagonal<true>(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_surface, coupling_surface, iq_lhs_parts[7], cu_dev);
+		iq_lhs_parts[7]->scale(gko_neg_one_dense);
 		
 		matrix_operations.matrix_matrix_multiplication_with_diagonal<true>(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_surface, surface_flow_coupling_surface, iq_lhs_parts[8], cu_dev);
-		
+		iq_lhs_parts[8]->scale(gko_neg_one_dense);
 		
 		/*
 			lhs[3][3] += dt * H_solid_domain * M^-1_solid * H^T_solid_domain
@@ -900,33 +896,34 @@ public:
 		temporary_matrices[0]->copy_from(std::move(coupling_solid_domain->transpose()));
 		matrix_operations.matrix_matrix_multiplication_a_at_with_diagonal(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, coupling_solid_domain, iq_lhs_parts[11], cu_dev);
 		
-		//FIXME:matrix_operations.matrix_matrix_multiplication_with_diagonal<true>(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, coupling_solid_surface, iq_lhs_parts[12], cu_dev);
+		matrix_operations.matrix_matrix_multiplication_with_diagonal<true>(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, coupling_solid_surface, iq_lhs_parts[12], cu_dev);
 		
-		//FIXME:temporary_matrices[0]->copy_from(std::move(coupling_solid_surface->transpose()));
-		//FIXME:matrix_operations.matrix_matrix_multiplication_a_at_with_diagonal(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, coupling_solid_surface, iq_lhs_parts[17], cu_dev);
+		temporary_matrices[0]->copy_from(std::move(coupling_solid_surface->transpose()));
+		matrix_operations.matrix_matrix_multiplication_a_at_with_diagonal(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_solid, coupling_solid_surface, iq_lhs_parts[17], cu_dev);
 		
 		
 		
 		/*
 			lhs[3][3] += dt * H_domain * M^-1_domain * H^T_domain
-			lhs[3][5] = dt * H_domain * M^-1_domain * C^T_domain
+			lhs[3][5] = -dt * H_domain * M^-1_domain * C^T_domain
 		*/
 		//NOTE: Using iq_lhs_parts[9] and iq_lhs_parts[10] as scratch
 		//NOTE: iq_lhs_parts[10] already set to identity
 		temporary_matrices[0]->copy_from(std::move(coupling_domain->transpose()));
-		matrix_operations.matrix_matrix_multiplication_a_at_with_diagonal(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_domain, coupling_domain, iq_lhs_parts[10], cu_dev);
+		matrix_operations.matrix_matrix_multiplication_a_at_with_diagonal(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_domain, coupling_domain, iq_lhs_parts[9], cu_dev);
 		iq_lhs_parts[10]->apply(gko_one_dense, iq_lhs_parts[9], gko_one_dense, iq_lhs_parts[11]);
 		
-		//FIXME:matrix_operations.matrix_matrix_multiplication_with_diagonal<true>(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_domain, surface_flow_coupling_domain, iq_lhs_parts[13], cu_dev);
+		matrix_operations.matrix_matrix_multiplication_with_diagonal<true>(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_domain, surface_flow_coupling_domain, iq_lhs_parts[13], cu_dev);
+		iq_lhs_parts[13]->scale(gko_neg_one_dense);
 		
 		/*
-			lhs[4][4] += dt * H_surface * M^-1_domain * H^T_surface
-			lhs[4][5] = dt * H_surface * M^-1_domain * C^T_surface
+			lhs[4][4] += dt * H_surface * M^-1_surface * H^T_surface
+			lhs[4][5] = dt * H_surface * M^-1_surface * C^T_surface
 		*/
 		//NOTE: Using iq_lhs_parts[9] and iq_lhs_parts[10] as scratch
 		//NOTE: iq_lhs_parts[10] already set to identity
 		temporary_matrices[0]->copy_from(std::move(coupling_surface->transpose()));
-		matrix_operations.matrix_matrix_multiplication_a_at_with_diagonal(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_surface, coupling_surface, iq_lhs_parts[10], cu_dev);
+		matrix_operations.matrix_matrix_multiplication_a_at_with_diagonal(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_surface, coupling_surface, iq_lhs_parts[9], cu_dev);
 		iq_lhs_parts[10]->apply(gko_one_dense, iq_lhs_parts[9], gko_one_dense, iq_lhs_parts[17]);
 		
 		matrix_operations.matrix_matrix_multiplication_with_diagonal<true>(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_surface, surface_flow_coupling_surface, iq_lhs_parts[18], cu_dev);
@@ -943,7 +940,7 @@ public:
 		//NOTE: Using iq_lhs_parts[9] and iq_lhs_parts[10] as scratch
 		//NOTE: iq_lhs_parts[10] already set to identity
 		temporary_matrices[0]->copy_from(std::move(surface_flow_coupling_surface->transpose()));
-		matrix_operations.matrix_matrix_multiplication_a_at_with_diagonal(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_surface, surface_flow_coupling_surface, iq_lhs_parts[10], cu_dev);
+		matrix_operations.matrix_matrix_multiplication_a_at_with_diagonal(ginkgo_executor, exterior_block_count, exterior_block_count * config::G_BLOCKVOLUME, temporary_matrices[0], mass_surface, surface_flow_coupling_surface, iq_lhs_parts[9], cu_dev);
 		iq_lhs_parts[10]->apply(gko_one_dense, iq_lhs_parts[9], gko_one_dense, iq_lhs_parts[23]);
 	
 		/*

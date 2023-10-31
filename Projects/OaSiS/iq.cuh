@@ -286,15 +286,17 @@ __global__ void copy_values(const size_t matrix_size_x, const size_t matrix_size
 					
 					const size_t values_in_row = iq_parts_rows[block_index][NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension + 1] - iq_parts_rows[block_index][NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension];
 					
-					const int* columns_ptr_src = &(iq_parts_columns[block_index][iq_parts_rows[block_index][NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension]]);
-					const float* values_ptr_src = &(iq_parts_values[block_index][iq_parts_rows[block_index][NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension]]);
-				
-					thrust::transform(thrust::seq, columns_ptr_src, columns_ptr_src + values_in_row, &(iq_columns[values_offset]), [&matrix_size_x, &block_offsets_per_row, &num_blocks, &row_offset, &column_offset_index](const int& column){
-						return block_offsets_per_row[row_offset * matrix_size_x + column_offset_index] * num_blocks * NumRowsPerBlock + column;
-					});
-					thrust::copy(thrust::seq, values_ptr_src, values_ptr_src + values_in_row, &(iq_values[values_offset]));
+					if(values_in_row > 0){
+						const int* columns_ptr_src = &(iq_parts_columns[block_index][iq_parts_rows[block_index][NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension]]);
+						const float* values_ptr_src = &(iq_parts_values[block_index][iq_parts_rows[block_index][NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension]]);
 					
-					offset_in_row += values_in_row;
+						thrust::transform(thrust::seq, columns_ptr_src, columns_ptr_src + values_in_row, &(iq_columns[values_offset]), [&matrix_size_x, &block_offsets_per_row, &num_blocks, &row_offset, &column_offset_index](const int& column){
+							return block_offsets_per_row[row_offset * matrix_size_x + column_offset_index] * num_blocks * NumRowsPerBlock + column;
+						});
+						thrust::copy(thrust::seq, values_ptr_src, values_ptr_src + values_in_row, &(iq_values[values_offset]));
+						
+						offset_in_row += values_in_row;
+					}
 				}
 			}
 		}
@@ -414,7 +416,6 @@ __forceinline__ __device__ void store_data_fluid<MaterialE::J_FLUID>(const Parti
 	
 	//Volume weighted average of pressure;
 	(*scaling_fluid) += (volume_0 / lambda) * W_pressure;
-	//printf("TMP1 %.28f %.28f %.28f %.28f\n", volume_0, J, pressure, W_pressure);
 	(*pressure_fluid_nominator) += volume_0 * J * pressure * W_pressure;
 	(*pressure_fluid_denominator) += volume_0 * J * W_pressure;
 }
@@ -1127,12 +1128,6 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 					}
 				}
 			}
-		}
-	}
-	
-	for(int i = 0; i < (3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE; ++i){
-		if(mass_solid_local[i] > 0.0f && mass_fluid_local[i] > 0.0f){
-			//printf("ABC3 %d %d # %.28f %.28f\n", static_cast<int>(threadIdx.x), i, mass_solid_local[i], mass_fluid_local[i]);
 		}
 	}
 	
