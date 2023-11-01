@@ -1257,19 +1257,24 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 	const auto blockid			   = partition.active_keys[blockIdx.x];
 	const ivec3 block_cellid = blockid * static_cast<int>(config::G_BLOCKSIZE);
 	
+	//Check if the block is outside of grid bounds
+	const int boundary_condition   = static_cast<int>(std::floor(config::G_BOUNDARY_CONDITION));
+	const int is_in_bound = ((blockid[0] < boundary_condition || blockid[0] >= config::G_GRID_SIZE - boundary_condition) << 2) | ((blockid[1] < boundary_condition || blockid[1] >= config::G_GRID_SIZE - boundary_condition) << 1) | (blockid[2] < boundary_condition || blockid[2] >= config::G_GRID_SIZE - boundary_condition);
+
+	
 	//Update velocity
 	auto grid_block_solid = grid_solid.ch(_0, src_blockno);
 	auto grid_block_fluid = grid_fluid.ch(_0, src_blockno);
 	for(int cell_id_in_block = threadIdx.x; cell_id_in_block < config::G_BLOCKVOLUME; cell_id_in_block += blockDim.x) {
-		grid_block_solid.val_1d(_1, cell_id_in_block) += delta_v_solid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block];
-		grid_block_solid.val_1d(_2, cell_id_in_block) += delta_v_solid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block + 1];
-		grid_block_solid.val_1d(_3, cell_id_in_block) += delta_v_solid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block + 2];
+		grid_block_solid.val_1d(_1, cell_id_in_block) += is_in_bound & 4 ? 0.0f : delta_v_solid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block];
+		grid_block_solid.val_1d(_2, cell_id_in_block) += is_in_bound & 2 ? 0.0f : delta_v_solid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block + 1];
+		grid_block_solid.val_1d(_3, cell_id_in_block) += is_in_bound & 1 ? 0.0f : delta_v_solid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block + 2];
 		
 		//printf("ABC2 %.28f %.28f %.28f\n", grid_block_solid.val_1d(_1, cell_id_in_block), grid_block_solid.val_1d(_2, cell_id_in_block), grid_block_solid.val_1d(_3, cell_id_in_block));
 		
-		grid_block_fluid.val_1d(_1, cell_id_in_block) += delta_v_fluid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block];
-		grid_block_fluid.val_1d(_2, cell_id_in_block) += delta_v_fluid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block + 1];
-		grid_block_fluid.val_1d(_3, cell_id_in_block) += delta_v_fluid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block + 2];
+		grid_block_fluid.val_1d(_1, cell_id_in_block) += is_in_bound & 4 ? 0.0f : delta_v_fluid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block];
+		grid_block_fluid.val_1d(_2, cell_id_in_block) += is_in_bound & 2 ? 0.0f : delta_v_fluid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block + 1];
+		grid_block_fluid.val_1d(_3, cell_id_in_block) += is_in_bound & 1 ? 0.0f : delta_v_fluid[3 * config::G_BLOCKVOLUME * src_blockno + 3 * cell_id_in_block + 2];
 		
 		/*
 		if(
