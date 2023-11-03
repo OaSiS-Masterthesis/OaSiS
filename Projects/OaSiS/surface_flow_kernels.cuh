@@ -12,6 +12,8 @@ namespace mn {
 
 constexpr size_t SIMPLE_SURFACE_FLOW_MAX_SHARED_PARTICLE_SOLID = config::G_BLOCKVOLUME * config::G_MAX_PARTICLES_IN_CELL >> 4;
 
+static_assert(SIMPLE_SURFACE_FLOW_MAX_SHARED_PARTICLE_SOLID > 0 && "Shared count must be at least 1");
+
 constexpr size_t SIMPLE_SURFACE_FLOW_LHS_MATRIX_SIZE_Y = 6;
 constexpr size_t SIMPLE_SURFACE_FLOW_LHS_MATRIX_SIZE_X = 6;
 
@@ -320,8 +322,6 @@ __forceinline__ __device__ void simple_surface_flow_aggregate_data_solid(const P
 		}
 	}
 	
-	const bool has_neighbours = (__syncthreads_or(has_neighbours_local ? 1 : 0) == 1);
-	
 	//Get near surface particles
 	bool has_neighbours_surface_local = false;
 	for(int grid_x = -4; grid_x <= 1; ++grid_x){
@@ -381,6 +381,7 @@ __forceinline__ __device__ void simple_surface_flow_aggregate_data_solid(const P
 		}
 	}
 	
+	const bool has_neighbours = (__syncthreads_or(has_neighbours_local ? 1 : 0) == 1);
 	const bool has_neighbours_surface = (__syncthreads_or(has_neighbours_surface_local ? 1 : 0) == 1);
 	
 	//Store data
@@ -466,7 +467,7 @@ __forceinline__ __device__ void simple_surface_flow_aggregate_data_solid(const P
 
 		iq::store_data_neigbours_solid(particle_buffer_solid, current_gradient_solid, W1_pressure, delta_W_velocity, mass, J);
 		if(mass_surface_flow > 0.0f){
-			iq::store_data_neigbours_fluid(particle_buffer_fluid, current_gradient_surface, nullptr, 0.0f, W1_pressure, delta_W_velocity_surface, mass_surface_flow, J_surface_flow);
+			iq::store_data_neigbours_fluid(particle_buffer_fluid, current_gradient_surface, nullptr, W1_pressure, delta_W_velocity_surface, mass_surface_flow);
 		}
 	}
 	
@@ -630,7 +631,7 @@ __forceinline__ __device__ void simple_surface_flow_aggregate_data_fluid(const P
 									
 		float* current_gradient_fluid = &(gradient_fluid[local_cell_index]);
 		
-		iq::store_data_neigbours_fluid(particle_buffer_fluid, current_gradient_fluid, nullptr, W_velocity, W1_pressure, delta_W_velocity, mass, J);
+		iq::store_data_neigbours_fluid(particle_buffer_fluid, current_gradient_fluid, nullptr, W1_pressure, delta_W_velocity, mass);
 	}
 }
 

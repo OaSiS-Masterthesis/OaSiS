@@ -1165,7 +1165,7 @@ public:
 		Cuda::CudaContext& cu_dev
 	) override{
 		//Update velocity and strain
-		match(particle_bins[rollid][solid_id])([
+		match(particle_bins[rollid][solid_id], particle_bins[rollid][fluid_id])([
 			this,
 			&rollid,
 			&exterior_block_count,
@@ -1179,32 +1179,46 @@ public:
 			&iq_solve_velocity_result,
 			&iq_result,
 			&cu_dev
-		](auto& particle_buffer_solid) {
+		](auto& particle_buffer_solid, auto& particle_buffer_fluid) {
 			auto& next_particle_buffer_solid = get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]);
+			auto& next_particle_buffer_fluid = get<typename std::decay_t<decltype(particle_buffer_fluid)>>(particle_bins[(rollid + 1) % BIN_COUNT][fluid_id]);
 			
 			particle_buffer_solid.bin_offsets = particle_buffer_solid.bin_offsets_virtual;
+			particle_buffer_fluid.bin_offsets = particle_buffer_fluid.bin_offsets_virtual;
 			next_particle_buffer_solid.particle_bucket_sizes = next_particle_buffer_solid.particle_bucket_sizes_virtual;
+			next_particle_buffer_fluid.particle_bucket_sizes = next_particle_buffer_fluid.particle_bucket_sizes_virtual;
 			next_particle_buffer_solid.blockbuckets = next_particle_buffer_solid.blockbuckets_virtual;
+			next_particle_buffer_fluid.blockbuckets = next_particle_buffer_fluid.blockbuckets_virtual;
 			managed_memory.acquire<MemoryType::DEVICE>(
 				  particle_buffer_solid.acquire()
+				, particle_buffer_fluid.acquire()
 				, next_particle_buffer_solid.acquire()
+				, next_particle_buffer_fluid.acquire()
 				, grid_blocks[0][solid_id].acquire()
 				, grid_blocks[0][fluid_id].acquire()
 				, reinterpret_cast<void**>(&particle_buffer_solid.bin_offsets)
+				, reinterpret_cast<void**>(&particle_buffer_fluid.bin_offsets)
 				, reinterpret_cast<void**>(&next_particle_buffer_solid.particle_bucket_sizes)
+				, reinterpret_cast<void**>(&next_particle_buffer_fluid.particle_bucket_sizes)
 				, reinterpret_cast<void**>(&next_particle_buffer_solid.blockbuckets)
+				, reinterpret_cast<void**>(&next_particle_buffer_fluid.blockbuckets)
 			);
 			
-			cu_dev.compute_launch({partition_block_count, iq::BLOCK_SIZE}, iq::update_velocity_and_strain, particle_buffer_solid, get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_solve_velocity_result->get_const_values(), iq_solve_velocity_result->get_const_values() + 3 * exterior_block_count * config::G_BLOCKVOLUME, iq_result->get_const_values());
+			cu_dev.compute_launch({partition_block_count, iq::BLOCK_SIZE}, iq::update_velocity_and_strain, particle_buffer_solid, particle_buffer_fluid, get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]), get<typename std::decay_t<decltype(particle_buffer_fluid)>>(particle_bins[(rollid + 1) % BIN_COUNT][fluid_id]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_solve_velocity_result->get_const_values(), iq_solve_velocity_result->get_const_values() + 3 * exterior_block_count * config::G_BLOCKVOLUME, iq_result->get_const_values(), iq_result->get_const_values() + exterior_block_count * config::G_BLOCKVOLUME);
 		
 			managed_memory.release(
 				  particle_buffer_solid.release()
+				, particle_buffer_fluid.release()
 				, next_particle_buffer_solid.release()
+				, next_particle_buffer_fluid.release()
 				, grid_blocks[0][solid_id].release()
 				, grid_blocks[0][fluid_id].release()
 				, particle_buffer_solid.bin_offsets_virtual
+				, particle_buffer_fluid.bin_offsets_virtual
 				, next_particle_buffer_solid.particle_bucket_sizes_virtual
+				, next_particle_buffer_fluid.particle_bucket_sizes_virtual
 				, next_particle_buffer_solid.blockbuckets_virtual
+				, next_particle_buffer_fluid.blockbuckets_virtual
 			);
 		});
 		

@@ -909,6 +909,7 @@ struct CalculateContributionAndStoreParticleDataIntermediate {
 	float mass;
 	std::array<float, 3> pos;
 	float J;
+	bool is_coupled;
 };
 
 template<MaterialE MaterialType>
@@ -918,53 +919,79 @@ template<>
 __forceinline__ __device__ void calculate_contribution_and_store_particle_data<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer, const ParticleBuffer<MaterialE::J_FLUID> next_particle_buffer, int advection_source_blockno, int source_pidib, int src_blockno, int particle_id_in_block, Duration dt, const std::array<float, 9>& A, std::array<float, 9>& contrib, CalculateContributionAndStoreParticleDataIntermediate& data) {
 	(void) advection_source_blockno;
 	(void) source_pidib;
-	
-	//Update determinante of deformation gradiant
-	//Divergence of velocity multiplied with time and transfered to global space
-	data.J += (A[0] + A[4] + A[8]) * dt.count() * config::G_D_INV * data.J;
 
-	//Too low is bad. clamp to 0.1
-	//TODO: Maybe make this 0.1 a parameter
-	if(data.J < 0.1) {
-		data.J = 0.1;
-	}
+	if(data.is_coupled){
+#if (J_FLUID_ENABLE_STRAIN_UPDATE == 1)
+		//Update determinante of deformation gradiant
+		//Divergence of velocity multiplied with time and transfered to global space
+		data.J += (A[0] + A[4] + A[8]) * dt.count() * config::G_D_INV * data.J;
 
-	//TODO: What is calculated here? Force?
-	{
-		float voln	   = data.J * (data.mass / particle_buffer.rho);
-		//Values from ]0; 0.1^-gamma - 1]
-		float pressure = (particle_buffer.bulk - (2.0f / 3.0f) * particle_buffer.viscosity) * (powf(data.J, -particle_buffer.gamma) - 1.0f);
+		//Too low is bad. clamp to 0.1
+		//TODO: Maybe make this 0.1 a parameter
+		if(data.J < 0.1) {
+			data.J = 0.1;
+		}
+#else
+	(void)nullptr;//Nothing
+#endif
+
+		float pressure = (particle_buffer.bulk - (2.0f / 3.0f) * particle_buffer.viscosity) * (data.J - 1.0f);
 		
-		//NOTE: See also: https://en.wikipedia.org/wiki/Viscous_stress_tensor
-		//NOTE: Stress of compressible Navier-Stokes flow
-		//(viscose_stress + pressure_stress) * volume = (2 * viscosity * strain_rate_tensor + pressure_stress) * volume; stress = -pressure * identity; strain_rate_tensor = 0.5 * (A * (4 / dx^2)) * (A * (4 / dx^2))^T
+		//Calculating stress density
 		{
-			contrib[0] = ((A[0] + A[0]) * config::G_D_INV * particle_buffer.viscosity - pressure) * voln;
-			contrib[1] = (A[1] + A[3]) * config::G_D_INV * particle_buffer.viscosity * voln;
-			contrib[2] = (A[2] + A[6]) * config::G_D_INV * particle_buffer.viscosity * voln;
+			float voln	   = data.J * (data.mass / particle_buffer.rho);
+			
+			//NOTE: Stress of incompressible Navier-Stokes flow
+			//pressure_stress * volume; pressure_stress = -pressure * identity;
+			{
+				contrib[0] = pressure * voln;
+				contrib[1] = 0.0f;
+				contrib[2] = 0.0f;
 
-			contrib[3] = (A[3] + A[1]) * config::G_D_INV * particle_buffer.viscosity * voln;
-			contrib[4] = ((A[4] + A[4]) * config::G_D_INV * particle_buffer.viscosity - pressure) * voln;
-			contrib[5] = (A[5] + A[7]) * config::G_D_INV * particle_buffer.viscosity * voln;
+				contrib[3] = 0.0f;
+				contrib[4] = pressure * voln;
+				contrib[5] = 0.0f;
 
-			contrib[6] = (A[6] + A[2]) * config::G_D_INV * particle_buffer.viscosity * voln;
-			contrib[7] = (A[7] + A[5]) * config::G_D_INV * particle_buffer.viscosity * voln;
-			contrib[8] = ((A[8] + A[8]) * config::G_D_INV * particle_buffer.viscosity - pressure) * voln;
+				contrib[6] = 0.0f;
+				contrib[7] = 0.0f;
+				contrib[8] = pressure * voln;
+			}
+		}
+	}else{
+		//Update determinante of deformation gradiant
+		//Divergence of velocity multiplied with time and transfered to global space
+		data.J += (A[0] + A[4] + A[8]) * dt.count() * config::G_D_INV * data.J;
+
+		//Too low is bad. clamp to 0.1
+		//TODO: Maybe make this 0.1 a parameter
+		if(data.J < 0.1) {
+			data.J = 0.1;
 		}
 		
-		/*{
-			contrib[0] = (((A[0] + A[0]) * config::G_D_INV - (2.0f / 3.0f) * data.J) * particle_buffer.viscosity + particle_buffer.bulk * data.J) * voln;
-			contrib[1] = (A[1] + A[3]) * config::G_D_INV * particle_buffer.viscosity * voln;
-			contrib[2] = (A[2] + A[6]) * config::G_D_INV * particle_buffer.viscosity * voln;
+		//Values from ]0; 0.1^-gamma - 1]
+		float pressure = (particle_buffer.bulk - (2.0f / 3.0f) * particle_buffer.viscosity) * (powf(data.J, -particle_buffer.gamma) - 1.0f);
+	
+		//Calculating stress density
+		{
+			float voln	   = data.J * (data.mass / particle_buffer.rho);
+			
+			//NOTE: See also: https://en.wikipedia.org/wiki/Viscous_stress_tensor
+			//NOTE: Stress of compressible Navier-Stokes flow
+			//(viscose_stress + pressure_stress) * volume = (2 * viscosity * strain_rate_tensor + pressure_stress) * volume; pressure_stress = -pressure * identity; strain_rate_tensor = 0.5 * (A * (4 / dx^2)) * (A * (4 / dx^2))^T
+			{
+				contrib[0] = ((A[0] + A[0]) * config::G_D_INV * particle_buffer.viscosity - pressure) * voln;
+				contrib[1] = (A[1] + A[3]) * config::G_D_INV * particle_buffer.viscosity * voln;
+				contrib[2] = (A[2] + A[6]) * config::G_D_INV * particle_buffer.viscosity * voln;
 
-			contrib[3] = (A[3] + A[1]) * config::G_D_INV * particle_buffer.viscosity * voln;
-			contrib[4] = (((A[4] + A[4]) * config::G_D_INV - (2.0f / 3.0f) * data.J) * particle_buffer.viscosity + particle_buffer.bulk * data.J) * voln;
-			contrib[5] = (A[5] + A[7]) * config::G_D_INV * particle_buffer.viscosity * voln;
+				contrib[3] = (A[3] + A[1]) * config::G_D_INV * particle_buffer.viscosity * voln;
+				contrib[4] = ((A[4] + A[4]) * config::G_D_INV * particle_buffer.viscosity - pressure) * voln;
+				contrib[5] = (A[5] + A[7]) * config::G_D_INV * particle_buffer.viscosity * voln;
 
-			contrib[6] = (A[6] + A[2]) * config::G_D_INV * particle_buffer.viscosity * voln;
-			contrib[7] = (A[7] + A[5]) * config::G_D_INV * particle_buffer.viscosity * voln;
-			contrib[8] = (((A[8] + A[8]) * config::G_D_INV - (2.0f / 3.0f) * data.J) * particle_buffer.viscosity + particle_buffer.bulk * data.J) * voln;
-		}*/
+				contrib[6] = (A[6] + A[2]) * config::G_D_INV * particle_buffer.viscosity * voln;
+				contrib[7] = (A[7] + A[5]) * config::G_D_INV * particle_buffer.viscosity * voln;
+				contrib[8] = ((A[8] + A[8]) * config::G_D_INV * particle_buffer.viscosity - pressure) * voln;
+			}
+		}
 	}
 
 	//Write back particle data
@@ -1110,19 +1137,31 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 		dws.val(d) = A[d] * dt.count() * config::G_D_INV + ((d & 0x3) != 0 ? 0.f : 1.f);
 	}
 	
+	if(data.is_coupled){
 #if (FIXED_COROTATED_GHOST_ENABLE_STRAIN_UPDATE == 1)
-	
-	//Update determinante of deformation gradiant
-	//Divergence of velocity multiplied with time and transfered to global space
-	data.J += (A[0] + A[4] + A[8]) * dt.count() * config::G_D_INV * data.J;
+		//Update determinante of deformation gradiant
+		//Divergence of velocity multiplied with time and transfered to global space
+		data.J += (A[0] + A[4] + A[8]) * dt.count() * config::G_D_INV * data.J;
 
-	//Too low is bad. clamp to 0.1
-	//TODO: Maybe make this 0.1 a parameter
-	if(data.J < 0.1) {
-		data.J = 0.1;
-	}
-	
+		//Too low is bad. clamp to 0.1
+		//TODO: Maybe make this 0.1 a parameter
+		if(data.J < 0.1) {
+			data.J = 0.1;
+		}
+#else
+	(void)nullptr;//Nothing
 #endif
+	}else{
+		//Update determinante of deformation gradiant
+		//Divergence of velocity multiplied with time and transfered to global space
+		data.J += (A[0] + A[4] + A[8]) * dt.count() * config::G_D_INV * data.J;
+
+		//Too low is bad. clamp to 0.1
+		//TODO: Maybe make this 0.1 a parameter
+		if(data.J < 0.1) {
+			data.J = 0.1;
+		}
+	}
 
 	{
 		vec9 F;
@@ -1152,8 +1191,8 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 	}
 }
 
-template<typename Partition, typename Grid, MaterialE MaterialType>
-__global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<MaterialType> particle_buffer, ParticleBuffer<MaterialType> next_particle_buffer, const Partition prev_partition, Partition partition, const Grid grid, Grid next_grid) {
+template<typename Partition, typename Grid, MaterialE MaterialType, typename FluidParticleBuffer>
+__global__ void g2p2g(Duration dt, Duration new_dt, bool is_coupled, bool is_coupled_as_fluid, const ParticleBuffer<MaterialType> particle_buffer, ParticleBuffer<MaterialType> next_particle_buffer, const Partition prev_partition, Partition partition, const Grid grid, Grid next_grid, FluidParticleBuffer fluid_particle_buffer) {
 	static constexpr uint64_t NUM_VI_PER_BLOCK = static_cast<uint64_t>(config::G_BLOCKVOLUME) * 3;
 	static constexpr uint64_t NUM_VI_IN_ARENA  = NUM_VI_PER_BLOCK << 3;
 
@@ -1331,14 +1370,34 @@ __global__ void g2p2g(Duration dt, Duration new_dt, const ParticleBuffer<Materia
 			store_particle_buffer_tmp.mass = mass;
 			store_particle_buffer_tmp.pos													= pos.data_arr();
 			store_particle_buffer_tmp.J														= J;
+			store_particle_buffer_tmp.is_coupled														= is_coupled;
 
 			vec9 contrib;
 			calculate_contribution_and_store_particle_data<MaterialType>(particle_buffer, next_particle_buffer, advection_source_blockno, source_pidib, src_blockno, particle_id_in_block, dt, A.data_arr(), contrib.data_arr(), store_particle_buffer_tmp);
 
 			//Update momentum?
-			//Multiply A with mass to complete it. Then subtract current momentum?
+			//Multiply A with mass to complete it. Then subtract stress_density * dt?
 			//C * m = A * D^-1
 			contrib = (A * mass - contrib * new_dt.count()) * config::G_D_INV;
+			
+			//Store extra fluid data needed later
+			if(is_coupled_as_fluid){
+				auto fluid_particle_bin = fluid_particle_buffer.ch(_0, next_particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
+				//velocity
+				fluid_particle_bin.val(_0, source_pidib % config::G_BIN_CAPACITY) = vel[0];
+				fluid_particle_bin.val(_1, source_pidib % config::G_BIN_CAPACITY) = vel[1];
+				fluid_particle_bin.val(_2, source_pidib % config::G_BIN_CAPACITY) = vel[2];
+				//C
+				fluid_particle_bin.val(_3, source_pidib % config::G_BIN_CAPACITY) = contrib[0];
+				fluid_particle_bin.val(_4, source_pidib % config::G_BIN_CAPACITY) = contrib[1];
+				fluid_particle_bin.val(_5, source_pidib % config::G_BIN_CAPACITY) = contrib[2];
+				fluid_particle_bin.val(_6, source_pidib % config::G_BIN_CAPACITY) = contrib[3];
+				fluid_particle_bin.val(_7, source_pidib % config::G_BIN_CAPACITY) = contrib[4];
+				fluid_particle_bin.val(_8, source_pidib % config::G_BIN_CAPACITY) = contrib[5];
+				fluid_particle_bin.val(_9, source_pidib % config::G_BIN_CAPACITY) = contrib[6];
+				fluid_particle_bin.val(_10, source_pidib % config::G_BIN_CAPACITY) = contrib[7];
+				fluid_particle_bin.val(_11, source_pidib % config::G_BIN_CAPACITY) = contrib[8];
+			}
 
 			//Calculate grid index after movement
 			ivec3 new_global_base_index = get_cell_id<2>(pos.data_arr(), grid.get_offset());
@@ -1997,6 +2056,7 @@ struct CalculateContributionIntermediate {
 	float J;
 	std::array<float, 9> deformation_gradient;
 	float log_jp;
+	bool is_coupled;
 };
 
 template<MaterialE MaterialType>
@@ -2004,21 +2064,45 @@ __forceinline__ __device__ void calculate_contribution(const ParticleBuffer<Mate
 
 template<>
 __forceinline__ __device__ void calculate_contribution<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer, Duration dt, const std::array<float, 9>& A, std::array<float, 9>& contrib, CalculateContributionIntermediate& data) {
-	//Update determinante of deformation gradiant
-	//Divergence of velocity multiplied with time and transfered to global space
-	data.J += (A[0] + A[4] + A[8]) * dt.count() * config::G_D_INV * data.J;
+	float pressure;
+	if(data.is_coupled){
+#if (J_FLUID_ENABLE_STRAIN_UPDATE == 1)
+		//Update determinante of deformation gradiant
+		//Divergence of velocity multiplied with time and transfered to global space
+		data.J += (A[0] + A[4] + A[8]) * dt.count() * config::G_D_INV * data.J;
 
-	//Too low is bad. clamp to 0.1
-	//TODO: Maybe make this 0.1 a parameter
-	if(data.J < 0.1) {
-		data.J = 0.1;
+		//Too low is bad. clamp to 0.1
+		//TODO: Maybe make this 0.1 a parameter
+		if(data.J < 0.1) {
+			data.J = 0.1;
+		}
+#else
+	(void)nullptr;//Nothing
+#endif
+
+		pressure = 0.0f;
+	}else{
+		//Update determinante of deformation gradiant
+		//Divergence of velocity multiplied with time and transfered to global space
+		data.J += (A[0] + A[4] + A[8]) * dt.count() * config::G_D_INV * data.J;
+
+		//Too low is bad. clamp to 0.1
+		//TODO: Maybe make this 0.1 a parameter
+		if(data.J < 0.1) {
+			data.J = 0.1;
+		}
+		
+		//Values from ]0; 0.1^-gamma - 1]
+		pressure = (particle_buffer.bulk - (2.0f / 3.0f) * particle_buffer.viscosity) * (powf(data.J, -particle_buffer.gamma) - 1.0f);
 	}
 
-	//TODO: What is calculated here?
+	//TODO: What is calculated here? Force?
 	{
 		float voln	   = data.J * (data.mass / particle_buffer.rho);
-		float pressure = particle_buffer.bulk * (powf(data.J, -particle_buffer.gamma) - 1.f);
-		//? - stress; stress = pressure * identity;
+		
+		//NOTE: See also: https://en.wikipedia.org/wiki/Viscous_stress_tensor
+		//NOTE: Stress of compressible Navier-Stokes flow
+		//(viscose_stress + pressure_stress) * volume = (2 * viscosity * strain_rate_tensor + pressure_stress) * volume; stress = -pressure * identity; strain_rate_tensor = 0.5 * (A * (4 / dx^2)) * (A * (4 / dx^2))^T
 		{
 			contrib[0] = ((A[0] + A[0]) * config::G_D_INV * particle_buffer.viscosity - pressure) * voln;
 			contrib[1] = (A[1] + A[3]) * config::G_D_INV * particle_buffer.viscosity * voln;
@@ -2032,6 +2116,20 @@ __forceinline__ __device__ void calculate_contribution<MaterialE::J_FLUID>(const
 			contrib[7] = (A[7] + A[5]) * config::G_D_INV * particle_buffer.viscosity * voln;
 			contrib[8] = ((A[8] + A[8]) * config::G_D_INV * particle_buffer.viscosity - pressure) * voln;
 		}
+		
+		/*{
+			contrib[0] = (((A[0] + A[0]) * config::G_D_INV - (2.0f / 3.0f) * data.J) * particle_buffer.viscosity + particle_buffer.bulk * data.J) * voln;
+			contrib[1] = (A[1] + A[3]) * config::G_D_INV * particle_buffer.viscosity * voln;
+			contrib[2] = (A[2] + A[6]) * config::G_D_INV * particle_buffer.viscosity * voln;
+
+			contrib[3] = (A[3] + A[1]) * config::G_D_INV * particle_buffer.viscosity * voln;
+			contrib[4] = (((A[4] + A[4]) * config::G_D_INV - (2.0f / 3.0f) * data.J) * particle_buffer.viscosity + particle_buffer.bulk * data.J) * voln;
+			contrib[5] = (A[5] + A[7]) * config::G_D_INV * particle_buffer.viscosity * voln;
+
+			contrib[6] = (A[6] + A[2]) * config::G_D_INV * particle_buffer.viscosity * voln;
+			contrib[7] = (A[7] + A[5]) * config::G_D_INV * particle_buffer.viscosity * voln;
+			contrib[8] = (((A[8] + A[8]) * config::G_D_INV - (2.0f / 3.0f) * data.J) * particle_buffer.viscosity + particle_buffer.bulk * data.J) * voln;
+		}*/
 	}
 }
 
@@ -2140,20 +2238,32 @@ __forceinline__ __device__ void calculate_contribution<MaterialE::FIXED_COROTATE
 	for(int d = 0; d < 9; ++d) {
 		dws.val(d) = A[d] * dt.count() * config::G_D_INV + ((d & 0x3) != 0 ? 0.f : 1.f);
 	}
-	
-#if (FIXED_COROTATED_GHOST_ENABLE_STRAIN_UPDATE == 1)
-	
-	//Update determinante of deformation gradiant
-	//Divergence of velocity multiplied with time and transfered to global space
-	data.J += (A[0] + A[4] + A[8]) * dt.count() * config::G_D_INV * data.J;
 
-	//Too low is bad. clamp to 0.1
-	//TODO: Maybe make this 0.1 a parameter
-	if(data.J < 0.1) {
-		data.J = 0.1;
-	}
-	
+	if(data.is_coupled){
+#if (FIXED_COROTATED_GHOST_ENABLE_STRAIN_UPDATE == 1)
+		//Update determinante of deformation gradiant
+		//Divergence of velocity multiplied with time and transfered to global space
+		data.J += (A[0] + A[4] + A[8]) * dt.count() * config::G_D_INV * data.J;
+
+		//Too low is bad. clamp to 0.1
+		//TODO: Maybe make this 0.1 a parameter
+		if(data.J < 0.1) {
+			data.J = 0.1;
+		}
+#else
+	(void)nullptr;//Nothing
 #endif
+	}else{
+		//Update determinante of deformation gradiant
+		//Divergence of velocity multiplied with time and transfered to global space
+		data.J += (A[0] + A[4] + A[8]) * dt.count() * config::G_D_INV * data.J;
+
+		//Too low is bad. clamp to 0.1
+		//TODO: Maybe make this 0.1 a parameter
+		if(data.J < 0.1) {
+			data.J = 0.1;
+		}
+	}
 
 	{
 		vec9 F;
@@ -2466,7 +2576,7 @@ __forceinline__ __device__ float spawn_new_particles(ParticleBuffer<MaterialType
 }
 
 template<typename Partition, typename Grid, MaterialE MaterialType>
-__global__ void shell_to_grid(Duration dt, Duration new_dt, int partition_block_count, const ParticleBuffer<MaterialType> particle_buffer, ParticleBuffer<MaterialType> next_particle_buffer, TriangleMesh triangle_mesh, TriangleShell prev_triangle_shell, TriangleShell triangle_shell, TriangleShellParticleBuffer triangle_shell_particle_buffer, Partition partition, Grid next_grid) {
+__global__ void shell_to_grid(Duration dt, Duration new_dt, bool is_coupled, int partition_block_count, const ParticleBuffer<MaterialType> particle_buffer, ParticleBuffer<MaterialType> next_particle_buffer, TriangleMesh triangle_mesh, TriangleShell prev_triangle_shell, TriangleShell triangle_shell, TriangleShellParticleBuffer triangle_shell_particle_buffer, Partition partition, Grid next_grid) {
 	static constexpr uint64_t NUM_M_VI_PER_BLOCK = static_cast<uint64_t>(config::G_BLOCKVOLUME) * 4;
 	static constexpr uint64_t NUM_M_VI_IN_ARENA	 = NUM_M_VI_PER_BLOCK << 3;
 
@@ -2626,6 +2736,7 @@ __global__ void shell_to_grid(Duration dt, Duration new_dt, int partition_block_
 		CalculateContributionIntermediate calculate_contribution_tmp = {};
 		calculate_contribution_tmp.mass = mass_outer;
 		calculate_contribution_tmp.pos													= extrapolated_pos.data_arr();
+		calculate_contribution_tmp.is_coupled = is_coupled;
 		
 		
 		

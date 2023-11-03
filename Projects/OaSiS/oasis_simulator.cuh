@@ -172,6 +172,8 @@ struct OasisSimulator {
 	std::vector<Partition<1>> partitions								= {};///< with halo info
 	std::vector<ParticleArray> particles								= {};
 	std::vector<SurfaceParticleBuffer> surface_particle_buffers = {};
+	std::vector<iq::FluidParticleBuffer> iq_fluid_particle_buffers = {};
+	iq::FluidParticleBuffer empty_iq_fluid_particle_buffer;
 	//AlphaShapesGridBuffer alpha_shapes_grid_buffer;
 	size_t global_marching_cubes_block_count;
 	MarchingCubesGridBuffer marching_cubes_grid_buffer;
@@ -647,6 +649,8 @@ struct OasisSimulator {
 			
 			if(!already_coupled){
 				solid_fluid_couplings.push_back({solid_id, fluid_id});
+				
+				iq_fluid_particle_buffers.emplace_back(iq::FluidParticleBuffer(managed_memory_allocator, &managed_memory, particle_counts[fluid_id] / config::G_BIN_CAPACITY + config::G_MAX_ACTIVE_BLOCK));
 			}
 		}else{
 			fmt::print("Model ids out of range: {} {} but model count is {}", solid_id, fluid_id, particle_counts.size());
@@ -1384,7 +1388,7 @@ struct OasisSimulator {
 									-
 								}
 							*/
-							match(particle_bins[rollid][solid_id], particle_bins[rollid][fluid_id])([this, &cu_dev, &coupling_block_count, &solid_id, &fluid_id](auto& particle_buffer_solid, auto& particle_buffer_fluid) {
+							match(particle_bins[rollid][solid_id], particle_bins[rollid][fluid_id])([this, &i, &cu_dev, &coupling_block_count, &solid_id, &fluid_id](auto& particle_buffer_solid, auto& particle_buffer_fluid) {
 								auto& next_particle_buffer_solid = get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]);
 								auto& next_particle_buffer_fluid = get<typename std::decay_t<decltype(particle_buffer_fluid)>>(particle_bins[(rollid + 1) % BIN_COUNT][fluid_id]);
 								
@@ -1401,6 +1405,7 @@ struct OasisSimulator {
 									, next_particle_buffer_fluid.acquire()
 									, grid_blocks[0][solid_id].acquire()
 									, grid_blocks[0][fluid_id].acquire()
+									, iq_fluid_particle_buffers[i].acquire()
 									, surface_particle_buffers[solid_id].acquire()
 									, surface_particle_buffers[fluid_id].acquire()
 									, reinterpret_cast<void**>(&particle_buffer_solid.bin_offsets)
@@ -1439,7 +1444,7 @@ struct OasisSimulator {
 								pointers.iq_rhs = iq_rhs_array.get_data();
 								pointers.iq_solve_velocity_result = iq_solve_velocity_result_array.get_data();
 								
-								cu_dev.compute_launch({coupling_block_count, iq::BLOCK_SIZE}, iq::create_iq_system, static_cast<uint32_t>(exterior_block_count), dt, particle_buffer_solid, particle_buffer_fluid, next_particle_buffer_solid, next_particle_buffer_fluid, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], surface_particle_buffers[solid_id], surface_particle_buffers[fluid_id], pointers);
+								cu_dev.compute_launch({coupling_block_count, iq::BLOCK_SIZE}, iq::create_iq_system, static_cast<uint32_t>(exterior_block_count), dt, particle_buffer_solid, particle_buffer_fluid, next_particle_buffer_solid, next_particle_buffer_fluid, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_fluid_particle_buffers[i], surface_particle_buffers[solid_id], surface_particle_buffers[fluid_id], pointers);
 								
 								managed_memory.release(
 									  particle_buffer_solid.release()
@@ -1448,6 +1453,7 @@ struct OasisSimulator {
 									, next_particle_buffer_fluid.release()
 									, grid_blocks[0][solid_id].release()
 									, grid_blocks[0][fluid_id].release()
+									, iq_fluid_particle_buffers[i].release()
 									, surface_particle_buffers[solid_id].release()
 									, surface_particle_buffers[fluid_id].release()
 									, particle_buffer_solid.bin_offsets_virtual
@@ -1639,12 +1645,16 @@ struct OasisSimulator {
 							*/
 							mass_solid->apply(gradient_solid, iq_solve_velocity_parts[0]);
 							iq_solve_velocity_parts[0]->scale(gko_neg_one_dense);
+							
 							mass_solid->apply(coupling_solid, iq_solve_velocity_parts[1]);
 							iq_solve_velocity_parts[1]->scale(gko_neg_one_dense);
+							
 							mass_fluid->apply(gradient_fluid, iq_solve_velocity_parts[2]);
 							iq_solve_velocity_parts[2]->scale(gko_neg_one_dense);
+							
 							mass_fluid->apply(boundary_fluid, iq_solve_velocity_parts[3]);
 							iq_solve_velocity_parts[3]->scale(gko_neg_one_dense);
+							
 							mass_fluid->apply(coupling_fluid, iq_solve_velocity_parts[4]);
 							
 							/*
@@ -2352,32 +2362,46 @@ struct OasisSimulator {
 							//Update velocity and ghost matrix strain
 							//v_s,t+1 = v_s,t + (- dt * M_s^-1 * G_s * p_g,t+1 - dt * M_s^-1 * H_s^T * h,t+1)
 							//v_f,t+1 = v_f,t + (- dt * M_f^-1 * G_f * p_f,t+1 - dt * M_f^-1 * B * y,t+1 + dt * M_f^-1 * H_f^T * h,t+1)
-							match(particle_bins[rollid][solid_id])([this, &cu_dev, &solid_id, &fluid_id, &iq_solve_velocity_result, &iq_result](auto& particle_buffer_solid) {
+							match(particle_bins[rollid][solid_id], particle_bins[rollid][fluid_id])([this, &cu_dev, &solid_id, &fluid_id, &iq_solve_velocity_result, &iq_result](auto& particle_buffer_solid, auto& particle_buffer_fluid) {
 								auto& next_particle_buffer_solid = get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]);
+								auto& next_particle_buffer_fluid = get<typename std::decay_t<decltype(particle_buffer_fluid)>>(particle_bins[(rollid + 1) % BIN_COUNT][fluid_id]);
 								
 								particle_buffer_solid.bin_offsets = particle_buffer_solid.bin_offsets_virtual;
+								particle_buffer_fluid.bin_offsets = particle_buffer_fluid.bin_offsets_virtual;
 								next_particle_buffer_solid.particle_bucket_sizes = next_particle_buffer_solid.particle_bucket_sizes_virtual;
+								next_particle_buffer_fluid.particle_bucket_sizes = next_particle_buffer_fluid.particle_bucket_sizes_virtual;
 								next_particle_buffer_solid.blockbuckets = next_particle_buffer_solid.blockbuckets_virtual;
+								next_particle_buffer_fluid.blockbuckets = next_particle_buffer_fluid.blockbuckets_virtual;
 								managed_memory.acquire<MemoryType::DEVICE>(
 									  particle_buffer_solid.acquire()
+									, particle_buffer_fluid.acquire()
 									, next_particle_buffer_solid.acquire()
+									, next_particle_buffer_fluid.acquire()
 									, grid_blocks[0][solid_id].acquire()
 									, grid_blocks[0][fluid_id].acquire()
 									, reinterpret_cast<void**>(&particle_buffer_solid.bin_offsets)
+									, reinterpret_cast<void**>(&particle_buffer_fluid.bin_offsets)
 									, reinterpret_cast<void**>(&next_particle_buffer_solid.particle_bucket_sizes)
+									, reinterpret_cast<void**>(&next_particle_buffer_fluid.particle_bucket_sizes)
 									, reinterpret_cast<void**>(&next_particle_buffer_solid.blockbuckets)
+									, reinterpret_cast<void**>(&next_particle_buffer_fluid.blockbuckets)
 								);
 								
-								cu_dev.compute_launch({partition_block_count, iq::BLOCK_SIZE}, iq::update_velocity_and_strain, particle_buffer_solid, get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_solve_velocity_result->get_const_values(), iq_solve_velocity_result->get_const_values() + 3 * exterior_block_count * config::G_BLOCKVOLUME, iq_result->get_const_values());
+								cu_dev.compute_launch({partition_block_count, iq::BLOCK_SIZE}, iq::update_velocity_and_strain, particle_buffer_solid, particle_buffer_fluid, get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]), get<typename std::decay_t<decltype(particle_buffer_fluid)>>(particle_bins[(rollid + 1) % BIN_COUNT][fluid_id]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_solve_velocity_result->get_const_values(), iq_solve_velocity_result->get_const_values() + 3 * exterior_block_count * config::G_BLOCKVOLUME, iq_result->get_const_values(), iq_result->get_const_values() + exterior_block_count * config::G_BLOCKVOLUME);
 							
 								managed_memory.release(
 									  particle_buffer_solid.release()
+									, particle_buffer_fluid.release()
 									, next_particle_buffer_solid.release()
+									, next_particle_buffer_fluid.release()
 									, grid_blocks[0][solid_id].release()
 									, grid_blocks[0][fluid_id].release()
 									, particle_buffer_solid.bin_offsets_virtual
+									, particle_buffer_fluid.bin_offsets_virtual
 									, next_particle_buffer_solid.particle_bucket_sizes_virtual
+									, next_particle_buffer_fluid.particle_bucket_sizes_virtual
 									, next_particle_buffer_solid.blockbuckets_virtual
+									, next_particle_buffer_fluid.blockbuckets_virtual
 								);
 							});
 							
@@ -2401,6 +2425,12 @@ struct OasisSimulator {
 						}
 					}
 					
+					for(size_t i = 0; i < solid_fluid_couplings.size(); ++i){
+						if(checked_bin_counts[solid_fluid_couplings[i][1]] > 0) {
+							iq_fluid_particle_buffers[i].resize(managed_memory_allocator, checked_bin_counts[solid_fluid_couplings[i][1]]);
+						}
+					}
+					
 					for(int i = 0; i < get_model_count(); ++i) {
 						if(checked_bin_counts[i] > 0) {
 							match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &i, &cu_dev](auto& particle_buffer) {
@@ -2414,11 +2444,27 @@ struct OasisSimulator {
 
 					//Perform G2P2G step
 					for(int i = 0; i < get_model_count(); ++i) {
+						bool is_coupled = false;
+						bool is_coupled_as_fluid = false;
+						int coupling_index = -1;
+						for(size_t j = 0; j < solid_fluid_couplings.size(); ++j){
+							if(solid_fluid_couplings[j][1] == i){
+								is_coupled_as_fluid = true;
+								is_coupled = true;
+								coupling_index = j;
+								break;
+							}else if(solid_fluid_couplings[j][0] == i){
+								is_coupled = true;
+								coupling_index = j;
+								break;
+							}
+						}
+						
 						//Clear the grid
 						grid_blocks[1][i].reset(neighbor_block_count, cu_dev);
 
 						//First clear the count of particles per cell for next buffer
-						match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &i](auto& particle_buffer) {
+						match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &i, &is_coupled_as_fluid, &coupling_index](auto& particle_buffer) {
 							auto& prev_particle_buffer = get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[rollid][i]);
 							
 							prev_particle_buffer.bin_offsets = prev_particle_buffer.bin_offsets_virtual;
@@ -2432,6 +2478,7 @@ struct OasisSimulator {
 								, particle_buffer.acquire()
 								, grid_blocks[0][i].acquire()
 								, grid_blocks[1][i].acquire()
+								, (is_coupled_as_fluid ? iq_fluid_particle_buffers[coupling_index].acquire() : nullptr)
 								, reinterpret_cast<void**>(&prev_particle_buffer.bin_offsets)
 								, reinterpret_cast<void**>(&particle_buffer.particle_bucket_sizes)
 								, reinterpret_cast<void**>(&particle_buffer.blockbuckets)
@@ -2472,9 +2519,9 @@ struct OasisSimulator {
 						}
 
 						//Perform g2p2g
-						match(particle_bins[rollid][i])([this, &cu_dev, &i](const auto& particle_buffer) {
+						match(particle_bins[rollid][i])([this, &cu_dev, &i, &is_coupled, &is_coupled_as_fluid, &coupling_index](const auto& particle_buffer) {
 							//partition_block_count; G_PARTICLE_BATCH_CAPACITY
-							cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, g2p2g, dt, next_dt, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], grid_blocks[1][i]);
+							cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, g2p2g, dt, next_dt, is_coupled, is_coupled_as_fluid, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], grid_blocks[1][i], (is_coupled ? iq_fluid_particle_buffers[coupling_index] : empty_iq_fluid_particle_buffer));
 						});
 						
 						cu_dev.syncStream<streamIdx::COMPUTE>();
@@ -2511,7 +2558,7 @@ struct OasisSimulator {
 							cu_dev.syncStream<streamIdx::COMPUTE>();
 						}
 						
-						match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &i](auto& particle_buffer) {
+						match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &i, &is_coupled_as_fluid, &coupling_index](auto& particle_buffer) {
 							auto& prev_particle_buffer = get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[rollid][i]);
 							
 							managed_memory.release(
@@ -2519,6 +2566,7 @@ struct OasisSimulator {
 								, particle_buffer.release()
 								, grid_blocks[0][i].release()
 								, grid_blocks[1][i].release()
+								, (is_coupled_as_fluid ? iq_fluid_particle_buffers[i].release() : nullptr)
 								, prev_particle_buffer.bin_offsets_virtual
 								, particle_buffer.particle_bucket_sizes_virtual
 								, particle_buffer.blockbuckets_virtual
@@ -2711,10 +2759,18 @@ struct OasisSimulator {
 					timer.tick();
 					
 					for(int i = 0; i < get_model_count(); ++i) {
+						bool is_coupled = false;
+						for(size_t j = 0; j < solid_fluid_couplings.size(); ++j){
+							if(solid_fluid_couplings[j][0] == i || solid_fluid_couplings[j][1] == i){
+								is_coupled = true;
+								break;
+							}
+						}
+						
 						for(int j = 0; j < triangle_shells[(rollid + 1) % BIN_COUNT][i].size(); ++j) {
 							
 							
-							match(particle_bins[rollid][i])([this, &cu_dev, &i, &j](auto& particle_buffer) {
+							match(particle_bins[rollid][i])([this, &cu_dev, &i, &j, &is_coupled](auto& particle_buffer) {
 								auto& next_particle_buffer = get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]);
 								
 								next_particle_buffer.bin_offsets = next_particle_buffer.bin_offsets_virtual;
@@ -2739,7 +2795,7 @@ struct OasisSimulator {
 								);
 								
 								//partition_block_count; G_PARTICLE_BATCH_CAPACITY
-								cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, shell_to_grid, dt, next_dt, partition_block_count, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), triangle_meshes[i], triangle_shells[rollid][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer, partitions[rollid], grid_blocks[1][i]);
+								cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, shell_to_grid, dt, next_dt, is_coupled, partition_block_count, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), triangle_meshes[i], triangle_shells[rollid][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer, partitions[rollid], grid_blocks[1][i]);
 							
 								managed_memory.release(
 									 particle_buffer.release()
@@ -4072,6 +4128,31 @@ struct OasisSimulator {
 				cu_dev.syncStream<streamIdx::COMPUTE>();
 			}
 			
+			for(size_t i = 0; i < solid_fluid_couplings.size(); ++i){
+				match(particle_bins[rollid][solid_fluid_couplings[i][1]])([this, &cu_dev, &i](auto& particle_buffer) {
+					particle_buffer.particle_bucket_sizes = particle_buffer.particle_bucket_sizes_virtual;
+					particle_buffer.bin_offsets = particle_buffer.bin_offsets_virtual;
+					managed_memory.acquire<MemoryType::DEVICE>(
+						  particle_buffer.acquire()
+						, iq_fluid_particle_buffers[i].acquire()
+						, reinterpret_cast<void**>(&particle_buffer.particle_bucket_sizes)
+						, reinterpret_cast<void**>(&particle_buffer.bin_offsets)
+					);
+					
+					//Initialize iq_fluid_particle_buffers
+					//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, iq::init_fluid_particle_buffer, particle_buffer, iq_fluid_particle_buffers[i], vel0[solid_fluid_couplings[i][1]].data_arr());
+				
+					managed_memory.release(
+						  particle_buffer.release()
+						, iq_fluid_particle_buffers[i].release()
+						, reinterpret_cast<void**>(&particle_buffer.particle_bucket_sizes_virtual)
+						, reinterpret_cast<void**>(&particle_buffer.bin_offsets_virtual)
+					);
+				});
+				
+				cu_dev.syncStream<streamIdx::COMPUTE>();
+			}
 			
 
 			//Activate blocks near active blocks

@@ -14,6 +14,9 @@
 #define FIXED_COROTATED_GHOST_ENABLE_STRAIN_UPDATE 0//TODO: Move to another place
 
 //NOLINTNEXTLINE(cppcoreguidelines-macro-usage) Macro usage necessary here for preprocessor if
+#define J_FLUID_ENABLE_STRAIN_UPDATE 1//TODO: Move to another place
+
+//NOLINTNEXTLINE(cppcoreguidelines-macro-usage) Macro usage necessary here for preprocessor if
 #define VERIFY_IQ_MATRIX 1//TODO: Move to another place
 
 namespace mn {
