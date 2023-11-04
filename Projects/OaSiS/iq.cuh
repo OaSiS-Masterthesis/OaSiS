@@ -453,17 +453,17 @@ __forceinline__ __device__ void store_data_neigbours_coupling_solid<MaterialE::F
 
 template<>
 __forceinline__ __device__ void store_data_fluid<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer_fluid, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, const float W_pressure, const float W_velocity, const float mass, const float J){			
-	//const float volume_0 = (mass / particle_buffer_fluid.rho);
-	//const float lambda = (particle_buffer_fluid.bulk - (2.0f / 3.0f) * particle_buffer_fluid.viscosity);
+	const float volume_0 = (mass / particle_buffer_fluid.rho);
+	const float lambda = (particle_buffer_fluid.bulk - (2.0f / 3.0f) * particle_buffer_fluid.viscosity);
 	//const float pressure = lambda * (powf(J, -particle_buffer_fluid.gamma) - 1.0f);
-	//const float pressure = lambda * (J - 1.0f);
+	const float pressure = lambda * (J - 1.0f);
 	
 	//FIXME: Why does solid use volume_0/lambda for scaling? How does that corralate to 1/(lambda * J)?
 	//Volume weighted average of pressure;
-	//(*scaling_fluid) += (volume_0 / lambda) * W_pressure;
-	//(*scaling_fluid) += (1.0f / (lambda * particle_buffer_fluid.gamma * powf(J, -particle_buffer_fluid.gamma))) * W_pressure;
-	//(*pressure_fluid_nominator) += volume_0 * J * pressure * W_pressure;
-	//(*pressure_fluid_denominator) += volume_0 * J * W_pressure;
+	(*scaling_fluid) += (volume_0 / lambda) * W_pressure;
+	//(*scaling_fluid) += -(1.0f / (lambda * particle_buffer_fluid.gamma * powf(J, -particle_buffer_fluid.gamma))) * W_pressure;
+	(*pressure_fluid_nominator) += volume_0 * J * pressure * W_pressure;
+	(*pressure_fluid_denominator) += volume_0 * J * W_pressure;
 }
 
 template<>
@@ -587,7 +587,7 @@ template<>
 __forceinline__ __device__ void update_strain_fluid<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure) {
 	const float lambda = (particle_buffer.bulk - (2.0f / 3.0f) * particle_buffer.viscosity);
 	
-	//float J = pow(1.0f - (weighted_pressure / lambda), -1.0f/particle_buffer.gamma);
+	//float J = pow(1.0f + (weighted_pressure / lambda), -1.0f/particle_buffer.gamma);
 	float J = 1.0f + (weighted_pressure / lambda);
 	
 	//Too low is bad. clamp to 0.1
@@ -1576,8 +1576,8 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 		atomicAdd(&(iq_pointers.gradient_fluid_values[column_index]), gradient_fluid_local[local_cell_index]);
 		
 		//NOTE: Storing H^T
-		//FIXME:atomicAdd(&(iq_pointers.coupling_solid_values[column_index]), coupling_solid_local[local_cell_index]);
-		//FIXME:atomicAdd(&(iq_pointers.coupling_fluid_values[column_index]), coupling_fluid_local[local_cell_index]);
+		atomicAdd(&(iq_pointers.coupling_solid_values[column_index]), coupling_solid_local[local_cell_index]);
+		atomicAdd(&(iq_pointers.coupling_fluid_values[column_index]), coupling_fluid_local[local_cell_index]);
 		
 		atomicAdd(&(iq_pointers.boundary_fluid_values[column_index]), boundary_fluid_local[local_cell_index]);
 	}

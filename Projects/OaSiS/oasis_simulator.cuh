@@ -262,7 +262,8 @@ struct OasisSimulator {
 	std::shared_ptr<gko::matrix::Dense<float>> gko_neg_one_dense;
 	std::shared_ptr<gko::matrix::Dense<float>> gko_zero_dense;
 	
-	std::shared_ptr<gko::solver::Cg<float>::Factory> iq_solver_factory;
+	std::shared_ptr<gko::solver::Cg<float>::Factory> iq_solver_factory_cg;
+	std::shared_ptr<gko::solver::Gmres<float>::Factory> iq_solver_factory;
 
 	explicit OasisSimulator(int gpu = 0, Duration dt = DEFAULT_DT, int fps = DEFAULT_FPS, int frames = DEFAULT_FRAMES)
 		: gpuid(gpu)
@@ -429,7 +430,7 @@ struct OasisSimulator {
 			*/
 			
 			
-			std::shared_ptr<gko::preconditioner::Ic<gko::solver::Gmres<float>, int>::Factory> ic_gen = gko::share(
+			/*std::shared_ptr<gko::preconditioner::Ic<gko::solver::Gmres<float>, int>::Factory> ic_gen = gko::share(
 				gko::preconditioner::Ic<gko::solver::Gmres<float>, int>::build()
 				.with_factorization_factory(
 					gko::factorization::Ic<float, int>::build()
@@ -441,13 +442,53 @@ struct OasisSimulator {
 					.with_krylov_dim(0u)
 					.with_flexible(false)
 					.with_criteria(
-						  gko::stop::Iteration::build().with_max_iters(10u).on(ginkgo_executor)
+						  gko::stop::Iteration::build().with_max_iters(100u).on(ginkgo_executor)
 						, gko::stop::ResidualNorm<float>::build().with_baseline(gko::stop::mode::rhs_norm).with_reduction_factor(tolerance).on(ginkgo_executor)
 					)
 					.on(ginkgo_executor)
 				)
 				.on(ginkgo_executor)
+			);*/
+			
+			/*std::shared_ptr<gko::preconditioner::Ic<gko::solver::Gmres<float>, int>::Factory> ic_gen = gko::share(
+				gko::preconditioner::Ic<gko::solver::Gmres<float>, int>::build()
+				.with_factorization_factory(
+					gko::factorization::ParIc<float, int>::build()
+					.with_skip_sorting(true) //We know that our matrix is sorted
+					.on(ginkgo_executor)
+				)
+				.with_l_solver_factory(
+					gko::solver::Gmres<float>::build()
+					.with_krylov_dim(0u)
+					.with_flexible(false)
+					.with_criteria(
+						  gko::stop::Iteration::build().with_max_iters(1u).on(ginkgo_executor)
+						//, gko::stop::ResidualNorm<float>::build().with_baseline(gko::stop::mode::rhs_norm).with_reduction_factor(tolerance).on(ginkgo_executor)
+					)
+					.on(ginkgo_executor)
+				)
+				.on(ginkgo_executor)
+			);*/
+			
+			std::shared_ptr<gko::LinOpFactory> ic_gen = gko::share(
+				gko::solver::Gmres<float>::build()
+				.with_krylov_dim(0u)
+				.with_flexible(false)
+				.with_criteria(
+					  gko::stop::Iteration::build().with_max_iters(1000u).on(ginkgo_executor)
+					//, gko::stop::ResidualNorm<float>::build().with_baseline(gko::stop::mode::rhs_norm).with_reduction_factor(tolerance).on(ginkgo_executor)
+				)
+				.on(ginkgo_executor)
 			);
+			
+			/*std::shared_ptr<gko::LinOpFactory> ic_gen = gko::share(
+				gko::solver::Cg<float>::build()
+				.with_criteria(
+					  gko::stop::Iteration::build().with_max_iters(1000u).on(ginkgo_executor)
+					//, gko::stop::ResidualNorm<float>::build().with_baseline(gko::stop::mode::rhs_norm).with_reduction_factor(tolerance).on(ginkgo_executor)
+				)
+				.on(ginkgo_executor)
+			);*/
 			
 			//Smoother
 			//TODO: Maybe other smoother or adjust params.
@@ -491,24 +532,37 @@ struct OasisSimulator {
 			;
 
 			// Create solver factory
-			/*iq_solver_factory = gko::share(
-				gko::solver::Bicgstab<float>::build()
+			iq_solver_factory_cg = gko::share(
+				gko::solver::Cg<float>::build()
 				.with_criteria(iter_stop, tol_stop)
 				//.with_preconditioner(multigrid_gen)
 				.on(ginkgo_executor)
-			);*/
+			);
+			
 			/*iq_solver_factory = gko::share(
+				gko::solver::Bicgstab<float>::build()
+				//.with_criteria(iter_stop, tol_stop)
+				.with_criteria(iter_stop, exact_tol_stop)
+				//.with_preconditioner(multigrid_gen)
+				.with_preconditioner(ic_gen)
+				.on(ginkgo_executor)
+			);*/
+			iq_solver_factory = gko::share(
 				gko::solver::Gmres<float>::build()
 				.with_krylov_dim(0u)
 				.with_flexible(false)
 				.with_criteria(iter_stop, tol_stop)
+				.with_preconditioner(ic_gen)
+				//.with_preconditioner(multigrid_gen)
 				.on(ginkgo_executor)
-			);*/
+			);
+			/*
 			iq_solver_factory = gko::share(
 				gko::solver::Cg<float>::build()
 				.with_criteria(iter_stop, tol_stop)
+				//.with_preconditioner(multigrid_gen)
 				.on(ginkgo_executor)
-			);
+			);*/
 		}
    
 	}
@@ -2220,30 +2274,62 @@ struct OasisSimulator {
 						
 						//IQ-System solve
 						// Create solver
-						const std::chrono::steady_clock::time_point tic_generate = std::chrono::steady_clock::now();
+						const std::chrono::steady_clock::time_point tic_generate_cg = std::chrono::steady_clock::now();
 						ginkgo_executor->synchronize();
-						std::unique_ptr<gko::solver::Cg<float>> iq_solver = iq_solver_factory->generate(iq_lhs);
+						std::unique_ptr<gko::solver::Cg<float>> iq_solver_cg = iq_solver_factory_cg->generate(iq_lhs);
 						
-						std::shared_ptr<const gko::log::Convergence<float>> iq_logger = gko::log::Convergence<float>::create();
-						iq_solver->add_logger(iq_logger);
+						std::shared_ptr<const gko::log::Convergence<float>> iq_logger_cg = gko::log::Convergence<float>::create();
+						iq_solver_cg->add_logger(iq_logger_cg);
 						
 						ginkgo_executor->synchronize();
-						const std::chrono::steady_clock::time_point toc_generate = std::chrono::steady_clock::now();
+						const std::chrono::steady_clock::time_point toc_generate_cg = std::chrono::steady_clock::now();
+						
+						std::cout << "Generation(CG) finished: " << std::chrono::duration_cast<std::chrono::milliseconds>(toc_generate_cg - tic_generate_cg).count() << " ms" << std::endl;
 
 						// Solve system
-						const std::chrono::steady_clock::time_point tic_solve = std::chrono::steady_clock::now();
-						iq_solver->apply(iq_rhs, iq_result);
+						const std::chrono::steady_clock::time_point tic_solve_cg = std::chrono::steady_clock::now();
+						iq_solver_cg->apply(iq_rhs, iq_result);
 						ginkgo_executor->synchronize();
-						const std::chrono::steady_clock::time_point toc_solve = std::chrono::steady_clock::now();
+						const std::chrono::steady_clock::time_point toc_solve_cg = std::chrono::steady_clock::now();
 						
-						std::cout << "IQ-Solver time: " << std::chrono::duration_cast<std::chrono::milliseconds>(toc_solve - tic_generate).count() << " ms (Generate: " << std::chrono::duration_cast<std::chrono::milliseconds>(toc_generate - tic_generate).count() << " ms, Solve: " << std::chrono::duration_cast<std::chrono::milliseconds>(toc_solve - tic_solve).count() << " ms)" << std::endl;
+						std::cout << "IQ-Solver(CG) time: " << std::chrono::duration_cast<std::chrono::milliseconds>(toc_solve_cg - tic_generate_cg).count() << " ms (Generate: " << std::chrono::duration_cast<std::chrono::milliseconds>(toc_generate_cg - tic_generate_cg).count() << " ms, Solve: " << std::chrono::duration_cast<std::chrono::milliseconds>(toc_solve_cg - tic_solve_cg).count() << " ms)" << std::endl;
 						
-						// Print solver statistics
-						if(!iq_logger->has_converged()){
-							std::cout << "IQ-Solver has not converged" << std::endl;
-							auto res = gko::as<gko::matrix::Dense<float>>(iq_logger->get_residual_norm());
-							std::cout << "IQ-Solver residual norm sqrt(r^T r): " << std::endl;
-							gko::write(std::cout, res);
+						// If CG did not converge, try other solver
+						//TODO: USe CG result as initial guess?
+						if(!iq_logger_cg->has_converged()){
+							const std::chrono::steady_clock::time_point tic_generate = std::chrono::steady_clock::now();
+							ginkgo_executor->synchronize();
+							std::unique_ptr<gko::solver::Gmres<float>> iq_solver = iq_solver_factory->generate(iq_lhs);
+							
+							std::shared_ptr<const gko::log::Convergence<float>> iq_logger = gko::log::Convergence<float>::create();
+							iq_solver->add_logger(iq_logger);
+							
+							//std::shared_ptr<const gko::log::PerformanceHint> iq_logger_performance = gko::log::PerformanceHint::create(std::cout);
+							//iq_solver->add_logger(iq_logger_performance);
+							
+							//std::shared_ptr<const gko::log::Stream> iq_logger_stream = gko::log::Stream::create(ginkgo_executor);
+							//iq_solver->add_logger(iq_logger_stream);
+							
+							ginkgo_executor->synchronize();
+							const std::chrono::steady_clock::time_point toc_generate = std::chrono::steady_clock::now();
+							
+							std::cout << "Generation finished: " << std::chrono::duration_cast<std::chrono::milliseconds>(toc_generate - tic_generate).count() << " ms" << std::endl;
+
+							// Solve system
+							const std::chrono::steady_clock::time_point tic_solve = std::chrono::steady_clock::now();
+							iq_solver->apply(iq_rhs, iq_result);
+							ginkgo_executor->synchronize();
+							const std::chrono::steady_clock::time_point toc_solve = std::chrono::steady_clock::now();
+							
+							std::cout << "IQ-Solver time: " << std::chrono::duration_cast<std::chrono::milliseconds>(toc_solve - tic_generate).count() << " ms (Generate: " << std::chrono::duration_cast<std::chrono::milliseconds>(toc_generate - tic_generate).count() << " ms, Solve: " << std::chrono::duration_cast<std::chrono::milliseconds>(toc_solve - tic_solve).count() << " ms)" << std::endl;
+							
+							// Print solver statistics
+							if(!iq_logger->has_converged()){
+								std::cout << "IQ-Solver has not converged" << std::endl;
+								auto res = gko::as<gko::matrix::Dense<float>>(iq_logger->get_residual_norm());
+								std::cout << "IQ-Solver residual norm sqrt(r^T r): " << std::endl;
+								gko::write(std::cout, res);
+							}
 						}
 						
 						//If we have a surface flow apply mass transfer here before updating velocities
