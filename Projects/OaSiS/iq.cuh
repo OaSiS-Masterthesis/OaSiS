@@ -913,7 +913,6 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 	//Get position of grid cell
 	const ivec3 global_base_index_solid_pressure = get_cell_id<INTERPOLATION_DEGREE_FLUID_PRESSURE>(pos.data_arr(), grid_solid.get_offset());
 	const ivec3 global_base_index_fluid_velocity = get_cell_id<INTERPOLATION_DEGREE_FLUID_VELOCITY>(pos.data_arr(), grid_fluid.get_offset());
-	
 	const ivec3 global_base_index_fluid_2 = get_cell_id<2>(pos.data_arr(), grid_fluid.get_offset());
 	
 	//Get position relative to grid cell
@@ -1694,7 +1693,7 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 		FetchParticleBufferDataIntermediate fetch_particle_buffer_tmp = {};
 		fetch_particle_buffer_data<MaterialTypeSolid>(particle_buffer_solid, advection_source_blockno, source_pidib, fetch_particle_buffer_tmp);
 		vec3 pos {fetch_particle_buffer_tmp.pos[0], fetch_particle_buffer_tmp.pos[1], fetch_particle_buffer_tmp.pos[2]};
-		
+		/*
 		//Get position of grid cell
 		const ivec3 global_base_index_solid_pressure = get_cell_id<INTERPOLATION_DEGREE_SOLID_PRESSURE>(pos.data_arr(), grid_solid.get_offset());
 		
@@ -1739,7 +1738,12 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 					weighted_pressure += pressure_solid_shared[absolute_local_id[0]][absolute_local_id[1]][absolute_local_id[2]] * W_pressure;
 				}
 			}
-		}
+		}*/
+		
+		const ivec3 global_base_index_solid_pressure = get_cell_id<1>(pos.data_arr(), grid_solid.get_offset());
+		const ivec3 local_id = (global_base_index_solid_pressure - block_cellid);
+		const ivec3 absolute_local_id = local_id + ivec3(static_cast<int>(KERNEL_OFFSET), static_cast<int>(KERNEL_OFFSET), static_cast<int>(KERNEL_OFFSET));
+		float weighted_pressure = pressure_solid_shared[absolute_local_id[0]][absolute_local_id[1]][absolute_local_id[2]];
 		
 		update_strain_solid<MaterialTypeSolid>(particle_buffer_solid, advection_source_blockno, source_pidib, weighted_pressure);
 	}
@@ -1800,11 +1804,12 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 		fetch_particle_buffer_data<MaterialTypeFluid>(particle_buffer_fluid, advection_source_blockno, source_pidib, fetch_particle_buffer_tmp);
 		vec3 pos {fetch_particle_buffer_tmp.pos[0], fetch_particle_buffer_tmp.pos[1], fetch_particle_buffer_tmp.pos[2]};
 		
+		/*
 		//Get position of grid cell
-		const ivec3 global_base_index_fluid_pressure = get_cell_id<INTERPOLATION_DEGREE_FLUID_PRESSURE>(pos.data_arr(), grid_fluid.get_offset());
+		const ivec3 global_base_index_fluid_pressure = get_cell_id<INTERPOLATION_DEGREE_FLUID_PRESSURE>(pos.data_arr(), grid_solid.get_offset());
 		
 		//Get position relative to grid cell
-		const vec3 local_pos_fluid_pressure = pos - (global_base_index_fluid_pressure + vec3(grid_fluid.get_offset()[0], grid_fluid.get_offset()[1], grid_fluid.get_offset()[2])) * config::G_DX;
+		const vec3 local_pos_fluid_pressure = pos - (global_base_index_fluid_pressure + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2])) * config::G_DX;
 
 		//Calculate weights
 		vec3x3 weight_fluid_pressure;
@@ -1844,7 +1849,12 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 					weighted_pressure += pressure_fluid_shared[absolute_local_id[0]][absolute_local_id[1]][absolute_local_id[2]] * W_pressure;
 				}
 			}
-		}
+		}*/
+		
+		const ivec3 global_base_index_fluid_pressure = get_cell_id<1>(pos.data_arr(), grid_solid.get_offset());
+		const ivec3 local_id = (global_base_index_fluid_pressure - block_cellid);
+		const ivec3 absolute_local_id = local_id + ivec3(static_cast<int>(KERNEL_OFFSET), static_cast<int>(KERNEL_OFFSET), static_cast<int>(KERNEL_OFFSET));
+		float weighted_pressure = pressure_fluid_shared[absolute_local_id[0]][absolute_local_id[1]][absolute_local_id[2]];
 		
 		update_strain_fluid<MaterialTypeFluid>(particle_buffer_fluid, advection_source_blockno, source_pidib, weighted_pressure);
 	}

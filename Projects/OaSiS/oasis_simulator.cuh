@@ -535,6 +535,7 @@ struct OasisSimulator {
 			iq_solver_factory_cg = gko::share(
 				gko::solver::Cg<float>::build()
 				.with_criteria(iter_stop, tol_stop)
+				//.with_preconditioner(ic_gen)
 				//.with_preconditioner(multigrid_gen)
 				.on(ginkgo_executor)
 			);
@@ -543,8 +544,8 @@ struct OasisSimulator {
 				gko::solver::Bicgstab<float>::build()
 				//.with_criteria(iter_stop, tol_stop)
 				.with_criteria(iter_stop, exact_tol_stop)
-				//.with_preconditioner(multigrid_gen)
 				.with_preconditioner(ic_gen)
+				//.with_preconditioner(multigrid_gen)
 				.on(ginkgo_executor)
 			);*/
 			iq_solver_factory = gko::share(
@@ -2295,7 +2296,6 @@ struct OasisSimulator {
 						std::cout << "IQ-Solver(CG) time: " << std::chrono::duration_cast<std::chrono::milliseconds>(toc_solve_cg - tic_generate_cg).count() << " ms (Generate: " << std::chrono::duration_cast<std::chrono::milliseconds>(toc_generate_cg - tic_generate_cg).count() << " ms, Solve: " << std::chrono::duration_cast<std::chrono::milliseconds>(toc_solve_cg - tic_solve_cg).count() << " ms)" << std::endl;
 						
 						// If CG did not converge, try other solver
-						//TODO: USe CG result as initial guess?
 						if(!iq_logger_cg->has_converged()){
 							const std::chrono::steady_clock::time_point tic_generate = std::chrono::steady_clock::now();
 							ginkgo_executor->synchronize();
@@ -2314,6 +2314,14 @@ struct OasisSimulator {
 							const std::chrono::steady_clock::time_point toc_generate = std::chrono::steady_clock::now();
 							
 							std::cout << "Generation finished: " << std::chrono::duration_cast<std::chrono::milliseconds>(toc_generate - tic_generate).count() << " ms" << std::endl;
+
+							//TODO: Only use it as initial guess if we got close enough to residual?
+							//TODO: Use CG result as initial guess
+							if(iq_solver->apply_uses_initial_guess()){
+								(void) nullptr;
+							}else{
+								(void) nullptr;
+							}
 
 							// Solve system
 							const std::chrono::steady_clock::time_point tic_solve = std::chrono::steady_clock::now();
