@@ -205,14 +205,23 @@ __global__ void clear_iq_system(const size_t* num_blocks_per_row, const std::arr
 			
 			const ivec3 neighbour_base_cellid = neighbour_blockid * static_cast<int>(config::G_BLOCKSIZE);
 			const ivec3 neighbour_celloffset = neighbour_cellid - neighbour_base_cellid;
+			const ivec3 neighbour_celloffset_absolute {std::abs(neighbour_celloffset[0]), std::abs(neighbour_celloffset[1]), std::abs(neighbour_celloffset[2])};
 			
 			const int neighbour_blockno = partition.query(neighbour_blockid);
-			const int neighbour_cellno = NumRowsPerBlock * neighbour_blockno + (config::G_BLOCKSIZE * config::G_BLOCKSIZE) * neighbour_celloffset[0] + config::G_BLOCKSIZE * neighbour_celloffset[1] + neighbour_celloffset[2];
+			
+			int neighbour_cellno;
+			if(neighbour_blockno == -1){
+				//NOTE: Only works if kernel is not so big that several neighbours may have same offset; Should be the case for us (generally, but also cause negative cells can only be at 3 of six sides)
+				//NOTE: Actually indices are mirrored here due to std::abs()
+				neighbour_cellno = NumRowsPerBlock * (num_blocks - 1) + (config::G_BLOCKSIZE * config::G_BLOCKSIZE) * neighbour_celloffset_absolute[0] + config::G_BLOCKSIZE * neighbour_celloffset_absolute[1] + neighbour_celloffset_absolute[2];
+			}else{
+				neighbour_cellno = NumRowsPerBlock * neighbour_blockno + (config::G_BLOCKSIZE * config::G_BLOCKSIZE) * neighbour_celloffset_absolute[0] + config::G_BLOCKSIZE * neighbour_celloffset_absolute[1] + neighbour_celloffset_absolute[2];
+			}
 			
 			neighbour_cellnos[column] = neighbour_cellno;
-			//if(neighbour_cellno < 0){
-			//	printf("ERROR %d %d %d # %d %d %d # %d %d %d # %d # %d\n", static_cast<int>(blockIdx.x), static_cast<int>(row), static_cast<int>(column), cellid[0], cellid[1], cellid[2], neighbour_cellid[0], neighbour_cellid[1], neighbour_cellid[2], neighbour_blockno, neighbour_cellno);
-			//}
+			if(neighbour_cellno < 0){
+				printf("ERROR - Negative index for neighbour %d %d %d # %d %d %d # %d %d %d # %d # %d\n", static_cast<int>(blockIdx.x), static_cast<int>(row), static_cast<int>(column), cellid[0], cellid[1], cellid[2], neighbour_cellid[0], neighbour_cellid[1], neighbour_cellid[2], neighbour_blockno, neighbour_cellno);
+			}
 		}
 		
 		//Sort columns
@@ -311,7 +320,7 @@ __global__ void add_block_rows(const size_t matrix_size_y, size_t* num_blocks_pe
 }
 
 template<size_t NumRowsPerBlock, size_t NumDimensionsPerRow, typename Partition>
-__global__ void copy_values(const size_t matrix_size_x, const size_t matrix_size_y, size_t* num_blocks_per_row, size_t* block_offsets_per_row, const uint32_t num_blocks, const Partition partition, const int** iq_parts_rows, const int** iq_parts_columns, const float** iq_parts_values, const int* iq_rows, int* iq_columns, float* iq_values) {
+__global__ void copy_values(const size_t matrix_size_x, const size_t matrix_size_y, size_t* num_blocks_per_row, size_t* block_offsets_per_row, const uint32_t num_blocks, const Partition partition, const int** iq_parts_rows, const int** iq_parts_columns, const float** iq_parts_values, const int* iq_rows, int* iq_columns, float* iq_values, int* permutation_indices, int* non_null_rows, int* null_rows) {
 	//const int src_blockno		   = static_cast<int>(blockIdx.x);
 	//const auto blockid			   = partition.active_keys[blockIdx.x];
 	
@@ -329,6 +338,7 @@ __global__ void copy_values(const size_t matrix_size_x, const size_t matrix_size
 				}
 				
 				size_t offset_in_row = 0;
+				bool has_non_null_entry = false;
 				for(size_t column_offset_index = 0; column_offset_index < num_blocks_per_row[row_offset]; ++column_offset_index){
 					const size_t block_index = accumulated_blocks_per_row + column_offset_index;
 					const int values_offset = iq_rows[row_offset * NumDimensionsPerRow * NumRowsPerBlock * num_blocks + NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension] + offset_in_row;
@@ -344,8 +354,24 @@ __global__ void copy_values(const size_t matrix_size_x, const size_t matrix_size
 						});
 						thrust::copy(thrust::seq, values_ptr_src, values_ptr_src + values_in_row, &(iq_values[values_offset]));
 						
+						has_non_null_entry = has_non_null_entry || (thrust::find_if(thrust::seq, values_ptr_src, values_ptr_src + values_in_row, [](const float& value){
+							return (value != 0.0f);
+						}) != (values_ptr_src + values_in_row));
+						
 						offset_in_row += values_in_row;
 					}
+				}
+				
+				//Fill permutation
+				if(permutation_indices != nullptr){
+					int permutation_index;
+					if(has_non_null_entry){
+						permutation_index = atomicAdd(non_null_rows, 1);
+					}else{
+						const int inverse_permutation_index = atomicAdd(null_rows, 1);
+						permutation_index = (matrix_size_y * NumDimensionsPerRow * NumRowsPerBlock * num_blocks) - inverse_permutation_index;
+					}
+					permutation_indices[row_offset * NumDimensionsPerRow * NumRowsPerBlock * num_blocks + NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension] = permutation_index;
 				}
 			}
 		}
@@ -633,22 +659,26 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 	const float J  = J_shared[particle_id_in_block - particle_offset];
 	
 	//Get position of grid cell
-	const ivec3 global_base_index_solid_pressure = get_cell_id<INTERPOLATION_DEGREE_SOLID_PRESSURE>(pos.data_arr(), grid_solid.get_offset());
-	const ivec3 global_base_index_solid_velocity = get_cell_id<INTERPOLATION_DEGREE_SOLID_VELOCITY>(pos.data_arr(), grid_solid.get_offset());
+	const std::array<float, 3> offset_pressure {0.5f, 0.5f, 0.5f};
+	const std::array<float, 3> offset_velocity_solid = (INTERPOLATION_DEGREE_SOLID_VELOCITY == 2 ? std::array<float, 3>({0.0f, 0.0f, 0.0f}) : std::array<float, 3>({0.5f, 0.5f, 0.5f}));
+	const std::array<float, 3> offset_velocity_fluid = (INTERPOLATION_DEGREE_FLUID_VELOCITY == 2 ? std::array<float, 3>({0.0f, 0.0f, 0.0f}) : std::array<float, 3>({0.5f, 0.5f, 0.5f}));
+	
+	const ivec3 global_base_index_solid_pressure = get_cell_id<INTERPOLATION_DEGREE_SOLID_PRESSURE>(pos.data_arr(), offset_pressure);
+	const ivec3 global_base_index_solid_velocity = get_cell_id<INTERPOLATION_DEGREE_SOLID_VELOCITY>(pos.data_arr(), offset_velocity_solid);
 	const ivec3 global_base_index_solid_2 = get_cell_id<2>(pos.data_arr(), grid_solid.get_offset());
 	
-	const ivec3 global_base_index_fluid_velocity = get_cell_id<INTERPOLATION_DEGREE_FLUID_VELOCITY>(pos.data_arr(), grid_fluid.get_offset());//NOTE: Using solid/interface quadrature position
+	const ivec3 global_base_index_fluid_velocity = get_cell_id<INTERPOLATION_DEGREE_FLUID_VELOCITY>(pos.data_arr(), offset_velocity_fluid);//NOTE: Using solid/interface quadrature position
 	
-	const ivec3 global_base_index_interface_pressure = get_cell_id<INTERPOLATION_DEGREE_INTERFACE_PRESSURE>(pos.data_arr(), grid_solid.get_offset());
+	const ivec3 global_base_index_interface_pressure = get_cell_id<INTERPOLATION_DEGREE_INTERFACE_PRESSURE>(pos.data_arr(), offset_pressure);
 	
 
 	//Get position relative to grid cell
-	const vec3 local_pos_solid_pressure = pos - (global_base_index_solid_pressure + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2])) * config::G_DX;
-	const vec3 local_pos_solid_velocity = pos - (global_base_index_solid_velocity + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2])) * config::G_DX;
+	const vec3 local_pos_solid_pressure = pos - (global_base_index_solid_pressure + vec3(offset_pressure[0], offset_pressure[1], offset_pressure[2])) * config::G_DX;
+	const vec3 local_pos_solid_velocity = pos - (global_base_index_solid_velocity + vec3(offset_velocity_solid[0], offset_velocity_solid[1], offset_velocity_solid[2])) * config::G_DX;
 	
-	const vec3 local_pos_fluid_velocity = pos - (global_base_index_fluid_velocity + vec3(grid_fluid.get_offset()[0], grid_fluid.get_offset()[1], grid_fluid.get_offset()[2])) * config::G_DX;
+	const vec3 local_pos_fluid_velocity = pos - (global_base_index_fluid_velocity + vec3(offset_velocity_fluid[0], offset_velocity_fluid[1], offset_velocity_fluid[2])) * config::G_DX;
 	
-	const vec3 local_pos_interface_pressure = pos - (global_base_index_interface_pressure + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2])) * config::G_DX;
+	const vec3 local_pos_interface_pressure = pos - (global_base_index_interface_pressure + vec3(offset_pressure[0], offset_pressure[1], offset_pressure[2])) * config::G_DX;
 
 	//Calculate weights
 	vec3x3 weight_solid_pressure;
@@ -769,7 +799,6 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 					vec3 pos_fluid {fetch_particle_buffer_tmp.pos[0], fetch_particle_buffer_tmp.pos[1], fetch_particle_buffer_tmp.pos[2]};
 					//float J_fluid	 = fetch_particle_buffer_tmp.J;
 					
-					
 					vec3 velocity_fluid;
 					velocity_fluid[0] = fluid_particle_bin.val(_0, particle_id_in_bin);
 					velocity_fluid[1] = fluid_particle_bin.val(_1, particle_id_in_bin);
@@ -780,7 +809,7 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 					const vec3 diff = pos_fluid - pos;//NOTE: Same order as in other neighbour check to ensure same results
 					const float distance = std::sqrt(diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]);
 					
-					if(distance <= 0.5f * config::G_DX){
+					if(distance < 0.5f * config::G_DX){
 						atomicAdd(&mass_fluid_total, mass_fluid / static_cast<float>(count_neighbours));
 						atomicAdd(&(momentum_fluid_local[0]), velocity_fluid[0] * mass_fluid / static_cast<float>(count_neighbours));
 						atomicAdd(&(momentum_fluid_local[1]), velocity_fluid[1] * mass_fluid / static_cast<float>(count_neighbours));
@@ -911,13 +940,16 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 	const std::array<float, 9> C = C_shared[particle_id_in_block - particle_offset];
 	
 	//Get position of grid cell
-	const ivec3 global_base_index_solid_pressure = get_cell_id<INTERPOLATION_DEGREE_FLUID_PRESSURE>(pos.data_arr(), grid_solid.get_offset());
-	const ivec3 global_base_index_fluid_velocity = get_cell_id<INTERPOLATION_DEGREE_FLUID_VELOCITY>(pos.data_arr(), grid_fluid.get_offset());
+	const std::array<float, 3> offset_pressure {0.5f, 0.5f, 0.5f};
+	const std::array<float, 3> offset_velocity_fluid = (INTERPOLATION_DEGREE_FLUID_VELOCITY == 2 ? std::array<float, 3>({0.0f, 0.0f, 0.0f}) : std::array<float, 3>({0.5f, 0.5f, 0.5f}));
+	
+	const ivec3 global_base_index_solid_pressure = get_cell_id<INTERPOLATION_DEGREE_FLUID_PRESSURE>(pos.data_arr(), offset_pressure);
+	const ivec3 global_base_index_fluid_velocity = get_cell_id<INTERPOLATION_DEGREE_FLUID_VELOCITY>(pos.data_arr(), offset_velocity_fluid);
 	const ivec3 global_base_index_fluid_2 = get_cell_id<2>(pos.data_arr(), grid_fluid.get_offset());
 	
 	//Get position relative to grid cell
-	const vec3 local_pos_solid_pressure = pos - (global_base_index_solid_pressure + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2])) * config::G_DX;
-	const vec3 local_pos_fluid_velocity = pos - (global_base_index_fluid_velocity + vec3(grid_fluid.get_offset()[0], grid_fluid.get_offset()[1], grid_fluid.get_offset()[2])) * config::G_DX;
+	const vec3 local_pos_solid_pressure = pos - (global_base_index_solid_pressure + vec3(offset_pressure[0], offset_pressure[1], offset_pressure[2])) * config::G_DX;
+	const vec3 local_pos_fluid_velocity = pos - (global_base_index_fluid_velocity + vec3(offset_velocity_fluid[0], offset_velocity_fluid[1], offset_velocity_fluid[2])) * config::G_DX;
 
 	//Calculate weights
 	vec3x3 weight_solid_pressure;
@@ -997,7 +1029,7 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 					const vec3 diff = pos - pos_solid;//NOTE: Same order as in other neighbour check to ensure same results
 					const float distance = std::sqrt(diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]);
 					
-					if(distance <= 0.5f * config::G_DX){
+					if(distance < 0.5f * config::G_DX){
 						atomicAdd(&(count_neighbours_shared[particle_id_in_block - particle_offset]), 1);
 					}
 				}
@@ -1394,7 +1426,6 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 								, &(boundary_fluid_local[0])
 								, &(velocity_fluid_local[0])
 								, &(coupling_fluid_local[0])
-								
 							);
 						}
 						
@@ -1555,9 +1586,18 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 		
 		const ivec3 neighbour_base_cellid = neighbour_blockid * static_cast<int>(config::G_BLOCKSIZE);
 		const ivec3 neighbour_celloffset = neighbour_cellid - neighbour_base_cellid;
+		const ivec3 neighbour_celloffset_absolute {std::abs(neighbour_celloffset[0]), std::abs(neighbour_celloffset[1]), std::abs(neighbour_celloffset[2])};
 		
 		const int neighbour_blockno = partition.query(neighbour_blockid);
-		const int neighbour_cellno = NUM_ROWS_PER_BLOCK * neighbour_blockno + (config::G_BLOCKSIZE * config::G_BLOCKSIZE) * neighbour_celloffset[0] + config::G_BLOCKSIZE * neighbour_celloffset[1] + neighbour_celloffset[2];
+		
+		int neighbour_cellno;
+		if(neighbour_blockno == -1){
+			//NOTE: Only works if kernel is not so big that several neighbours may have same offset; Should be the case for us (generally, but also cause negative cells can only be at 3 of six sides)
+				//NOTE: Actually indices are mirrored here due to std::abs()
+			neighbour_cellno = NUM_ROWS_PER_BLOCK * (num_blocks - 1) + (config::G_BLOCKSIZE * config::G_BLOCKSIZE) * neighbour_celloffset_absolute[0] + config::G_BLOCKSIZE * neighbour_celloffset_absolute[1] + neighbour_celloffset_absolute[2];
+		}else{
+			neighbour_cellno = NUM_ROWS_PER_BLOCK * neighbour_blockno + (config::G_BLOCKSIZE * config::G_BLOCKSIZE) * neighbour_celloffset_absolute[0] + config::G_BLOCKSIZE * neighbour_celloffset_absolute[1] + neighbour_celloffset_absolute[2];
+		}
 		
 		const int row_index = 3 * (base_row + row) + alpha;
 		
@@ -1656,13 +1696,17 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 		const ivec3 local_cellid = absolute_local_cellid - ivec3(static_cast<int>(KERNEL_OFFSET), static_cast<int>(KERNEL_OFFSET), static_cast<int>(KERNEL_OFFSET));
 		const ivec3 current_blockid = (block_cellid + local_cellid) / config::G_BLOCKSIZE;
 		const auto blockno = partition.query(current_blockid);
-	
-		const ivec3 cellid_in_block = (block_cellid + local_cellid) - current_blockid * config::G_BLOCKSIZE;
-		const int cellno_in_block = (config::G_BLOCKSIZE * config::G_BLOCKSIZE) * cellid_in_block[0] + config::G_BLOCKSIZE * cellid_in_block[1] + cellid_in_block[2];
+		
+		if(blockno == -1){
+			pressure_solid_shared[absolute_local_cellid[0]][absolute_local_cellid[1]][absolute_local_cellid[2]] = 0.0f;
+		}else{
+			const ivec3 cellid_in_block = (block_cellid + local_cellid) - current_blockid * config::G_BLOCKSIZE;
+			const int cellno_in_block = (config::G_BLOCKSIZE * config::G_BLOCKSIZE) * cellid_in_block[0] + config::G_BLOCKSIZE * cellid_in_block[1] + cellid_in_block[2];
 
-		const float val = pressure_solid[config::G_BLOCKVOLUME * blockno + cellno_in_block];
+			const float val = pressure_solid[config::G_BLOCKVOLUME * blockno + cellno_in_block];
 
-		pressure_solid_shared[absolute_local_cellid[0]][absolute_local_cellid[1]][absolute_local_cellid[2]] = val;
+			pressure_solid_shared[absolute_local_cellid[0]][absolute_local_cellid[1]][absolute_local_cellid[2]] = val;
+		}
 	}
 	__syncthreads();
 
@@ -1695,10 +1739,11 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 		vec3 pos {fetch_particle_buffer_tmp.pos[0], fetch_particle_buffer_tmp.pos[1], fetch_particle_buffer_tmp.pos[2]};
 		/*
 		//Get position of grid cell
-		const ivec3 global_base_index_solid_pressure = get_cell_id<INTERPOLATION_DEGREE_SOLID_PRESSURE>(pos.data_arr(), grid_solid.get_offset());
+		const std::array<float, 3> offset_pressure {0.5f, 0.5f, 0.5f};
+		const ivec3 global_base_index_solid_pressure = get_cell_id<INTERPOLATION_DEGREE_SOLID_PRESSURE>(pos.data_arr(), offset_pressure);
 		
 		//Get position relative to grid cell
-		const vec3 local_pos_solid_pressure = pos - (global_base_index_solid_pressure + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2])) * config::G_DX;
+		const vec3 local_pos_solid_pressure = pos - (global_base_index_solid_pressure + vec3(offset_pressure[0], offset_pressure[1], offset_pressure[2])) * config::G_DX;
 
 		//Calculate weights
 		vec3x3 weight_solid_pressure;
@@ -1767,12 +1812,18 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 		const ivec3 current_blockid = (block_cellid + local_cellid) / config::G_BLOCKSIZE;
 		const auto blockno = partition.query(current_blockid);
 	
-		const ivec3 cellid_in_block = (block_cellid + local_cellid) - current_blockid * config::G_BLOCKSIZE;
-		const int cellno_in_block = (config::G_BLOCKSIZE * config::G_BLOCKSIZE) * cellid_in_block[0] + config::G_BLOCKSIZE * cellid_in_block[1] + cellid_in_block[2];
+	
 
-		const float val = pressure_fluid[config::G_BLOCKVOLUME * blockno + cellno_in_block];
+		if(blockno == -1){
+			pressure_solid_shared[absolute_local_cellid[0]][absolute_local_cellid[1]][absolute_local_cellid[2]] = 0.0f;
+		}else{
+			const ivec3 cellid_in_block = (block_cellid + local_cellid) - current_blockid * config::G_BLOCKSIZE;
+			const int cellno_in_block = (config::G_BLOCKSIZE * config::G_BLOCKSIZE) * cellid_in_block[0] + config::G_BLOCKSIZE * cellid_in_block[1] + cellid_in_block[2];
+			
+			const float val = pressure_fluid[config::G_BLOCKVOLUME * blockno + cellno_in_block];
 
-		pressure_fluid_shared[absolute_local_cellid[0]][absolute_local_cellid[1]][absolute_local_cellid[2]] = val;
+			pressure_fluid_shared[absolute_local_cellid[0]][absolute_local_cellid[1]][absolute_local_cellid[2]] = val;
+		}
 	}
 	__syncthreads();
 
@@ -1806,10 +1857,11 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 		
 		/*
 		//Get position of grid cell
-		const ivec3 global_base_index_fluid_pressure = get_cell_id<INTERPOLATION_DEGREE_FLUID_PRESSURE>(pos.data_arr(), grid_solid.get_offset());
+		const std::array<float, 3> offset_pressure {0.5f, 0.5f, 0.5f};
+		const ivec3 global_base_index_fluid_pressure = get_cell_id<INTERPOLATION_DEGREE_FLUID_PRESSURE>(pos.data_arr(), offset_pressure);
 		
 		//Get position relative to grid cell
-		const vec3 local_pos_fluid_pressure = pos - (global_base_index_fluid_pressure + vec3(grid_solid.get_offset()[0], grid_solid.get_offset()[1], grid_solid.get_offset()[2])) * config::G_DX;
+		const vec3 local_pos_fluid_pressure = pos - (global_base_index_fluid_pressure + vec3(offset_pressure[0], offset_pressure[1], offset_pressure[2])) * config::G_DX;
 
 		//Calculate weights
 		vec3x3 weight_fluid_pressure;

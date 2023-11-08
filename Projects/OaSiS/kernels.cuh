@@ -72,25 +72,29 @@ __global__ void build_particle_cell_buckets(uint32_t particle_count, ParticleArr
 
 	//Fetch block number
 	auto blockno = partition.query(blockid);
+	
+	if(blockno != -1){
 
-	//Get cell number in block
-	int cellno = (coord[0] & config::G_BLOCKMASK) * config::G_BLOCKSIZE * config::G_BLOCKSIZE + (coord[1] & config::G_BLOCKMASK) * config::G_BLOCKSIZE + (coord[2] & config::G_BLOCKMASK);
+		//Get cell number in block
+		int cellno = (coord[0] & config::G_BLOCKMASK) * config::G_BLOCKSIZE * config::G_BLOCKSIZE + (coord[1] & config::G_BLOCKMASK) * config::G_BLOCKSIZE + (coord[2] & config::G_BLOCKMASK);
 
-	//Increase particle count of cell and get id of partzicle in cell
-	auto particle_id_in_cell = atomicAdd(particle_buffer.cell_particle_counts + blockno * config::G_BLOCKVOLUME + cellno, 1);
+		//Increase particle count of cell and get id of partzicle in cell
+		auto particle_id_in_cell = atomicAdd(particle_buffer.cell_particle_counts + blockno * config::G_BLOCKVOLUME + cellno, 1);
 
-	//If no space is left, don't store the particle
-	if(particle_id_in_cell >= config::G_MAX_PARTICLES_IN_CELL) {
-		//Reduce count again
-		atomicSub(particle_buffer.cell_particle_counts + blockno * config::G_BLOCKVOLUME + cellno, 1);
+		//If no space is left, don't store the particle
+		if(particle_id_in_cell >= config::G_MAX_PARTICLES_IN_CELL) {
+			//Reduce count again
+			atomicSub(particle_buffer.cell_particle_counts + blockno * config::G_BLOCKVOLUME + cellno, 1);
 #if PRINT_CELL_OVERFLOW
-		printf("No space left in cell: block(%d), cell(%d)\n", blockno, cellno);
+			printf("No space left in cell: block(%d), cell(%d)\n", blockno, cellno);
 #endif
-		return;
-	}
+			return;
+		}
 
-	//Insert particle id in cell bucket
-	particle_buffer.cellbuckets[blockno * config::G_PARTICLE_NUM_PER_BLOCK + cellno * config::G_MAX_PARTICLES_IN_CELL + particle_id_in_cell] = static_cast<int>(particle_id);//NOTE:Explicit narrowing conversation.
+		//Insert particle id in cell bucket
+		particle_buffer.cellbuckets[blockno * config::G_PARTICLE_NUM_PER_BLOCK + cellno * config::G_MAX_PARTICLES_IN_CELL + particle_id_in_cell] = static_cast<int>(particle_id);//NOTE:Explicit narrowing conversation.
+	
+	}
 }
 
 __global__ void cell_bucket_to_block(const int* cell_particle_counts, const int* cellbuckets, int* particle_bucket_sizes, int* buckets) {

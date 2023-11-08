@@ -416,7 +416,7 @@ __global__ void csr_matrix_matrix_multiplication_with_diagonal_gustavson_calcula
 						
 						if(value_b != 0.0f){
 							if(column_b >= num_columns){
-								printf("Num columns wrong!");
+								printf("Num columns wrong! %d # %d %d\n", column_index_b, column_b, static_cast<int>(num_columns));
 							}
 							atomicAdd(tmp_memory_of_block + column_b, 1);
 						}
@@ -634,6 +634,11 @@ public:
 	void matrix_matrix_multiplication(std::shared_ptr<gko::Executor>& ginkgo_executor, const size_t num_blocks, const size_t num_columns, std::shared_ptr<gko::matrix::Csr<float, int>>& a, std::shared_ptr<gko::matrix::Csr<float, int>>& b, std::shared_ptr<gko::matrix::Csr<float, int>>& c, Cuda::CudaContext& cu_dev){					
 		temporary_rows.resize_and_reset(num_blocks * config::G_BLOCKVOLUME + 1);
 		
+		if(Gustavson){
+			//Resize temporary memory
+			temporary_columns.resize_and_reset(num_blocks * num_columns);
+		}
+		
 		temporary_rows.fill(0);
 		
 		ginkgo_executor->synchronize();
@@ -643,13 +648,6 @@ public:
 		const int number_of_nonzeros_b = b->get_num_stored_elements();
 		cudaMemcpyAsync(a->get_row_ptrs() + num_blocks * config::G_BLOCKVOLUME, &number_of_nonzeros_a, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute());
 		cudaMemcpyAsync(b->get_row_ptrs() + num_blocks * config::G_BLOCKVOLUME, &number_of_nonzeros_b, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute());
-		
-		if(Gustavson){
-			//Resize temporary memory
-			temporary_columns.resize_and_reset(num_blocks * num_columns);
-			
-			ginkgo_executor->synchronize();
-		}
 		
 		//Calculate amount of memory
 		if(Gustavson){
@@ -703,6 +701,11 @@ public:
 	void matrix_matrix_multiplication_with_diagonal(std::shared_ptr<gko::Executor>& ginkgo_executor, const size_t num_blocks, const size_t num_columns, std::shared_ptr<gko::matrix::Csr<float, int>>& a, const std::shared_ptr<const gko::matrix::Diagonal<float>>& d, std::shared_ptr<gko::matrix::Csr<float, int>>& b, std::shared_ptr<gko::matrix::Csr<float, int>>& c, Cuda::CudaContext& cu_dev){					
 		temporary_rows.resize_and_reset(num_blocks * config::G_BLOCKVOLUME + 1);
 		
+		if(Gustavson){
+			//Resize temporary memory
+			temporary_columns.resize_and_reset(num_blocks * num_columns);
+		}
+		
 		temporary_rows.fill(0);
 		
 		ginkgo_executor->synchronize();
@@ -712,13 +715,6 @@ public:
 		const int number_of_nonzeros_b = b->get_num_stored_elements();
 		cudaMemcpyAsync(a->get_row_ptrs() + num_blocks * config::G_BLOCKVOLUME, &number_of_nonzeros_a, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute());
 		cudaMemcpyAsync(b->get_row_ptrs() + num_blocks * config::G_BLOCKVOLUME, &number_of_nonzeros_b, sizeof(int), cudaMemcpyDefault, cu_dev.stream_compute());
-		
-		if(Gustavson){
-			//Resize temporary memory
-			temporary_columns.resize_and_reset(num_blocks * num_columns);
-			
-			ginkgo_executor->synchronize();
-		}
 		
 		//Calculate amount of memory
 		if(Gustavson){
