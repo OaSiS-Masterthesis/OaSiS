@@ -18,6 +18,7 @@ constexpr std::array<float, 1> bspline_weight<float, 0>(float p, float dx_inv)
 	return dw;
 }
 
+
 template<>
 constexpr std::array<float, 2> bspline_weight<float, 1>(float p, float dx_inv) 
 {

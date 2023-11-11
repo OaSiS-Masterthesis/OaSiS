@@ -369,7 +369,7 @@ __global__ void copy_values(const size_t matrix_size_x, const size_t matrix_size
 						permutation_index = atomicAdd(non_null_rows, 1);
 					}else{
 						const int inverse_permutation_index = atomicAdd(null_rows, 1);
-						permutation_index = (matrix_size_y * NumDimensionsPerRow * NumRowsPerBlock * num_blocks) - inverse_permutation_index;
+						permutation_index = (matrix_size_y * NumDimensionsPerRow * NumRowsPerBlock * num_blocks) - inverse_permutation_index - 1;
 					}
 					permutation_indices[row_offset * NumDimensionsPerRow * NumRowsPerBlock * num_blocks + NumDimensionsPerRow * base_row + NumDimensionsPerRow * row + dimension] = permutation_index;
 				}
@@ -486,10 +486,12 @@ __forceinline__ __device__ void store_data_fluid<MaterialE::J_FLUID>(const Parti
 	
 	//FIXME: Why does solid use volume_0/lambda for scaling? How does that corralate to 1/(lambda * J)?
 	//Volume weighted average of pressure;
-	(*scaling_fluid) += (volume_0 / lambda) * W_pressure;
+	//(*scaling_fluid) += (volume_0 / lambda) * W_pressure;
+	
 	//(*scaling_fluid) += -(1.0f / (lambda * particle_buffer_fluid.gamma * powf(J, -particle_buffer_fluid.gamma))) * W_pressure;
-	(*pressure_fluid_nominator) += volume_0 * J * pressure * W_pressure;
-	(*pressure_fluid_denominator) += volume_0 * J * W_pressure;
+	
+	//(*pressure_fluid_nominator) += volume_0 * J * pressure * W_pressure;
+	//(*pressure_fluid_denominator) += volume_0 * J * W_pressure;
 }
 
 template<>
@@ -830,18 +832,14 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 		const size_t cell_index = get_global_index<BLOCK_SIZE, (1 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, local_cell_index);
 		const ivec3 local_id {static_cast<int>((cell_index / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE), static_cast<int>((cell_index / config::G_BLOCKSIZE) % config::G_BLOCKSIZE), static_cast<int>(cell_index % config::G_BLOCKSIZE)};
 		
-		const ivec3 local_offset_pressure = global_base_index_solid_pressure - (block_cellid + local_id);
-		const ivec3 local_offset_velocity_solid = global_base_index_solid_velocity - (block_cellid + local_id);
-		const ivec3 local_offset_velocity_fluid = global_base_index_fluid_velocity - (block_cellid + local_id);
-			
-		const ivec3 absolute_local_offset_pressure {std::abs(local_offset_pressure[0]), std::abs(local_offset_pressure[1]), std::abs(local_offset_pressure[2])};
-		const ivec3 absolute_local_offset_velocity_solid {std::abs(local_offset_velocity_solid[0]), std::abs(local_offset_velocity_solid[1]), std::abs(local_offset_velocity_solid[2])};
-		const ivec3 absolute_local_offset_velocity_fluid {std::abs(local_offset_velocity_fluid[0]), std::abs(local_offset_velocity_fluid[1]), std::abs(local_offset_velocity_fluid[2])};
-
+		const ivec3 local_offset_pressure = (block_cellid + local_id) - global_base_index_solid_pressure;
+		const ivec3 local_offset_velocity_solid = (block_cellid + local_id) - global_base_index_solid_velocity;
+		const ivec3 local_offset_velocity_fluid = (block_cellid + local_id) - global_base_index_fluid_velocity;
+		
 		//Weight
-		const float W_pressure = (absolute_local_offset_pressure[0] < 3 ? weight_solid_pressure(0, absolute_local_offset_pressure[0]) : 0.0f) * (absolute_local_offset_pressure[1] < 3 ? weight_solid_pressure(1, absolute_local_offset_pressure[1]) : 0.0f) * (absolute_local_offset_pressure[2] < 3 ? weight_solid_pressure(2, absolute_local_offset_pressure[2]) : 0.0f);
-		const float W_velocity_solid = (absolute_local_offset_velocity_solid[0] < 3 ? weight_solid_velocity(0, absolute_local_offset_velocity_solid[0]) : 0.0f) * (absolute_local_offset_velocity_solid[1] < 3 ? weight_solid_velocity(1, absolute_local_offset_velocity_solid[1]) : 0.0f) * (absolute_local_offset_velocity_solid[2] < 3 ? weight_solid_velocity(2, absolute_local_offset_velocity_solid[2]) : 0.0f);
-		const float W_velocity_fluid = (absolute_local_offset_velocity_fluid[0] < 3 ? weight_fluid_velocity(0, absolute_local_offset_velocity_fluid[0]) : 0.0f) * (absolute_local_offset_velocity_fluid[1] < 3 ? weight_fluid_velocity(1, absolute_local_offset_velocity_fluid[1]) : 0.0f) * (absolute_local_offset_velocity_fluid[2] < 3 ? weight_fluid_velocity(2, absolute_local_offset_velocity_fluid[2]) : 0.0f);
+		const float W_pressure = ((local_offset_pressure[0] >= 0 && local_offset_pressure[0] < 3) ? weight_solid_pressure(0, local_offset_pressure[0]) : 0.0f) * ((local_offset_pressure[1] >= 0 && local_offset_pressure[1] < 3) ? weight_solid_pressure(1, local_offset_pressure[1]) : 0.0f) * ((local_offset_pressure[2] >= 0 && local_offset_pressure[2] < 3) ? weight_solid_pressure(2, local_offset_pressure[2]) : 0.0f);
+		const float W_velocity_solid = ((local_offset_velocity_solid[0] >= 0 && local_offset_velocity_solid[0] < 3) ? weight_solid_velocity(0, local_offset_velocity_solid[0]) : 0.0f) * ((local_offset_velocity_solid[1] >= 0 && local_offset_velocity_solid[1] < 3) ? weight_solid_velocity(1, local_offset_velocity_solid[1]) : 0.0f) * ((local_offset_velocity_solid[2] >= 0 && local_offset_velocity_solid[2] < 3) ? weight_solid_velocity(2, local_offset_velocity_solid[2]) : 0.0f);
+		const float W_velocity_fluid = ((local_offset_velocity_fluid[0] >= 0 && local_offset_velocity_fluid[0] < 3) ? weight_fluid_velocity(0, local_offset_velocity_fluid[0]) : 0.0f) * ((local_offset_velocity_fluid[1] >= 0 && local_offset_velocity_fluid[1] < 3) ? weight_fluid_velocity(1, local_offset_velocity_fluid[1]) : 0.0f) * ((local_offset_velocity_fluid[2] >= 0 && local_offset_velocity_fluid[2] < 3) ? weight_fluid_velocity(2, local_offset_velocity_fluid[2]) : 0.0f);
 		
 		float* current_scaling_solid = &(scaling_solid[local_cell_index]);
 		float* current_pressure_solid_nominator = &(pressure_solid_nominator[local_cell_index]);
@@ -863,22 +861,17 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 		const size_t alpha = get_global_index<BLOCK_SIZE, (3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, local_cell_index) % 3;
 		const ivec3 local_id {static_cast<int>((cell_index / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE), static_cast<int>((cell_index / config::G_BLOCKSIZE) % config::G_BLOCKSIZE), static_cast<int>(cell_index % config::G_BLOCKSIZE)};
 		
-		const ivec3 local_offset_velocity_solid = global_base_index_solid_velocity - (block_cellid + local_id);
-		const ivec3 local_offset_velocity_fluid = global_base_index_fluid_velocity - (block_cellid + local_id);
+		const ivec3 local_offset_velocity_solid = (block_cellid + local_id) - global_base_index_solid_velocity;
+		const ivec3 local_offset_velocity_fluid = (block_cellid + local_id) - global_base_index_fluid_velocity;
 		
-		const ivec3 absolute_local_offset_velocity_solid {std::abs(local_offset_velocity_solid[0]), std::abs(local_offset_velocity_solid[1]), std::abs(local_offset_velocity_solid[2])};
-		const ivec3 absolute_local_offset_velocity_fluid {std::abs(local_offset_velocity_fluid[0]), std::abs(local_offset_velocity_fluid[1]), std::abs(local_offset_velocity_fluid[2])};
-
 		//Weight
-		const float W_velocity_solid = (absolute_local_offset_velocity_solid[0] < 3 ? weight_solid_velocity(0, absolute_local_offset_velocity_solid[0]) : 0.0f) * (absolute_local_offset_velocity_solid[1] < 3 ? weight_solid_velocity(1, absolute_local_offset_velocity_solid[1]) : 0.0f) * (absolute_local_offset_velocity_solid[2] < 3 ? weight_solid_velocity(2, absolute_local_offset_velocity_solid[2]) : 0.0f);
-		const float W_velocity_fluid = (absolute_local_offset_velocity_fluid[0] < 3 ? weight_fluid_velocity(0, absolute_local_offset_velocity_fluid[0]) : 0.0f) * (absolute_local_offset_velocity_fluid[1] < 3 ? weight_fluid_velocity(1, absolute_local_offset_velocity_fluid[1]) : 0.0f) * (absolute_local_offset_velocity_fluid[2] < 3 ? weight_fluid_velocity(2, absolute_local_offset_velocity_fluid[2]) : 0.0f);
+		const float W_velocity_solid = ((local_offset_velocity_solid[0] >= 0 && local_offset_velocity_solid[0] < 3) ? weight_solid_velocity(0, local_offset_velocity_solid[0]) : 0.0f) * ((local_offset_velocity_solid[1] >= 0 && local_offset_velocity_solid[1] < 3) ? weight_solid_velocity(1, local_offset_velocity_solid[1]) : 0.0f) * ((local_offset_velocity_solid[2] >= 0 && local_offset_velocity_solid[2] < 3) ? weight_solid_velocity(2, local_offset_velocity_solid[2]) : 0.0f);
+		const float W_velocity_fluid = ((local_offset_velocity_fluid[0] >= 0 && local_offset_velocity_fluid[0] < 3) ? weight_fluid_velocity(0, local_offset_velocity_fluid[0]) : 0.0f) * ((local_offset_velocity_fluid[1] >= 0 && local_offset_velocity_fluid[1] < 3) ? weight_fluid_velocity(1, local_offset_velocity_fluid[1]) : 0.0f) * ((local_offset_velocity_fluid[2] >= 0 && local_offset_velocity_fluid[2] < 3) ? weight_fluid_velocity(2, local_offset_velocity_fluid[2]) : 0.0f);
 		
 		mass_solid[local_cell_index] += mass * W_velocity_solid;
 		
 		if(mass_fluid_total > 0.0f){
 			mass_fluid[local_cell_index] += mass_fluid_total * W_velocity_fluid;
-			
-			//printf("TMP1 %d %d # %d # %.28f # %.28f\n", static_cast<int>(blockIdx.x), static_cast<int>(cell_index), static_cast<int>(alpha), mass_fluid_total, momentum_fluid_local[alpha]);
 			
 			//Increase grid momentum by particle momentum
 			velocity_fluid[local_cell_index] += W_velocity_fluid * momentum_fluid_local[alpha];
@@ -892,23 +885,18 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 		const ivec3 local_id {static_cast<int>((cell_index / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE), static_cast<int>((cell_index / config::G_BLOCKSIZE) % config::G_BLOCKSIZE), static_cast<int>(cell_index % config::G_BLOCKSIZE)};
 		const ivec3 neighbour_local_id = ivec3(static_cast<int>((column / ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1))) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>((column / (2 * INTERPOLATION_DEGREE_MAX + 1)) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>(column % (2 * INTERPOLATION_DEGREE_MAX + 1))) - ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));
 			
-		const ivec3 local_offset_velocity_solid = global_base_index_solid_velocity - (block_cellid + local_id);
-		const ivec3 local_offset_velocity_fluid = global_base_index_fluid_velocity - (block_cellid + local_id);
-		const ivec3 neighbour_local_offset_pressure = global_base_index_solid_pressure - (block_cellid + local_id + neighbour_local_id);
-		const ivec3 neighbour_local_offset_pressure_interface = global_base_index_interface_pressure - (block_cellid + local_id + neighbour_local_id);
-		
-		const ivec3 absolute_local_offset_velocity_solid {std::abs(local_offset_velocity_solid[0]), std::abs(local_offset_velocity_solid[1]), std::abs(local_offset_velocity_solid[2])};
-		const ivec3 absolute_local_offset_velocity_fluid {std::abs(local_offset_velocity_fluid[0]), std::abs(local_offset_velocity_fluid[1]), std::abs(local_offset_velocity_fluid[2])};
-		const ivec3 neighbour_absolute_local_offset {std::abs(neighbour_local_offset_pressure[0]), std::abs(neighbour_local_offset_pressure[1]), std::abs(neighbour_local_offset_pressure[2])};
-		const ivec3 neighbour_absolute_local_offset_pressure_interface {std::abs(neighbour_local_offset_pressure_interface[0]), std::abs(neighbour_local_offset_pressure_interface[1]), std::abs(neighbour_local_offset_pressure_interface[2])};			
+		const ivec3 local_offset_velocity_solid = (block_cellid + local_id) - global_base_index_solid_velocity;
+		const ivec3 local_offset_velocity_fluid = (block_cellid + local_id) - global_base_index_fluid_velocity;
+		const ivec3 neighbour_local_offset_pressure = (block_cellid + local_id + neighbour_local_id) - global_base_index_solid_pressure;
+		const ivec3 neighbour_local_offset_pressure_interface = (block_cellid + local_id + neighbour_local_id) - global_base_index_interface_pressure;
 
 		//Weight
-		const float delta_W_velocity_solid = ((alpha == 0 ? (absolute_local_offset_velocity_solid[0] < 3 ? gradient_weight_solid_velocity(0, absolute_local_offset_velocity_solid[0]) : 0.0f) : (absolute_local_offset_velocity_solid[0] < 3 ? weight_solid_velocity(0, absolute_local_offset_velocity_solid[0]) : 0.0f)) * (alpha == 1 ? (absolute_local_offset_velocity_solid[1] < 3 ? gradient_weight_solid_velocity(1, absolute_local_offset_velocity_solid[1]) : 0.0f) : (absolute_local_offset_velocity_solid[1] < 3 ? weight_solid_velocity(1, absolute_local_offset_velocity_solid[1]) : 0.0f)) * (alpha == 2 ? (absolute_local_offset_velocity_solid[2] < 3 ? gradient_weight_solid_velocity(2, absolute_local_offset_velocity_solid[2]) : 0.0f) : (absolute_local_offset_velocity_solid[2] < 3 ? weight_solid_velocity(2, absolute_local_offset_velocity_solid[2]) : 0.0f))) * config::G_DX_INV;
-		const float delta_W_velocity_fluid = ((alpha == 0 ? (absolute_local_offset_velocity_fluid[0] < 3 ? gradient_weight_fluid_velocity(0, absolute_local_offset_velocity_fluid[0]) : 0.0f) : (absolute_local_offset_velocity_fluid[0] < 3 ? weight_fluid_velocity(0, absolute_local_offset_velocity_fluid[0]) : 0.0f)) * (alpha == 1 ? (absolute_local_offset_velocity_fluid[1] < 3 ? gradient_weight_fluid_velocity(1, absolute_local_offset_velocity_fluid[1]) : 0.0f) : (absolute_local_offset_velocity_fluid[1] < 3 ? weight_fluid_velocity(1, absolute_local_offset_velocity_fluid[1]) : 0.0f)) * (alpha == 2 ? (absolute_local_offset_velocity_fluid[2] < 3 ? gradient_weight_fluid_velocity(2, absolute_local_offset_velocity_fluid[2]) : 0.0f) : (absolute_local_offset_velocity_fluid[2] < 3 ? weight_fluid_velocity(2, absolute_local_offset_velocity_fluid[2]) : 0.0f))) * config::G_DX_INV;
-		const float W_velocity_solid = (absolute_local_offset_velocity_solid[0] < 3 ? weight_solid_velocity(0, absolute_local_offset_velocity_solid[0]) : 0.0f) * (absolute_local_offset_velocity_solid[1] < 3 ? weight_solid_velocity(1, absolute_local_offset_velocity_solid[1]) : 0.0f) * (absolute_local_offset_velocity_solid[2] < 3 ? weight_solid_velocity(2, absolute_local_offset_velocity_solid[2]) : 0.0f);	
-		const float W_velocity_fluid = (absolute_local_offset_velocity_fluid[0] < 3 ? weight_fluid_velocity(0, absolute_local_offset_velocity_fluid[0]) : 0.0f) * (absolute_local_offset_velocity_fluid[1] < 3 ? weight_fluid_velocity(1, absolute_local_offset_velocity_fluid[1]) : 0.0f) * (absolute_local_offset_velocity_fluid[2] < 3 ? weight_fluid_velocity(2, absolute_local_offset_velocity_fluid[2]) : 0.0f);
-		const float W1_pressure = (neighbour_absolute_local_offset[0] < 3 ? weight_solid_pressure(0, neighbour_absolute_local_offset[0]) : 0.0f) * (neighbour_absolute_local_offset[1] < 3 ? weight_solid_pressure(1, neighbour_absolute_local_offset[1]) : 0.0f) * (neighbour_absolute_local_offset[2] < 3 ? weight_solid_pressure(2, neighbour_absolute_local_offset[2]) : 0.0f);
-		const float W1_pressure_interface = (neighbour_absolute_local_offset_pressure_interface[0] < 3 ? weight_interface_pressure(0, neighbour_absolute_local_offset_pressure_interface[0]) : 0.0f) * (neighbour_absolute_local_offset_pressure_interface[1] < 3 ? weight_interface_pressure(1, neighbour_absolute_local_offset_pressure_interface[1]) : 0.0f) * (neighbour_absolute_local_offset_pressure_interface[2] < 3 ? weight_interface_pressure(2, neighbour_absolute_local_offset_pressure_interface[2]) : 0.0f);					
+		const float delta_W_velocity_solid = ((alpha == 0 ? ((local_offset_velocity_solid[0] >= 0 && local_offset_velocity_solid[0] < 3) ? gradient_weight_solid_velocity(0, local_offset_velocity_solid[0]) : 0.0f) : ((local_offset_velocity_solid[0] >= 0 && local_offset_velocity_solid[0] < 3) ? weight_solid_velocity(0, local_offset_velocity_solid[0]) : 0.0f)) * (alpha == 1 ? ((local_offset_velocity_solid[1] >= 0 && local_offset_velocity_solid[1] < 3) ? gradient_weight_solid_velocity(1, local_offset_velocity_solid[1]) : 0.0f) : ((local_offset_velocity_solid[1] >= 0 && local_offset_velocity_solid[1] < 3) ? weight_solid_velocity(1, local_offset_velocity_solid[1]) : 0.0f)) * (alpha == 2 ? ((local_offset_velocity_solid[2] >= 0 && local_offset_velocity_solid[2] < 3) ? gradient_weight_solid_velocity(2, local_offset_velocity_solid[2]) : 0.0f) : ((local_offset_velocity_solid[2] >= 0 && local_offset_velocity_solid[2] < 3) ? weight_solid_velocity(2, local_offset_velocity_solid[2]) : 0.0f))) * config::G_DX_INV;
+		const float delta_W_velocity_fluid = ((alpha == 0 ? ((local_offset_velocity_fluid[0] >= 0 && local_offset_velocity_fluid[0] < 3) ? gradient_weight_fluid_velocity(0, local_offset_velocity_fluid[0]) : 0.0f) : ((local_offset_velocity_fluid[0] >= 0 && local_offset_velocity_fluid[0] < 3) ? weight_fluid_velocity(0, local_offset_velocity_fluid[0]) : 0.0f)) * (alpha == 1 ? ((local_offset_velocity_fluid[1] >= 0 && local_offset_velocity_fluid[1] < 3) ? gradient_weight_fluid_velocity(1, local_offset_velocity_fluid[1]) : 0.0f) : ((local_offset_velocity_fluid[1] >= 0 && local_offset_velocity_fluid[1] < 3) ? weight_fluid_velocity(1, local_offset_velocity_fluid[1]) : 0.0f)) * (alpha == 2 ? ((local_offset_velocity_fluid[2] >= 0 && local_offset_velocity_fluid[2] < 3) ? gradient_weight_fluid_velocity(2, local_offset_velocity_fluid[2]) : 0.0f) : ((local_offset_velocity_fluid[2] >= 0 && local_offset_velocity_fluid[2] < 3) ? weight_fluid_velocity(2, local_offset_velocity_fluid[2]) : 0.0f))) * config::G_DX_INV;
+		const float W_velocity_solid = ((local_offset_velocity_solid[0] >= 0 && local_offset_velocity_solid[0] < 3) ? weight_solid_velocity(0, local_offset_velocity_solid[0]) : 0.0f) * ((local_offset_velocity_solid[1] >= 0 && local_offset_velocity_solid[1] < 3) ? weight_solid_velocity(1, local_offset_velocity_solid[1]) : 0.0f) * ((local_offset_velocity_solid[2] >= 0 && local_offset_velocity_solid[2] < 3) ? weight_solid_velocity(2, local_offset_velocity_solid[2]) : 0.0f);	
+		const float W_velocity_fluid = ((local_offset_velocity_fluid[0] >= 0 && local_offset_velocity_fluid[0] < 3) ? weight_fluid_velocity(0, local_offset_velocity_fluid[0]) : 0.0f) * ((local_offset_velocity_fluid[1] >= 0 && local_offset_velocity_fluid[1] < 3) ? weight_fluid_velocity(1, local_offset_velocity_fluid[1]) : 0.0f) * ((local_offset_velocity_fluid[2] >= 0 && local_offset_velocity_fluid[2] < 3) ? weight_fluid_velocity(2, local_offset_velocity_fluid[2]) : 0.0f);
+		const float W1_pressure = ((neighbour_local_offset_pressure[0] >= 0 && neighbour_local_offset_pressure[0] < 3) ? weight_solid_pressure(0, neighbour_local_offset_pressure[0]) : 0.0f) * ((neighbour_local_offset_pressure[1] >= 0 && neighbour_local_offset_pressure[1] < 3) ? weight_solid_pressure(1, neighbour_local_offset_pressure[1]) : 0.0f) * ((neighbour_local_offset_pressure[2] >= 0 && neighbour_local_offset_pressure[2] < 3) ? weight_solid_pressure(2, neighbour_local_offset_pressure[2]) : 0.0f);
+		const float W1_pressure_interface = ((neighbour_local_offset_pressure_interface[0] >= 0 && neighbour_local_offset_pressure_interface[0] < 3) ? weight_interface_pressure(0, neighbour_local_offset_pressure_interface[0]) : 0.0f) * ((neighbour_local_offset_pressure_interface[1] >= 0 && neighbour_local_offset_pressure_interface[1] < 3) ? weight_interface_pressure(1, neighbour_local_offset_pressure_interface[1]) : 0.0f) * ((neighbour_local_offset_pressure_interface[2] >= 0 && neighbour_local_offset_pressure_interface[2] < 3) ? weight_interface_pressure(2, neighbour_local_offset_pressure_interface[2]) : 0.0f);					
 				
 		float* current_gradient_solid = &(gradient_solid[local_cell_index]);
 		
@@ -1049,15 +1037,12 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 		const size_t cell_index = get_global_index<BLOCK_SIZE, (1 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, local_cell_index);
 		const ivec3 local_id {static_cast<int>((cell_index / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE), static_cast<int>((cell_index / config::G_BLOCKSIZE) % config::G_BLOCKSIZE), static_cast<int>(cell_index % config::G_BLOCKSIZE)};
 		
-		const ivec3 local_offset_pressure = global_base_index_solid_pressure - (block_cellid + local_id);
-		const ivec3 local_offset_velocity = global_base_index_fluid_velocity - (block_cellid + local_id);
-		
-		const ivec3 absolute_local_offset_pressure {std::abs(local_offset_pressure[0]), std::abs(local_offset_pressure[1]), std::abs(local_offset_pressure[2])};
-		const ivec3 absolute_local_offset_velocity {std::abs(local_offset_velocity[0]), std::abs(local_offset_velocity[1]), std::abs(local_offset_velocity[2])};
+		const ivec3 local_offset_pressure = (block_cellid + local_id) - global_base_index_solid_pressure;
+		const ivec3 local_offset_velocity = (block_cellid + local_id) - global_base_index_fluid_velocity;
 
 		//Weight
-		const float W_pressure = (absolute_local_offset_pressure[0] < 3 ? weight_solid_pressure(0, absolute_local_offset_pressure[0]) : 0.0f) * (absolute_local_offset_pressure[1] < 3 ? weight_solid_pressure(1, absolute_local_offset_pressure[1]) : 0.0f) * (absolute_local_offset_pressure[2] < 3 ? weight_solid_pressure(2, absolute_local_offset_pressure[2]) : 0.0f);
-		const float W_velocity = (absolute_local_offset_velocity[0] < 3 ? weight_fluid_velocity(0, absolute_local_offset_velocity[0]) : 0.0f) * (absolute_local_offset_velocity[1] < 3 ? weight_fluid_velocity(1, absolute_local_offset_velocity[1]) : 0.0f) * (absolute_local_offset_velocity[2] < 3 ? weight_fluid_velocity(2, absolute_local_offset_velocity[2]) : 0.0f);
+		const float W_pressure = ((local_offset_pressure[0] >= 0 && local_offset_pressure[0] < 3) ? weight_solid_pressure(0, local_offset_pressure[0]) : 0.0f) * ((local_offset_pressure[1] >= 0 && local_offset_pressure[1] < 3) ? weight_solid_pressure(1, local_offset_pressure[1]) : 0.0f) * ((local_offset_pressure[2] >= 0 && local_offset_pressure[2] < 3) ? weight_solid_pressure(2, local_offset_pressure[2]) : 0.0f);
+		const float W_velocity = ((local_offset_velocity[0] >= 0 && local_offset_velocity[0] < 3) ? weight_fluid_velocity(0, local_offset_velocity[0]) : 0.0f) * ((local_offset_velocity[1] >= 0 && local_offset_velocity[1] < 3) ? weight_fluid_velocity(1, local_offset_velocity[1]) : 0.0f) * ((local_offset_velocity[2] >= 0 && local_offset_velocity[2] < 3) ? weight_fluid_velocity(2, local_offset_velocity[2]) : 0.0f);
 		
 		float* current_scaling_fluid = &(scaling_fluid[local_cell_index]);
 		float* current_pressure_fluid_nominator = &(pressure_fluid_nominator[local_cell_index]);
@@ -1071,19 +1056,16 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 		const size_t alpha = get_global_index<BLOCK_SIZE, (3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, local_cell_index) % 3;
 		const ivec3 local_id {static_cast<int>((cell_index / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE), static_cast<int>((cell_index / config::G_BLOCKSIZE) % config::G_BLOCKSIZE), static_cast<int>(cell_index % config::G_BLOCKSIZE)};
 		
-		const ivec3 local_offset_velocity_fluid = global_base_index_fluid_velocity - (block_cellid + local_id);
-		
-		const ivec3 absolute_local_offset_velocity_fluid {std::abs(local_offset_velocity_fluid[0]), std::abs(local_offset_velocity_fluid[1]), std::abs(local_offset_velocity_fluid[2])};
+		const ivec3 local_offset_velocity_fluid = (block_cellid + local_id) - global_base_index_fluid_velocity;
 
 		const vec3 xixp = local_id * config::G_DX - local_pos_fluid_velocity;
 			
 		//Weight
-		const float W_velocity = (absolute_local_offset_velocity_fluid[0] < 3 ? weight_fluid_velocity(0, absolute_local_offset_velocity_fluid[0]) : 0.0f) * (absolute_local_offset_velocity_fluid[1] < 3 ? weight_fluid_velocity(1, absolute_local_offset_velocity_fluid[1]) : 0.0f) * (absolute_local_offset_velocity_fluid[2] < 3 ? weight_fluid_velocity(2, absolute_local_offset_velocity_fluid[2]) : 0.0f);
+		const float W_velocity = ((local_offset_velocity_fluid[0] >= 0 && local_offset_velocity_fluid[0] < 3) ? weight_fluid_velocity(0, local_offset_velocity_fluid[0]) : 0.0f) * ((local_offset_velocity_fluid[1] >= 0 && local_offset_velocity_fluid[1] < 3) ? weight_fluid_velocity(1, local_offset_velocity_fluid[1]) : 0.0f) * ((local_offset_velocity_fluid[2] >= 0 && local_offset_velocity_fluid[2] < 3) ? weight_fluid_velocity(2, local_offset_velocity_fluid[2]) : 0.0f);
 				
 		mass_fluid[local_cell_index] += reduced_mass * W_velocity;
 		
 		if(count_neighbours_shared[particle_id_in_block - particle_offset] > 1){
-			//printf("TMP0 %d %d # %d # %.28f # %.28f\n", static_cast<int>(blockIdx.x), static_cast<int>(cell_index), static_cast<int>(alpha), reduced_mass, (reduced_mass * velocity[alpha]));
 			
 			//Increase grid momentum by particle momentum
 			velocity_fluid[local_cell_index] += W_velocity * (reduced_mass * velocity[alpha] - (C[alpha] * xixp[0] + C[alpha + 1] * xixp[1] + C[alpha + 2] * xixp[2]));
@@ -1097,15 +1079,12 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 		const ivec3 local_id {static_cast<int>((cell_index / (config::G_BLOCKSIZE * config::G_BLOCKSIZE)) % config::G_BLOCKSIZE), static_cast<int>((cell_index / config::G_BLOCKSIZE) % config::G_BLOCKSIZE), static_cast<int>(cell_index % config::G_BLOCKSIZE)};
 		const ivec3 neighbour_local_id = ivec3(static_cast<int>((column / ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1))) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>((column / (2 * INTERPOLATION_DEGREE_MAX + 1)) % (2 * INTERPOLATION_DEGREE_MAX + 1)), static_cast<int>(column % (2 * INTERPOLATION_DEGREE_MAX + 1))) - ivec3(static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX), static_cast<int>(INTERPOLATION_DEGREE_MAX));
 			
-		const ivec3 local_offset_velocity_fluid = global_base_index_fluid_velocity - (block_cellid + local_id);
-		const ivec3 neighbour_local_offset_pressure = global_base_index_solid_pressure - (block_cellid + local_id + neighbour_local_id);
-		
-		const ivec3 absolute_local_offset_velocity_fluid {std::abs(local_offset_velocity_fluid[0]), std::abs(local_offset_velocity_fluid[1]), std::abs(local_offset_velocity_fluid[2])};
-		const ivec3 neighbour_absolute_local_offset {std::abs(neighbour_local_offset_pressure[0]), std::abs(neighbour_local_offset_pressure[1]), std::abs(neighbour_local_offset_pressure[2])};												
+		const ivec3 local_offset_velocity_fluid = (block_cellid + local_id) - global_base_index_fluid_velocity;
+		const ivec3 neighbour_local_offset_pressure = (block_cellid + local_id + neighbour_local_id) - global_base_index_solid_pressure;
 
 		//Weight
-		const float delta_W_velocity = ((alpha == 0 ? (absolute_local_offset_velocity_fluid[0] < 3 ? gradient_weight_fluid_velocity(0, absolute_local_offset_velocity_fluid[0]) : 0.0f) : (absolute_local_offset_velocity_fluid[0] < 3 ? weight_fluid_velocity(0, absolute_local_offset_velocity_fluid[0]) : 0.0f)) * (alpha == 1 ? (absolute_local_offset_velocity_fluid[1] < 3 ? gradient_weight_fluid_velocity(1, absolute_local_offset_velocity_fluid[1]) : 0.0f) : (absolute_local_offset_velocity_fluid[1] < 3 ? weight_fluid_velocity(1, absolute_local_offset_velocity_fluid[1]) : 0.0f)) * (alpha == 2 ? (absolute_local_offset_velocity_fluid[2] < 3 ? gradient_weight_fluid_velocity(2, absolute_local_offset_velocity_fluid[2]) : 0.0f) : (absolute_local_offset_velocity_fluid[2] < 3 ? weight_fluid_velocity(2, absolute_local_offset_velocity_fluid[2]) : 0.0f))) * config::G_DX_INV;
-		const float W1_pressure = (neighbour_absolute_local_offset[0] < 3 ? weight_solid_pressure(0, neighbour_absolute_local_offset[0]) : 0.0f) * (neighbour_absolute_local_offset[1] < 3 ? weight_solid_pressure(1, neighbour_absolute_local_offset[1]) : 0.0f) * (neighbour_absolute_local_offset[2] < 3 ? weight_solid_pressure(2, neighbour_absolute_local_offset[2]) : 0.0f);
+		const float delta_W_velocity = ((alpha == 0 ? ((local_offset_velocity_fluid[0] >= 0 && local_offset_velocity_fluid[0] < 3) ? gradient_weight_fluid_velocity(0, local_offset_velocity_fluid[0]) : 0.0f) : ((local_offset_velocity_fluid[0] >= 0 && local_offset_velocity_fluid[0] < 3) ? weight_fluid_velocity(0, local_offset_velocity_fluid[0]) : 0.0f)) * (alpha == 1 ? ((local_offset_velocity_fluid[1] >= 0 && local_offset_velocity_fluid[1] < 3) ? gradient_weight_fluid_velocity(1, local_offset_velocity_fluid[1]) : 0.0f) : ((local_offset_velocity_fluid[1] >= 0 && local_offset_velocity_fluid[1] < 3) ? weight_fluid_velocity(1, local_offset_velocity_fluid[1]) : 0.0f)) * (alpha == 2 ? ((local_offset_velocity_fluid[2] >= 0 && local_offset_velocity_fluid[2] < 3) ? gradient_weight_fluid_velocity(2, local_offset_velocity_fluid[2]) : 0.0f) : ((local_offset_velocity_fluid[2] >= 0 && local_offset_velocity_fluid[2] < 3) ? weight_fluid_velocity(2, local_offset_velocity_fluid[2]) : 0.0f))) * config::G_DX_INV;
+		const float W1_pressure = ((neighbour_local_offset_pressure[0] >= 0 && neighbour_local_offset_pressure[0] < 3) ? weight_solid_pressure(0, neighbour_local_offset_pressure[0]) : 0.0f) * ((neighbour_local_offset_pressure[1] >= 0 && neighbour_local_offset_pressure[1] < 3) ? weight_solid_pressure(1, neighbour_local_offset_pressure[1]) : 0.0f) * ((neighbour_local_offset_pressure[2] >= 0 && neighbour_local_offset_pressure[2] < 3) ? weight_solid_pressure(2, neighbour_local_offset_pressure[2]) : 0.0f);
 									
 		float* current_gradient_fluid = &(gradient_fluid[local_cell_index]);
 		float* current_boundary_fluid = &(boundary_fluid[local_cell_index]);
@@ -1117,8 +1096,8 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 //TODO: Directly store into matrices, not into local memory
 template<typename Partition, typename Grid, MaterialE MaterialTypeSolid, MaterialE MaterialTypeFluid>
 __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Partition partition, const Grid grid_solid, const Grid grid_fluid, FluidParticleBuffer iq_fluid_particle_buffer, const SurfaceParticleBuffer surface_particle_buffer_solid, const SurfaceParticleBuffer surface_particle_buffer_fluid, IQCreatePointers iq_pointers) {
-	//Particles with offset [-2, 0] can lie within cell (due to storing with interpolation degree 2 wich results in offset of 2); Interolation degree may offset positions so we need [-2, 2] for all interpolation positions in our cell. Then wee also need neighbour positions so we get [-4, 4];
-	constexpr size_t KERNEL_SIZE = 2 * INTERPOLATION_DEGREE_MAX + 5 + 1;//Plus one for both sides being inclusive
+	//Particles with offset [-2, 0] can lie within cell (due to storing with interpolation degree 2 wich results in offset of 2); Interolation degree may offset positions so we need [-2, 2] for all interpolation positions in our cell. Then wee also need neighbour positions so we get [-4, 2];
+	constexpr size_t KERNEL_SIZE = INTERPOLATION_DEGREE_MAX + 3 + 1;//Plus one for both sides being inclusive
 	constexpr size_t KERNEL_OFFSET = INTERPOLATION_DEGREE_MAX + 2;
 	
 	//Both positive, both rounded up. Start will later be negated
@@ -1489,7 +1468,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 	}
 	
 	//Column that represents (row, row)
-	//constexpr size_t IDENTIITY_NEIGHBOUR_INDEX = (INTERPOLATION_DEGREE_MAX * ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1)) + INTERPOLATION_DEGREE_MAX * (2 * INTERPOLATION_DEGREE_MAX + 1) + INTERPOLATION_DEGREE_MAX);
+	constexpr size_t IDENTIITY_NEIGHBOUR_INDEX = (INTERPOLATION_DEGREE_MAX * ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1)) + INTERPOLATION_DEGREE_MAX * (2 * INTERPOLATION_DEGREE_MAX + 1) + INTERPOLATION_DEGREE_MAX);
 	
 	//Store data in matrix
 	//NOTE: Coupling was stored in transposed form
@@ -1615,8 +1594,19 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 		atomicAdd(&(iq_pointers.gradient_fluid_values[column_index]), gradient_fluid_local[local_cell_index]);
 		
 		//NOTE: Storing H^T
-		atomicAdd(&(iq_pointers.coupling_solid_values[column_index]), coupling_solid_local[local_cell_index]);
-		atomicAdd(&(iq_pointers.coupling_fluid_values[column_index]), coupling_fluid_local[local_cell_index]);
+		if(false){//column == IDENTIITY_NEIGHBOUR_INDEX){
+			if(coupling_solid_local[local_cell_index] != 0.0f){
+				printf("TMP0 %d # %d # %.28f\n", row_index, neighbour_cellno, (1 + coupling_solid_local[local_cell_index]));
+				atomicAdd(&(iq_pointers.coupling_solid_values[column_index]), 1 + coupling_solid_local[local_cell_index]);
+			}
+			if(coupling_fluid_local[local_cell_index] != 0.0f){
+				printf("TMP1 %d # %d # %.28f\n", row_index, neighbour_cellno, (1 + coupling_fluid_local[local_cell_index]));
+				atomicAdd(&(iq_pointers.coupling_fluid_values[column_index]), 1 + coupling_fluid_local[local_cell_index]);
+			}
+		}else{
+			atomicAdd(&(iq_pointers.coupling_solid_values[column_index]), coupling_solid_local[local_cell_index]);
+			atomicAdd(&(iq_pointers.coupling_fluid_values[column_index]), coupling_fluid_local[local_cell_index]);
+		}
 		
 		atomicAdd(&(iq_pointers.boundary_fluid_values[column_index]), boundary_fluid_local[local_cell_index]);
 	}
@@ -1674,9 +1664,9 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 		}*/
 	}
 	
-	//Particles in cell can have offset of [0, 5] ([0, 3] current block, 2 for offset caused by kernel 2 in storing); Then additional 2 are added in both directions for max kernel degree => [-2, 7] or absolute [0, 9] with offset 2
-	constexpr size_t KERNEL_SIZE = 2 * INTERPOLATION_DEGREE_MAX + 5 + 1;//Plus one for both sides being inclusive
-	constexpr size_t KERNEL_OFFSET = INTERPOLATION_DEGREE_MAX;
+	//Particles in cell can have offset of [0, 5] ([0, 3] current block, 2 for offset caused by kernel 2 in storing); Then additional 2 are added in both directions for max kernel degree => [0, 7] or absolute [0, 7] with offset 0
+	constexpr size_t KERNEL_SIZE = INTERPOLATION_DEGREE_MAX + 4 + 1;//Plus one for both sides being inclusive
+	constexpr size_t KERNEL_OFFSET = 0;
 	
 	constexpr size_t CELL_COUNT = KERNEL_SIZE * KERNEL_SIZE * KERNEL_SIZE;
 
@@ -1763,9 +1753,9 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 		//Load data
 		//Note: Weights are 0 if outside of interpolation degree/radius around particles cell
 		//Foreach node in the block we add values accoring to particle kernel, also handling all neighbours of the particles cell
-		for(char i = -static_cast<char>(INTERPOLATION_DEGREE_MAX); i < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; i++) {
-			for(char j = -static_cast<char>(INTERPOLATION_DEGREE_MAX); j < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; j++) {
-				for(char k = -static_cast<char>(INTERPOLATION_DEGREE_MAX); k < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; k++) {
+		for(char i = 0; i < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; i++) {
+			for(char j = 0; j < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; j++) {
+				for(char k = 0; k < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; k++) {
 					const ivec3 local_id = (global_base_index_solid_pressure - block_cellid) + ivec3(i, j, k);
 					const ivec3 absolute_local_id = local_id + ivec3(static_cast<int>(KERNEL_OFFSET), static_cast<int>(KERNEL_OFFSET), static_cast<int>(KERNEL_OFFSET));
 					
@@ -1778,7 +1768,7 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 					}
 					
 					//Weight
-					const float W_pressure = weight_solid_pressure(0, std::abs(i)) * weight_solid_pressure(1, std::abs(j)) * weight_solid_pressure(2, std::abs(k));
+					const float W_pressure = ((i >= 0 && i < 3) ? weight_solid_pressure(0, i) : 0.0f) * ((j >= 0 && j < 3) ? weight_solid_pressure(1, j) : 0.0f) * ((k >= 0 && k < 3) ? weight_solid_pressure(2, k) : 0.0f);
 					
 					weighted_pressure += pressure_solid_shared[absolute_local_id[0]][absolute_local_id[1]][absolute_local_id[2]] * W_pressure;
 				}
@@ -1881,9 +1871,9 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 		//Load data
 		//Note: Weights are 0 if outside of interpolation degree/radius around particles cell
 		//Foreach node in the block we add values accoring to particle kernel, also handling all neighbours of the particles cell
-		for(char i = -static_cast<char>(INTERPOLATION_DEGREE_MAX); i < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; i++) {
-			for(char j = -static_cast<char>(INTERPOLATION_DEGREE_MAX); j < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; j++) {
-				for(char k = -static_cast<char>(INTERPOLATION_DEGREE_MAX); k < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; k++) {
+		for(char i = 0; i < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; i++) {
+			for(char j = 0; j < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; j++) {
+				for(char k = 0; k < static_cast<char>(INTERPOLATION_DEGREE_MAX) + 1; k++) {
 					const ivec3 local_id = (global_base_index_fluid_pressure - block_cellid) + ivec3(i, j, k);
 					const ivec3 absolute_local_id = local_id + ivec3(static_cast<int>(KERNEL_OFFSET), static_cast<int>(KERNEL_OFFSET), static_cast<int>(KERNEL_OFFSET));
 					
@@ -1896,7 +1886,7 @@ __global__ void update_velocity_and_strain(const ParticleBuffer<MaterialTypeSoli
 					}
 					
 					//Weight
-					const float W_pressure = weight_fluid_pressure(0, std::abs(i)) * weight_fluid_pressure(1, std::abs(j)) * weight_fluid_pressure(2, std::abs(k));
+					const float W_pressure = ((i >= 0 && i < 3) ? weight_fluid_pressure(0, i) : 0.0f) * ((j >= 0 && j < 3) ? weight_fluid_pressure(1, j) : 0.0f) * ((k >= 0 && k < 3) ? weight_fluid_pressure(2, k) : 0.0f);
 					
 					weighted_pressure += pressure_fluid_shared[absolute_local_id[0]][absolute_local_id[1]][absolute_local_id[2]] * W_pressure;
 				}

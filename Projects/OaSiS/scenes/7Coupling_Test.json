@@ -10,7 +10,7 @@
 			"type": "particle",
 			"file": "two_dragons.sdf",
 			"constitutive": "jfluid",
-			"volume": 7.4505806e-9,
+			"volume": 7.4505806e-20,
 			"rho": 1e3,
 			"bulk_viscosity": 2.47e-3,
 			"gamma": 7.0,
@@ -26,9 +26,9 @@
 				0.0
 			],
 			"span": [
-				10.0,
-				10.0,
-				10.0
+				15.0,
+				15.0,
+				15.0
 			],
 			"velocity": [
 				0.0,
@@ -40,7 +40,7 @@
 			"type": "particle",
 			"file": "two_dragons.sdf",
 			"constitutive": "fixed_corotated_ghost",
-			"volume": 7.4505806e-9,
+			"volume": 7.4505806e-20,
 			"rho": 1e3,
 			"youngs_modulus": 1e5,
 			"poisson_ratio": 0.4,
@@ -50,9 +50,9 @@
 				0.1
 			],
 			"span": [
-				10.0,
-				10.0,
-				10.0
+				15.0,
+				15.0,
+				15.0
 			],
 			"velocity": [
 				0.0,

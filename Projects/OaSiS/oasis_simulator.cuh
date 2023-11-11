@@ -2286,16 +2286,18 @@ struct OasisSimulator {
 							
 						#endif
 						
-						
+						/*
 						std::vector<int> printout_tmp0(iq_lhs->get_size()[0] + 1);
 						std::vector<int> printout_tmp1(iq_lhs->get_num_stored_elements());
 						std::vector<float> printout_tmp2(iq_lhs->get_num_stored_elements());
-						std::vector<float> printout_tmp3(iq_lhs->get_size()[0]);
+						std::vector<float> printout_tmp3(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME);
+						std::vector<int> printout_tmp6(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME);
 						
 						cudaMemcpyAsync(printout_tmp0.data(), iq_lhs->get_const_row_ptrs(), sizeof(int) * (iq_lhs->get_size()[0] + 1), cudaMemcpyDefault, cu_dev.stream_compute());
 						cudaMemcpyAsync(printout_tmp1.data(), iq_lhs->get_const_col_idxs(), sizeof(int) * iq_lhs->get_num_stored_elements(), cudaMemcpyDefault, cu_dev.stream_compute());
 						cudaMemcpyAsync(printout_tmp2.data(), iq_lhs->get_const_values(), sizeof(float) * iq_lhs->get_num_stored_elements(), cudaMemcpyDefault, cu_dev.stream_compute());
-						cudaMemcpyAsync(printout_tmp3.data(), iq_rhs_array.get_const_data(), sizeof(float) * iq_lhs->get_size()[0], cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp3.data(), iq_rhs_array.get_const_data(), sizeof(float) * (lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME), cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp6.data(), permutation_indices_array.get_const_data(), sizeof(int) * (lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME), cudaMemcpyDefault, cu_dev.stream_compute());
 						
 						cudaDeviceSynchronize();
 						
@@ -2310,35 +2312,46 @@ struct OasisSimulator {
 						std::cout << std::endl;
 						
 						printout_tmp0[iq_lhs->get_size()[0]] = iq_lhs->get_num_stored_elements();
-						for(size_t k = 0; k < iq_lhs->get_size()[0]; ++k){
-							const size_t row_length = (printout_tmp0[k + 1] - printout_tmp0[k]);
-							if(row_length > 0){
-								bool has_non_null_entry = false;
-								for(size_t l = 0; l < row_length; ++l){
-									if(printout_tmp2[printout_tmp0[k] + l] != 0.0f){
-										has_non_null_entry = true;
-										break;
-									}
-								}
-								if(has_non_null_entry){
-									std::cout << k << ": ";
-									for(size_t l = 0; l < row_length; ++l){
-										if(printout_tmp2[printout_tmp0[k] + l] != 0.0f){
-											std::cout << "(" << printout_tmp1[printout_tmp0[k] + l] << ", " << printout_tmp2[printout_tmp0[k] + l] << ") ";
+						for(size_t j = 0; j < lhs_matrix_size_y; ++j){
+							for(size_t k = 0; k < exterior_block_count * config::G_BLOCKVOLUME; ++k){
+								const int permutation_index = printout_tmp6[j * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + k];
+								if(permutation_index < non_null_rows_count_host){
+									const size_t row_length = (printout_tmp0[permutation_index + 1] - printout_tmp0[permutation_index]);
+									if(row_length > 0){
+										bool has_non_null_entry = false;
+										for(size_t l = 0; l < row_length; ++l){
+											if(printout_tmp2[printout_tmp0[permutation_index] + l] != 0.0f){
+												has_non_null_entry = true;
+												break;
+											}
+										}
+										if(has_non_null_entry){
+											std::cout << "(" << (j * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + k) << ", " << permutation_index << "): ";
+											for(size_t l = 0; l < row_length; ++l){
+												if(printout_tmp2[printout_tmp0[permutation_index] + l] != 0.0f){
+													std::cout << "(" << printout_tmp1[printout_tmp0[permutation_index] + l] << ", " << printout_tmp2[printout_tmp0[permutation_index] + l] << ") ";
+												}
+											}
+											std::cout << std::endl;
 										}
 									}
-									std::cout << std::endl;
 								}
 							}
+							std::cout << "##############" << std::endl;
 						}
 						std::cout << std::endl;
 						
-						for(size_t k = 0; k < iq_lhs->get_size()[0]; ++k){
-							std::cout << printout_tmp3[k] << " ";
+						for(size_t j = 0; j < lhs_matrix_size_y; ++j){
+							for(size_t k = 0; k < exterior_block_count * config::G_BLOCKVOLUME; ++k){
+								const int permutation_index = printout_tmp6[j * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + k];
+								if(permutation_index < non_null_rows_count_host){
+									std::cout << printout_tmp3[j * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + k] << " ";
+								}
+							}
+							std::cout << std::endl;
 						}
 						std::cout << std::endl;
-						
-						
+						*/
 						
 						/*
 						std::vector<int> printout_tmp0(3 * solve_velocity_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME + 1);
@@ -2390,6 +2403,52 @@ struct OasisSimulator {
 						}
 						std::cout << std::endl;
 						*/
+						
+						std::vector<int> printout_tmp0(iq_lhs->get_size()[0] + 1);
+						std::vector<int> printout_tmp1(iq_lhs->get_num_stored_elements());
+						std::vector<float> printout_tmp2(iq_lhs->get_num_stored_elements());
+						std::vector<float> printout_tmp3(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME);
+						std::vector<int> printout_tmp6(lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME);
+						
+						cudaMemcpyAsync(printout_tmp0.data(), iq_lhs->get_const_row_ptrs(), sizeof(int) * (iq_lhs->get_size()[0] + 1), cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp1.data(), iq_lhs->get_const_col_idxs(), sizeof(int) * iq_lhs->get_num_stored_elements(), cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp2.data(), iq_lhs->get_const_values(), sizeof(float) * iq_lhs->get_num_stored_elements(), cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp3.data(), iq_rhs_array.get_const_data(), sizeof(float) * (lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME), cudaMemcpyDefault, cu_dev.stream_compute());
+						cudaMemcpyAsync(printout_tmp6.data(), permutation_indices_array.get_const_data(), sizeof(int) * (lhs_matrix_size_y * exterior_block_count * config::G_BLOCKVOLUME), cudaMemcpyDefault, cu_dev.stream_compute());
+						
+						cudaDeviceSynchronize();
+						
+						std::cout << std::endl;
+						
+						printout_tmp0[iq_lhs->get_size()[0]] = iq_lhs->get_num_stored_elements();
+						for(size_t j = 0; j < lhs_matrix_size_y; ++j){
+							for(size_t k = 0; k < exterior_block_count * config::G_BLOCKVOLUME; ++k){
+								const int permutation_index = printout_tmp6[j * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + k];
+								if(permutation_index < non_null_rows_count_host){
+									const size_t row_length = (printout_tmp0[permutation_index + 1] - printout_tmp0[permutation_index]);
+									float sum_row = 0.0f;
+									float diagonal;
+									for(size_t l = 0; l < row_length; ++l){
+										if(printout_tmp1[printout_tmp0[permutation_index] + l] != permutation_index){
+											sum_row += std::abs(printout_tmp2[printout_tmp0[permutation_index] + l]);
+										}else{
+											diagonal = printout_tmp2[printout_tmp0[permutation_index] + l];
+										}
+									}
+									if(diagonal < sum_row){
+										std::cout << "(" << (j * iq::NUM_ROWS_PER_BLOCK * exterior_block_count + k) << ", " << permutation_index << ", " << diagonal << ", " << sum_row << "): ";
+										for(size_t l = 0; l < row_length; ++l){
+											if(printout_tmp2[printout_tmp0[permutation_index] + l] != 0.0f){
+												std::cout << "(" << printout_tmp1[printout_tmp0[permutation_index] + l] << ", " << printout_tmp2[printout_tmp0[permutation_index] + l] << ") ";
+											}
+										}
+										std::cout << std::endl;
+									}
+								}
+							}
+							std::cout << "##############" << std::endl;
+						}
+						std::cout << std::endl;
 						
 						//IQ-System solve
 						// Create solver
@@ -3589,6 +3648,7 @@ struct OasisSimulator {
 			check_cuda_errors(cudaMemsetAsync(d_particle_count, 0, sizeof(int), cu_dev.stream_compute()));
 			
 			cu_dev.syncStream<streamIdx::COMPUTE>();
+			std::cout << "TEST0" << std::endl;
 
 			//Retrieve particle count
 			unsigned int* particle_id_mapping_buffer = tmps.particle_id_mapping_buffer;
@@ -3626,6 +3686,7 @@ struct OasisSimulator {
 			});
 			
 			cu_dev.syncStream<streamIdx::COMPUTE>();
+			std::cout << "TEST1" << std::endl;
 			
 			//Reallocate particle array if necessary
 			if(particle_counts[i] < particle_count){
@@ -3663,6 +3724,7 @@ struct OasisSimulator {
 			});
 			
 			cu_dev.syncStream<streamIdx::COMPUTE>();
+			std::cout << "TEST2" << std::endl;
 			
 			/*
 			//std::cout << std::endl << "TEST0" << std::endl;
@@ -3945,6 +4007,7 @@ struct OasisSimulator {
 				}
 			}
 			#endif
+			std::cout << "TEST3" << std::endl;
 
 			//Copy particle data to output buffer
 			match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count, &particle_id_mapping_buffer](const auto& particle_buffer) {
@@ -3953,6 +4016,7 @@ struct OasisSimulator {
 			});
 
 			cu_dev.syncStream<streamIdx::COMPUTE>();
+			std::cout << "TEST4" << std::endl;
 			
 			//Copy the data to the output model
 			check_cuda_errors(cudaMemcpyAsync(model.data(), static_cast<void*>(&particles[i].val_1d(_0, 0)), sizeof(std::array<float, config::NUM_DIMENSIONS>) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
@@ -4007,7 +4071,7 @@ struct OasisSimulator {
 				//Copy the data to the output model
 				check_cuda_errors(cudaMemcpyAsync(surface_gauss_curvature_transfer_host_buffer.data(), surface_transfer_device_buffer_ptr, sizeof(float) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
 			}
-			
+			std::cout << "TEST5" << std::endl;
 			if(surface_flow_id != -1){
 				match(particle_bins[rollid][i])([this, &cu_dev, &surface_flow_id, &i, &d_particle_count, &particle_id_mapping_buffer, &surface_transfer_device_buffer_ptr](const auto& particle_buffer) {
 					//partition_block_count; G_PARTICLE_BATCH_CAPACITY
@@ -4042,6 +4106,7 @@ struct OasisSimulator {
 			});
 			
 			cu_dev.syncStream<streamIdx::COMPUTE>();
+			std::cout << "TEST6" << std::endl;
 			
 			std::string fn = std::string {"model"} + "_id[" + std::to_string(i) + "]_frame[" + std::to_string(cur_frame) + "].bgeo";
 

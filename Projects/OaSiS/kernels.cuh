@@ -938,8 +938,8 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 #else
 	(void)nullptr;//Nothing
 #endif
-
-		/*float pressure = (particle_buffer.bulk - (2.0f / 3.0f) * particle_buffer.viscosity) * (data.J - 1.0f);
+		/*
+		float pressure = (particle_buffer.bulk - (2.0f / 3.0f) * particle_buffer.viscosity) * (data.J - 1.0f);
 		
 		//Calculating stress density
 		{
@@ -960,7 +960,8 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 				contrib[7] = 0.0f;
 				contrib[8] = pressure * voln;
 			}
-		}*/
+		}
+		*/
 		
 		//Values from ]0; 0.1^-gamma - 1]
 		float pressure = (particle_buffer.bulk - (2.0f / 3.0f) * particle_buffer.viscosity) * (powf(data.J, -particle_buffer.gamma) - 1.0f);
@@ -986,6 +987,7 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 				contrib[8] = ((A[8] + A[8]) * config::G_D_INV * particle_buffer.viscosity - pressure) * voln;
 			}
 		}
+		
 	}else{
 		//Update determinante of deformation gradiant
 		//Divergence of velocity multiplied with time and transfered to global space

@@ -10,7 +10,7 @@
 			"type": "particle",
 			"file": "bullet.sdf",
 			"constitutive": "fixed_corotated_ghost",
-			"volume": 7.4505806e-9,
+			"volume": 7.4505806e-17,
 			"rho": 1e3,
 			"youngs_modulus": 1e5,
 			"poisson_ratio": 0.4,

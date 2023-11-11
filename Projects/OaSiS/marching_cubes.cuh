@@ -1492,9 +1492,9 @@ __global__ void marching_cubes_calculate_density(Partition partition, Partition 
 		}
 		
 		//Spread density
-		for(char i = -static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE); i < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; i++) {
-			for(char j = -static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE); j < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; j++) {
-				for(char k = -static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE); k < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; k++) {
+		for(char i = 0; i < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; i++) {
+			for(char j = 0; j < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; j++) {
+				for(char k = 0; k < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; k++) {
 					const ivec3 coord = global_base_index + ivec3(i, j, k);
 					
 					if(
@@ -1502,7 +1502,8 @@ __global__ void marching_cubes_calculate_density(Partition partition, Partition 
 						&& (coord[0] < grid_size[0] && coord[1] < grid_size[1] && coord[2] < grid_size[2])
 					){
 						//Weight
-						const float W = weight(0, std::abs(i)) * weight(1, std::abs(j)) * weight(2, std::abs(k));
+						const float W = ((i >= 0 && i < 3) ? weight(0, i) : 0.0f) * ((j >= 0 && j < 3) ? weight(1, j) : 0.0f) * ((k >= 0 && k < 3) ? weight(2, k) : 0.0f);
+		
 						
 						atomicAdd(&marching_cubes_grid.val(_0, marching_cubes_calculate_offset(coord[0], coord[1], coord[2], grid_size)), W * mass * (MARCHING_CUBES_DX_INV * MARCHING_CUBES_DX_INV * MARCHING_CUBES_DX_INV));
 					}
@@ -1834,9 +1835,9 @@ __global__ void marching_cubes_init_surface_particle_buffer(Partition partition,
 
 		//Get normal by mass gradient
 		vec3 normal {0.0f};
-		for(char i = -static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE); i < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; i++) {
-			for(char j = -static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE); j < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; j++) {
-				for(char k = -static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE); k < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; k++) {
+		for(char i = 0; i < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; i++) {
+			for(char j = 0; j < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; j++) {
+				for(char k = 0; k < static_cast<char>(MARCHING_CUBES_INTERPOLATION_DEGREE) + 1; k++) {
 					const ivec3 coord = global_base_index + ivec3(i, j, k);
 					
 					if(
@@ -1846,7 +1847,8 @@ __global__ void marching_cubes_init_surface_particle_buffer(Partition partition,
 						for(char alpha = 0; alpha < 3; ++alpha){
 							//Weight
 							
-							const float delta_w = ((alpha == 0 ? gradient_weight(0, std::abs(i)) : weight(0, std::abs(i))) * (alpha == 1 ? gradient_weight(1, std::abs(j)) : weight(1, std::abs(j))) * (alpha == 2 ? gradient_weight(2, std::abs(k)) : weight(2, std::abs(k)))) * MARCHING_CUBES_DX_INV;
+							const float delta_w = ((alpha == 0 ? ((i >= 0 && i < 3) ? gradient_weight(0, i) : 0.0f) : ((i >= 0 && i < 3) ? weight(0, i) : 0.0f)) * (alpha == 1 ? ((j >= 0 && j < 3) ? gradient_weight(1, j) : 0.0f) : ((j >= 0 && j < 3) ? weight(1, j) : 0.0f)) * (alpha == 2 ? ((k >= 0 && k < 3) ? gradient_weight(2, k) : 0.0f) : ((k >= 0 && k < 3) ? weight(2, k) : 0.0f))) * MARCHING_CUBES_DX_INV;
+		
 			
 							normal[alpha] += -marching_cubes_grid.val(_0, marching_cubes_calculate_offset(coord[0], coord[1], coord[2], grid_size)) * delta_w;
 						}
