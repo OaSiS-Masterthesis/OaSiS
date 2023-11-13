@@ -3217,7 +3217,7 @@ __global__ void generate_particle_id_mapping(Partition partition, Partition prev
 }
 
 template<typename Partition, typename ParticleBuffer, typename ParticleArray>
-__global__ void retrieve_particle_buffer(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, ParticleArray particle_array, unsigned int* particle_id_mapping_buffer) {
+__global__ void retrieve_particle_buffer(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, ParticleArray particle_array, unsigned int* particle_id_mapping_buffer, float* mass) {
 	const int particle_counts	= next_particle_buffer.particle_bucket_sizes[blockIdx.x];
 	const ivec3 blockid			= partition.active_keys[blockIdx.x];
 	const auto advection_bucket = next_particle_buffer.blockbuckets + blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK;
@@ -3245,11 +3245,15 @@ __global__ void retrieve_particle_buffer(Partition partition, Partition prev_par
 		
 		//Fetch particle id in destination buffer
 		const unsigned int particle_id = particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno_from_partition] * config::G_BIN_CAPACITY + source_pidib];
-
+		
 		//Copy position to destination buffer
 		particle_array.val(_0, particle_id) = source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
 		particle_array.val(_1, particle_id) = source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
 		particle_array.val(_2, particle_id) = source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
+		
+		if(mass != nullptr){
+			mass[particle_id] = source_bin.val(_0, source_pidib % config::G_BIN_CAPACITY);
+		}
 	}
 }
 

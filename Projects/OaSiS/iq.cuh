@@ -479,10 +479,10 @@ __forceinline__ __device__ void store_data_neigbours_coupling_solid<MaterialE::F
 
 template<>
 __forceinline__ __device__ void store_data_fluid<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer_fluid, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, const float W_pressure, const float W_velocity, const float mass, const float J){			
-	const float volume_0 = (mass / particle_buffer_fluid.rho);
-	const float lambda = (particle_buffer_fluid.bulk - (2.0f / 3.0f) * particle_buffer_fluid.viscosity);
+	//const float volume_0 = (mass / particle_buffer_fluid.rho);
+	//const float lambda = (particle_buffer_fluid.bulk - (2.0f / 3.0f) * particle_buffer_fluid.viscosity);
 	//const float pressure = lambda * (powf(J, -particle_buffer_fluid.gamma) - 1.0f);
-	const float pressure = lambda * (J - 1.0f);
+	//const float pressure = lambda * (J - 1.0f);
 	
 	//FIXME: Why does solid use volume_0/lambda for scaling? How does that corralate to 1/(lambda * J)?
 	//Volume weighted average of pressure;
@@ -1468,7 +1468,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, const P
 	}
 	
 	//Column that represents (row, row)
-	constexpr size_t IDENTIITY_NEIGHBOUR_INDEX = (INTERPOLATION_DEGREE_MAX * ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1)) + INTERPOLATION_DEGREE_MAX * (2 * INTERPOLATION_DEGREE_MAX + 1) + INTERPOLATION_DEGREE_MAX);
+	//constexpr size_t IDENTIITY_NEIGHBOUR_INDEX = (INTERPOLATION_DEGREE_MAX * ((2 * INTERPOLATION_DEGREE_MAX + 1) * (2 * INTERPOLATION_DEGREE_MAX + 1)) + INTERPOLATION_DEGREE_MAX * (2 * INTERPOLATION_DEGREE_MAX + 1) + INTERPOLATION_DEGREE_MAX);
 	
 	//Store data in matrix
 	//NOTE: Coupling was stored in transposed form

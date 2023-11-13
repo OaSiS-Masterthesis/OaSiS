@@ -12,6 +12,7 @@
 #include <MnBase/Profile/CudaTimers.cuh>
 #include <MnSystem/IO/ParticleIO.hpp>
 #include <MnSystem/IO/OBJIO.hpp>
+#include <MnSystem/IO/VolumeIO.hpp>
 #include <ginkgo/ginkgo.hpp>
 #include <array>
 #include <vector>
@@ -209,6 +210,7 @@ struct OasisSimulator {
 	std::vector<uint32_t> particle_counts						 = {};///< num particles
 	std::vector<std::array<float, config::NUM_DIMENSIONS>> model = {};
 	std::vector<vec3> vel0										 = {};
+	std::vector<float> mass_transfer_host_buffer = {};
 	void* surface_transfer_device_buffer;
 	std::vector<int> surface_point_type_transfer_host_buffer = {};
 	std::vector<std::array<float, config::NUM_DIMENSIONS>> surface_normal_transfer_host_buffer = {};
@@ -652,11 +654,13 @@ struct OasisSimulator {
 		managed_memory_allocator.deallocate(faces_tmp, sizeof(unsigned int) * config::NUM_DIMENSIONS * faces.size());
 		
 		//Write out initial state to file
+		#if (WRITE_OUT_OBJ == 1)
 		std::string fn = std::string {"mesh"} + "_id[" + std::to_string(triangle_meshes.size() - 1) + "]_frame[0].obj";
 		IO::insert_job([fn, positions, faces]() {
 			write_triangle_mesh<float, uint32_t, config::NUM_DIMENSIONS>(fn, positions, faces);
 		});
 		IO::flush();
+		#endif
 	}
 
 	template<MaterialE M>
@@ -717,6 +721,7 @@ struct OasisSimulator {
 		managed_memory.release(particles.back().release());
 
 		//Write out initial state to file
+		#if (WRITE_OUT_GEO == 1)
 		std::string fn = std::string {"model"} + "_id[" + std::to_string(particle_bins[0].size() - 1) + "]_frame[0].bgeo";
 		IO::insert_job([fn, model]() {
 			Partio::ParticlesDataMutable* parts;
@@ -727,6 +732,7 @@ struct OasisSimulator {
 			end_write_partio(fn, parts);
 		});
 		IO::flush();
+		#endif
 	}
 	
 	//TODO: Allow choice of type and parameters, etc.
@@ -926,11 +932,13 @@ struct OasisSimulator {
 						
 						//Write out initial state
 						#ifdef OUTPUT_TRIANGLE_SHELL_OUTER_POS
+							#if (WRITE_OUT_OBJ == 1)
 							//Write out initial state to file
 							std::string fn = std::string {"shell"} + "_id[" + std::to_string(i) + "_" + std::to_string(j) + "]_frame[" + std::to_string(cur_frame) + "].obj";
 							IO::insert_job([this, fn, j, pos = triangle_mesh_transfer_host_buffers[j]]() {
 								write_triangle_mesh<float, uint32_t, config::NUM_DIMENSIONS>(fn, pos, triangle_mesh_face_buffers[j]);
 							});
+							#endif
 						#endif	
 					}
 				}
@@ -3697,15 +3705,16 @@ struct OasisSimulator {
 			//NOTE: as we use a ReusableAllocator on resize the old buffer is automatically freed
 			surface_transfer_device_buffer = reusable_allocator_surface_transfer.allocate(sizeof(float) * config::NUM_DIMENSIONS * particle_count);
 			
-			void* surface_transfer_device_buffer_ptr = surface_transfer_device_buffer;
+			void* output_transfer_device_buffer_ptr = surface_transfer_device_buffer;
 			
 			managed_memory.acquire<MemoryType::DEVICE>(
 				  particles[i].acquire()
-				, reinterpret_cast<void**>(&surface_transfer_device_buffer_ptr)
+				, reinterpret_cast<void**>(&output_transfer_device_buffer_ptr)
 			);
 			
 			//Resize the output model
 			model.resize(particle_count);
+			mass_transfer_host_buffer.resize(particle_count);
 			surface_point_type_transfer_host_buffer.resize(particle_count);
 			surface_normal_transfer_host_buffer.resize(particle_count);
 			surface_mean_curvature_transfer_host_buffer.resize(particle_count);
@@ -3791,7 +3800,7 @@ struct OasisSimulator {
 			
 			
 			managed_memory.acquire<MemoryType::DEVICE>(
-				&surface_transfer_device_buffer_ptr
+				&output_transfer_device_buffer_ptr
 			);*/
 			
 			#ifdef UPDATE_SURFACE_BEFORE_OUTPUT
@@ -4010,81 +4019,86 @@ struct OasisSimulator {
 			std::cout << "TEST3" << std::endl;
 
 			//Copy particle data to output buffer
-			match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count, &particle_id_mapping_buffer](const auto& particle_buffer) {
-				//partition_block_count; G_PARTICLE_BATCH_CAPACITY
-				cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), particles[i], particle_id_mapping_buffer);
-			});
-
-			cu_dev.syncStream<streamIdx::COMPUTE>();
+			{
+				match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count, &particle_id_mapping_buffer, &output_transfer_device_buffer_ptr](const auto& particle_buffer) {
+					//partition_block_count; G_PARTICLE_BATCH_CAPACITY
+					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), particles[i], particle_id_mapping_buffer, static_cast<float*>(output_transfer_device_buffer_ptr));
+				});
+				
+				cu_dev.syncStream<streamIdx::COMPUTE>();
+				
+				//Copy the data to the output model
+				check_cuda_errors(cudaMemcpyAsync(mass_transfer_host_buffer.data(), output_transfer_device_buffer_ptr, sizeof(float) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
+				
+				//Copy the data to the output model
+				check_cuda_errors(cudaMemcpyAsync(model.data(), static_cast<void*>(&particles[i].val_1d(_0, 0)), sizeof(std::array<float, config::NUM_DIMENSIONS>) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
+				
+				managed_memory.release(particles[i].release());
+			}
+			
 			std::cout << "TEST4" << std::endl;
 			
-			//Copy the data to the output model
-			check_cuda_errors(cudaMemcpyAsync(model.data(), static_cast<void*>(&particles[i].val_1d(_0, 0)), sizeof(std::array<float, config::NUM_DIMENSIONS>) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
-			
-			managed_memory.release(particles[i].release());
-			
-			
 			{
-				match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count, &particle_id_mapping_buffer, &surface_transfer_device_buffer_ptr](const auto& particle_buffer) {
+				match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count, &particle_id_mapping_buffer, &output_transfer_device_buffer_ptr](const auto& particle_buffer) {
 					//partition_block_count; G_PARTICLE_BATCH_CAPACITY
-					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer_surface, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), surface_particle_buffers[i], particle_id_mapping_buffer, static_cast<int*>(surface_transfer_device_buffer_ptr), static_cast<float*>(nullptr), static_cast<float*>(nullptr), static_cast<float*>(nullptr));
+					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer_surface, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), surface_particle_buffers[i], particle_id_mapping_buffer, static_cast<int*>(output_transfer_device_buffer_ptr), static_cast<float*>(nullptr), static_cast<float*>(nullptr), static_cast<float*>(nullptr));
 				});
 				
 				cu_dev.syncStream<streamIdx::COMPUTE>();
 				
 				//Copy the data to the output model
-				check_cuda_errors(cudaMemcpyAsync(surface_point_type_transfer_host_buffer.data(), surface_transfer_device_buffer_ptr, sizeof(int) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
+				check_cuda_errors(cudaMemcpyAsync(surface_point_type_transfer_host_buffer.data(), output_transfer_device_buffer_ptr, sizeof(int) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
 			}
 			
 			{
-				match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count, &particle_id_mapping_buffer, &surface_transfer_device_buffer_ptr](const auto& particle_buffer) {
+				match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count, &particle_id_mapping_buffer, &output_transfer_device_buffer_ptr](const auto& particle_buffer) {
 					//partition_block_count; G_PARTICLE_BATCH_CAPACITY
-					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer_surface, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), surface_particle_buffers[i], particle_id_mapping_buffer, static_cast<int*>(nullptr), static_cast<float*>(surface_transfer_device_buffer_ptr), static_cast<float*>(nullptr), static_cast<float*>(nullptr));
+					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer_surface, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), surface_particle_buffers[i], particle_id_mapping_buffer, static_cast<int*>(nullptr), static_cast<float*>(output_transfer_device_buffer_ptr), static_cast<float*>(nullptr), static_cast<float*>(nullptr));
 				});
 				
 				cu_dev.syncStream<streamIdx::COMPUTE>();
 				
 				//Copy the data to the output model
-				check_cuda_errors(cudaMemcpyAsync(surface_normal_transfer_host_buffer.data(), surface_transfer_device_buffer_ptr, sizeof(std::array<float, config::NUM_DIMENSIONS>) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
+				check_cuda_errors(cudaMemcpyAsync(surface_normal_transfer_host_buffer.data(), output_transfer_device_buffer_ptr, sizeof(std::array<float, config::NUM_DIMENSIONS>) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
 			}
 			
 			{
-				match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count, &particle_id_mapping_buffer, &surface_transfer_device_buffer_ptr](const auto& particle_buffer) {
+				match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count, &particle_id_mapping_buffer, &output_transfer_device_buffer_ptr](const auto& particle_buffer) {
 					//partition_block_count; G_PARTICLE_BATCH_CAPACITY
-					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer_surface, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), surface_particle_buffers[i], particle_id_mapping_buffer, static_cast<int*>(nullptr), static_cast<float*>(nullptr), static_cast<float*>(surface_transfer_device_buffer_ptr), static_cast<float*>(nullptr));
+					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer_surface, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), surface_particle_buffers[i], particle_id_mapping_buffer, static_cast<int*>(nullptr), static_cast<float*>(nullptr), static_cast<float*>(output_transfer_device_buffer_ptr), static_cast<float*>(nullptr));
 				});
 				
 				cu_dev.syncStream<streamIdx::COMPUTE>();
 				
 				//Copy the data to the output model
-				check_cuda_errors(cudaMemcpyAsync(surface_mean_curvature_transfer_host_buffer.data(), surface_transfer_device_buffer_ptr, sizeof(float) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
+				check_cuda_errors(cudaMemcpyAsync(surface_mean_curvature_transfer_host_buffer.data(), output_transfer_device_buffer_ptr, sizeof(float) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
 			}
 			
 			{
-				match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count, &particle_id_mapping_buffer, &surface_transfer_device_buffer_ptr](const auto& particle_buffer) {
+				match(particle_bins[rollid][i])([this, &cu_dev, &i, &d_particle_count, &particle_id_mapping_buffer, &output_transfer_device_buffer_ptr](const auto& particle_buffer) {
 					//partition_block_count; G_PARTICLE_BATCH_CAPACITY
-					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer_surface, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), surface_particle_buffers[i], particle_id_mapping_buffer, static_cast<int*>(nullptr), static_cast<float*>(nullptr), static_cast<float*>(nullptr), static_cast<float*>(surface_transfer_device_buffer_ptr));
+					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer_surface, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), surface_particle_buffers[i], particle_id_mapping_buffer, static_cast<int*>(nullptr), static_cast<float*>(nullptr), static_cast<float*>(nullptr), static_cast<float*>(output_transfer_device_buffer_ptr));
 				});
 				
 				cu_dev.syncStream<streamIdx::COMPUTE>();
 				
 				//Copy the data to the output model
-				check_cuda_errors(cudaMemcpyAsync(surface_gauss_curvature_transfer_host_buffer.data(), surface_transfer_device_buffer_ptr, sizeof(float) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
+				check_cuda_errors(cudaMemcpyAsync(surface_gauss_curvature_transfer_host_buffer.data(), output_transfer_device_buffer_ptr, sizeof(float) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
 			}
 			std::cout << "TEST5" << std::endl;
 			if(surface_flow_id != -1){
-				match(particle_bins[rollid][i])([this, &cu_dev, &surface_flow_id, &i, &d_particle_count, &particle_id_mapping_buffer, &surface_transfer_device_buffer_ptr](const auto& particle_buffer) {
+				match(particle_bins[rollid][i])([this, &cu_dev, &surface_flow_id, &i, &d_particle_count, &particle_id_mapping_buffer, &output_transfer_device_buffer_ptr](const auto& particle_buffer) {
 					//partition_block_count; G_PARTICLE_BATCH_CAPACITY
-					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer_surface_flow, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), surface_flow_particle_buffers[rollid][surface_flow_id], particle_id_mapping_buffer, static_cast<float*>(surface_transfer_device_buffer_ptr));
+					cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, retrieve_particle_buffer_surface_flow, partitions[rollid], partitions[(rollid + 1) % BIN_COUNT], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), surface_flow_particle_buffers[rollid][surface_flow_id], particle_id_mapping_buffer, static_cast<float*>(output_transfer_device_buffer_ptr));
 				});
 				
 				cu_dev.syncStream<streamIdx::COMPUTE>();
 				
 				//Copy the data to the output model
-				check_cuda_errors(cudaMemcpyAsync(surface_flow_mass_transfer_host_buffer.data(), surface_transfer_device_buffer_ptr, sizeof(float) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
+				check_cuda_errors(cudaMemcpyAsync(surface_flow_mass_transfer_host_buffer.data(), output_transfer_device_buffer_ptr, sizeof(float) * (particle_count), cudaMemcpyDefault, cu_dev.stream_compute()));
 			}
 			
-			match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &surface_flow_id, &particle_count, &i, &particle_id_mapping_buffer, &surface_transfer_device_buffer_ptr](auto& particle_buffer) {
+			match(particle_bins[(rollid + 1) % BIN_COUNT][i])([this, &cu_dev, &surface_flow_id, &particle_count, &i, &particle_id_mapping_buffer, &output_transfer_device_buffer_ptr](auto& particle_buffer) {
 				auto& prev_particle_buffer = get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[rollid][i]);
 			
 				managed_memory.release(
@@ -4111,11 +4125,13 @@ struct OasisSimulator {
 			std::string fn = std::string {"model"} + "_id[" + std::to_string(i) + "]_frame[" + std::to_string(cur_frame) + "].bgeo";
 
 			//Write back file
-			IO::insert_job([surface_flow_id, fn, m = model, surface_point_type = surface_point_type_transfer_host_buffer, surface_normal = surface_normal_transfer_host_buffer, surface_mean_curvature = surface_mean_curvature_transfer_host_buffer, surface_gauss_curvature = surface_gauss_curvature_transfer_host_buffer, surface_flow_mass = surface_flow_mass_transfer_host_buffer]() {
+			#if (WRITE_OUT_GEO == 1)
+			IO::insert_job([surface_flow_id, fn, m = model, mass = mass_transfer_host_buffer, surface_point_type = surface_point_type_transfer_host_buffer, surface_normal = surface_normal_transfer_host_buffer, surface_mean_curvature = surface_mean_curvature_transfer_host_buffer, surface_gauss_curvature = surface_gauss_curvature_transfer_host_buffer, surface_flow_mass = surface_flow_mass_transfer_host_buffer]() {
 				Partio::ParticlesDataMutable* parts;
 				begin_write_partio(&parts, m.size());
 				
 				write_partio_add(m, std::string("position"), parts);
+				write_partio_add(mass, std::string("mass"), parts);
 				write_partio_add(surface_point_type, std::string("point_type"), parts);
 				write_partio_add(surface_normal, std::string("N"), parts);
 				write_partio_add(surface_mean_curvature, std::string("mean_curvature"), parts);
@@ -4126,13 +4142,48 @@ struct OasisSimulator {
 
 				end_write_partio(fn, parts);
 			});
+			#endif
+			
+			#if (WRITE_OUT_VDB == 1)
+			std::string fn_vdb = std::string {"volume"} + "_id[" + std::to_string(i) + "]_frame[" + std::to_string(cur_frame) + "].vdb";
+			IO::insert_job([surface_flow_id, fn_vdb, m = model, mass = mass_transfer_host_buffer, surface_point_type = surface_point_type_transfer_host_buffer, surface_normal = surface_normal_transfer_host_buffer, surface_mean_curvature = surface_mean_curvature_transfer_host_buffer, surface_gauss_curvature = surface_gauss_curvature_transfer_host_buffer, surface_flow_mass = surface_flow_mass_transfer_host_buffer]() {
+				openvdb::points::PointDataGrid::Ptr point_grid;
+				openvdb::tools::PointIndexGrid::Ptr point_index_grid;
+				begin_write_vdb(&point_grid, &point_index_grid, m.size(), m);
+				
+				write_vdb_add(mass, std::string("density"), point_grid, point_index_grid);
+				write_vdb_add(surface_point_type, std::string("point_type"), point_grid, point_index_grid);
+				write_vdb_add(surface_normal, std::string("N"), point_grid, point_index_grid);
+				write_vdb_add(surface_mean_curvature, std::string("mean_curvature"), point_grid, point_index_grid);
+				write_vdb_add(surface_gauss_curvature, std::string("gauss_curvature"), point_grid, point_index_grid);
+				if(surface_flow_id != -1){
+					write_vdb_add(surface_flow_mass, std::string("surface_flow_density"), point_grid, point_index_grid);
+				}
+				/*
+				//Create radius and store it. Use existing array
+				//Radius is baed on volume
+				std::transform(std::execution::par_unseq, mass.begin(), mass.end(), mass.begin(), [](const float& mass_val){
+					const float volume = (mass / density) * j;
+					const float radius = pow((4.0f * volume) / (3.0f * M_PI), -3.0f);//volume = 3/4 * pi * r^3
+					return radius;
+				});
+				
+				write_vdb_add(radius, std::string("radius"), point_grid, point_index_grid);
+				
+				*/
+
+				end_write_vdb(fn_vdb, point_grid, point_index_grid, std::string("density"));
+			});
+			#endif
 			
 			#ifdef UPDATE_SURFACE_BEFORE_OUTPUT
+			#if (WRITE_OUT_OBJ == 1)
 			//Write back alpha shapes mesh
 			std::string fn_surface = std::string {"surface"} + "_id[" + std::to_string(i) + "]_frame[" + std::to_string(cur_frame) + "].obj";
 			IO::insert_job([this, fn_surface, i, pos = model, faces = surface_triangle_transfer_host_buffer]() {
 				write_triangle_mesh<float, uint32_t, config::NUM_DIMENSIONS>(fn_surface, pos, faces);
 			});
+			#endif
 			#endif
 		}
 		timer.tock(fmt::format("GPU[{}] frame {} step {} retrieve_particles", gpuid, cur_frame, cur_step));
@@ -4156,14 +4207,17 @@ struct OasisSimulator {
 				, triangle_mesh_transfer_device_buffers[i]
 			);
 
+			#if (WRITE_OUT_OBJ == 1)
 			//Write out initial state to file
 			std::string fn = std::string {"mesh"} + "_id[" + std::to_string(i) + "]_frame[" + std::to_string(cur_frame) + "].obj";
 			IO::insert_job([this, fn, i, pos = triangle_mesh_transfer_host_buffers[i]]() {
 				write_triangle_mesh<float, uint32_t, config::NUM_DIMENSIONS>(fn, pos, triangle_mesh_face_buffers[i]);
 			});
+			#endif
 		}
 		
 		#ifdef OUTPUT_TRIANGLE_SHELL_OUTER_POS
+		#if (WRITE_OUT_OBJ == 1)
 		//Flush IO, so that we can safely reuse our transfer buffer
 		IO::flush();
 		for(int i = 0; i < get_model_count(); ++i) {
@@ -4191,6 +4245,7 @@ struct OasisSimulator {
 				});
 			}
 		}
+		#endif
 		#endif
 		timer.tock(fmt::format("GPU[{}] frame {} step {} retrieve_triangle_mesh", gpuid, cur_frame, cur_step));
 	}

@@ -105,3 +105,4 @@ endif()
 
 # Ginkgo
 find_package(ginkgo REQUIRED)
+find_package(OpenVDB REQUIRED)

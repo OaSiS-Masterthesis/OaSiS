@@ -19,6 +19,15 @@
 //NOLINTNEXTLINE(cppcoreguidelines-macro-usage) Macro usage necessary here for preprocessor if
 #define VERIFY_IQ_MATRIX 1//TODO: Move to another place
 
+//NOLINTNEXTLINE(cppcoreguidelines-macro-usage) Macro usage necessary here for preprocessor if
+#define WRITE_OUT_GEO 1//TODO: Move to another place
+
+//NOLINTNEXTLINE(cppcoreguidelines-macro-usage) Macro usage necessary here for preprocessor if
+#define WRITE_OUT_OBJ 0//TODO: Move to another place
+
+//NOLINTNEXTLINE(cppcoreguidelines-macro-usage) Macro usage necessary here for preprocessor if
+#define WRITE_OUT_VDB 1//TODO: Move to another place
+
 namespace mn {
 
 using ivec3	   = vec<int, 3>;
