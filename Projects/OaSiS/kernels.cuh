@@ -1223,7 +1223,7 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 }
 
 template<typename Partition, typename Grid, MaterialE MaterialType, typename FluidParticleBuffer>
-__global__ void g2p2g(Duration dt, Duration new_dt, bool is_coupled, bool is_coupled_as_fluid, const ParticleBuffer<MaterialType> particle_buffer, ParticleBuffer<MaterialType> next_particle_buffer, const Partition prev_partition, Partition partition, const Grid grid, Grid next_grid, FluidParticleBuffer fluid_particle_buffer) {
+__global__ void g2p2g(Duration dt, Duration new_dt, bool is_coupled, bool is_coupled_as_fluid, const ParticleBuffer<MaterialType> particle_buffer, ParticleBuffer<MaterialType> next_particle_buffer, const Partition prev_partition, Partition partition, const Grid grid, Grid next_grid, unsigned int* prev_particle_id_buffer, unsigned int* particle_id_buffer, FluidParticleBuffer fluid_particle_buffer) {
 	static constexpr uint64_t NUM_VI_PER_BLOCK = static_cast<uint64_t>(config::G_BLOCKVOLUME) * 3;
 	static constexpr uint64_t NUM_VI_IN_ARENA  = NUM_VI_PER_BLOCK << 3;
 
@@ -1331,6 +1331,8 @@ __global__ void g2p2g(Duration dt, Duration new_dt, bool is_coupled, bool is_cou
 		vec3 pos {fetch_particle_buffer_tmp.pos[0], fetch_particle_buffer_tmp.pos[1], fetch_particle_buffer_tmp.pos[2]};
 		float J	 = fetch_particle_buffer_tmp.J;
 		
+		const unsigned int particle_id = prev_particle_id_buffer[particle_buffer.bin_offsets[advection_source_blockno] * config::G_BIN_CAPACITY + source_pidib];
+		
 		//Delete particle with mass 0.0
 		if(mass > 0.0f){
 			//Get position of grid cell
@@ -1406,6 +1408,8 @@ __global__ void g2p2g(Duration dt, Duration new_dt, bool is_coupled, bool is_cou
 			vec9 contrib;
 			calculate_contribution_and_store_particle_data<MaterialType>(particle_buffer, next_particle_buffer, advection_source_blockno, source_pidib, src_blockno, particle_id_in_block, dt, A.data_arr(), contrib.data_arr(), store_particle_buffer_tmp);
 
+			particle_id_buffer[next_particle_buffer.bin_offsets[src_blockno] * config::G_BIN_CAPACITY + particle_id_in_block] = particle_id;
+			
 			//Update momentum?
 			//Multiply A with mass to complete it. Then subtract stress_density * dt?
 			//C * m = A * D^-1
@@ -3182,6 +3186,111 @@ __global__ void check_partition_domain(uint32_t block_count, int did, Domain con
 	}
 }
 
+template<MaterialE MaterialType>
+__forceinline__ __device__ float calculate_volume(const ParticleBuffer<MaterialType> particle_buffer, int advection_source_blockno, int source_pidib);
+
+template<>
+__forceinline__ __device__ float calculate_volume<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer, int advection_source_blockno, int source_pidib) {
+	auto source_particle_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
+	
+	const float mass = source_particle_bin.val(_0, source_pidib % config::G_BIN_CAPACITY);
+	const float J = source_particle_bin.val(_4, source_pidib % config::G_BIN_CAPACITY);
+	
+	return (mass / particle_buffer.rho) * J;
+}
+
+template<>
+__forceinline__ __device__ float calculate_volume<MaterialE::FIXED_COROTATED>(const ParticleBuffer<MaterialE::FIXED_COROTATED> particle_buffer, int advection_source_blockno, int source_pidib) {
+	auto source_particle_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
+	
+	const float mass = source_particle_bin.val(_0, source_pidib % config::G_BIN_CAPACITY);
+	std::array<float, 9> F;
+	F[0] = source_particle_bin.val(_4, source_pidib % config::G_BIN_CAPACITY);
+	F[1] = source_particle_bin.val(_5, source_pidib % config::G_BIN_CAPACITY);
+	F[2] = source_particle_bin.val(_6, source_pidib % config::G_BIN_CAPACITY);
+	F[3] = source_particle_bin.val(_7, source_pidib % config::G_BIN_CAPACITY);
+	F[4] = source_particle_bin.val(_8, source_pidib % config::G_BIN_CAPACITY);
+	F[5] = source_particle_bin.val(_9, source_pidib % config::G_BIN_CAPACITY);
+	F[6] = source_particle_bin.val(_10, source_pidib % config::G_BIN_CAPACITY);
+	F[7] = source_particle_bin.val(_11, source_pidib % config::G_BIN_CAPACITY);
+	F[8] = source_particle_bin.val(_12, source_pidib % config::G_BIN_CAPACITY);
+	
+	const float J = matrix_determinant_3d(F);
+	
+	return (mass / particle_buffer.rho) * J;
+}
+
+template<>
+__forceinline__ __device__ float calculate_volume<MaterialE::SAND>(const ParticleBuffer<MaterialE::SAND> particle_buffer, int advection_source_blockno, int source_pidib) {
+	auto source_particle_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
+	
+	const float mass = source_particle_bin.val(_0, source_pidib % config::G_BIN_CAPACITY);
+	std::array<float, 9> F;
+	F[0] = source_particle_bin.val(_4, source_pidib % config::G_BIN_CAPACITY);
+	F[1] = source_particle_bin.val(_5, source_pidib % config::G_BIN_CAPACITY);
+	F[2] = source_particle_bin.val(_6, source_pidib % config::G_BIN_CAPACITY);
+	F[3] = source_particle_bin.val(_7, source_pidib % config::G_BIN_CAPACITY);
+	F[4] = source_particle_bin.val(_8, source_pidib % config::G_BIN_CAPACITY);
+	F[5] = source_particle_bin.val(_9, source_pidib % config::G_BIN_CAPACITY);
+	F[6] = source_particle_bin.val(_10, source_pidib % config::G_BIN_CAPACITY);
+	F[7] = source_particle_bin.val(_11, source_pidib % config::G_BIN_CAPACITY);
+	F[8] = source_particle_bin.val(_12, source_pidib % config::G_BIN_CAPACITY);
+	
+	const float J = matrix_determinant_3d(F);
+	
+	return (mass / particle_buffer.rho) * J;
+}
+
+template<>
+__forceinline__ __device__ float calculate_volume<MaterialE::NACC>(const ParticleBuffer<MaterialE::NACC> particle_buffer, int advection_source_blockno, int source_pidib) {
+	auto source_particle_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
+	
+	const float mass = source_particle_bin.val(_0, source_pidib % config::G_BIN_CAPACITY);
+	std::array<float, 9> F;
+	F[0] = source_particle_bin.val(_4, source_pidib % config::G_BIN_CAPACITY);
+	F[1] = source_particle_bin.val(_5, source_pidib % config::G_BIN_CAPACITY);
+	F[2] = source_particle_bin.val(_6, source_pidib % config::G_BIN_CAPACITY);
+	F[3] = source_particle_bin.val(_7, source_pidib % config::G_BIN_CAPACITY);
+	F[4] = source_particle_bin.val(_8, source_pidib % config::G_BIN_CAPACITY);
+	F[5] = source_particle_bin.val(_9, source_pidib % config::G_BIN_CAPACITY);
+	F[6] = source_particle_bin.val(_10, source_pidib % config::G_BIN_CAPACITY);
+	F[7] = source_particle_bin.val(_11, source_pidib % config::G_BIN_CAPACITY);
+	F[8] = source_particle_bin.val(_12, source_pidib % config::G_BIN_CAPACITY);
+	
+	const float J = matrix_determinant_3d(F);
+	
+	return (mass / particle_buffer.rho) * J;
+}
+
+template<>
+__forceinline__ __device__ float calculate_volume<MaterialE::FIXED_COROTATED_GHOST>(const ParticleBuffer<MaterialE::FIXED_COROTATED_GHOST> particle_buffer, int advection_source_blockno, int source_pidib) {
+	auto source_particle_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno] + source_pidib / config::G_BIN_CAPACITY);
+	
+	const float mass = source_particle_bin.val(_0, source_pidib % config::G_BIN_CAPACITY);
+	const float J = source_particle_bin.val(_13, source_pidib % config::G_BIN_CAPACITY);
+	
+	return (mass / particle_buffer.rho) * J;
+}
+
+template<MaterialE MaterialType>
+__global__ void init_particle_id_buffer(const ParticleBuffer<MaterialType> particle_buffer, unsigned int* particle_id_buffer, int* parcount){
+	const uint32_t blockno	  = blockIdx.x;
+	const int particle_counts = particle_buffer.particle_bucket_sizes[blockno];
+	
+	//If we have no particles in the bucket return
+	if(particle_counts == 0) {
+		return;
+	}
+	
+	for(int particle_id_in_block = static_cast<int>(threadIdx.x); particle_id_in_block < particle_counts; particle_id_in_block += static_cast<int>(blockDim.x)) {
+		//Calculate particle id in destination buffer
+		const unsigned int		destination_id = atomicAdd(parcount, 1);
+		
+		//Store id in mapping
+		particle_id_buffer[particle_buffer.bin_offsets[blockno] * config::G_BIN_CAPACITY + particle_id_in_block] = destination_id;
+	}
+}
+
 template<typename Partition, typename ParticleBuffer>
 __global__ void generate_particle_id_mapping(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, unsigned int* particle_id_mapping_buffer, int* parcount) {
 	const int particle_counts	= next_particle_buffer.particle_bucket_sizes[blockIdx.x];
@@ -3207,17 +3316,17 @@ __global__ void generate_particle_id_mapping(Partition partition, Partition prev
 		const auto advection_source_blockno_from_partition = prev_partition.query(source_blockid);
 
 		//Calculate particle id in destination buffer
-		const unsigned int		particle_id = atomicAdd(parcount, 1);
+		const unsigned int		destination_id = atomicAdd(parcount, 1);
 		
 		//Store id in mapping
-		particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno_from_partition] * config::G_BIN_CAPACITY + source_pidib] = particle_id;
+		particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno_from_partition] * config::G_BIN_CAPACITY + source_pidib] = destination_id;
 		
-		//printf("ABC0 %d %d %d # %d %d # %u - ", blockid[0], blockid[1], blockid[2], advection_source_blockno_from_partition, source_pidib, particle_id);
+		//printf("ABC0 %d %d %d # %d %d # %u - ", blockid[0], blockid[1], blockid[2], advection_source_blockno_from_partition, source_pidib, destination_id);
 	}
 }
 
 template<typename Partition, typename ParticleBuffer, typename ParticleArray>
-__global__ void retrieve_particle_buffer(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, ParticleArray particle_array, unsigned int* particle_id_mapping_buffer, float* mass) {
+__global__ void retrieve_particle_buffer(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, ParticleArray particle_array, unsigned int* particle_id_mapping_buffer) {
 	const int particle_counts	= next_particle_buffer.particle_bucket_sizes[blockIdx.x];
 	const ivec3 blockid			= partition.active_keys[blockIdx.x];
 	const auto advection_bucket = next_particle_buffer.blockbuckets + blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK;
@@ -3244,21 +3353,17 @@ __global__ void retrieve_particle_buffer(Partition partition, Partition prev_par
 		const auto source_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib / config::G_BIN_CAPACITY);
 		
 		//Fetch particle id in destination buffer
-		const unsigned int particle_id = particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno_from_partition] * config::G_BIN_CAPACITY + source_pidib];
+		const unsigned int destination_id = particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno_from_partition] * config::G_BIN_CAPACITY + source_pidib];
 		
 		//Copy position to destination buffer
-		particle_array.val(_0, particle_id) = source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
-		particle_array.val(_1, particle_id) = source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
-		particle_array.val(_2, particle_id) = source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
-		
-		if(mass != nullptr){
-			mass[particle_id] = source_bin.val(_0, source_pidib % config::G_BIN_CAPACITY);
-		}
+		particle_array.val(_0, destination_id) = source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
+		particle_array.val(_1, destination_id) = source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
+		particle_array.val(_2, destination_id) = source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
 	}
 }
 
 template<typename Partition, typename ParticleBuffer, typename SurfaceParticleBuffer>
-__global__ void retrieve_particle_buffer_surface(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, const SurfaceParticleBuffer surface_particle_buffer, unsigned int* particle_id_mapping_buffer, int* surface_point_type_transfer_device_buffer, float* surface_normal_transfer_device_buffer, float* surface_mean_curvature_transfer_device_buffer, float* surface_gauss_curvature_transfer_device_buffer) {
+__global__ void retrieve_particle_buffer_additional(Partition partition, Partition prev_partition, ParticleBuffer particle_buffer, ParticleBuffer next_particle_buffer, const SurfaceParticleBuffer surface_particle_buffer, unsigned int* particle_id_buffer, unsigned int* particle_id_mapping_buffer, int* surface_point_type_transfer_device_buffer, float* surface_normal_transfer_device_buffer, float* surface_mean_curvature_transfer_device_buffer, float* surface_gauss_curvature_transfer_device_buffer, float* mass_buffer, float* volume_buffer, int* index_buffer) {
 	const int particle_counts	= next_particle_buffer.particle_bucket_sizes[blockIdx.x];
 	const ivec3 blockid			= partition.active_keys[blockIdx.x];
 	const auto advection_bucket = next_particle_buffer.blockbuckets + blockIdx.x * config::G_PARTICLE_NUM_PER_BLOCK;
@@ -3280,26 +3385,38 @@ __global__ void retrieve_particle_buffer_surface(Partition partition, Partition 
 
 		//Get block from partition
 		const auto advection_source_blockno_from_partition = prev_partition.query(source_blockid);
+		
+		//Get bin from particle buffer
+		const auto source_bin = particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib / config::G_BIN_CAPACITY);
 
 		//Get bin from particle buffer
 		const auto surface_source_bin = surface_particle_buffer.ch(_0, particle_buffer.bin_offsets[advection_source_blockno_from_partition] + source_pidib / config::G_BIN_CAPACITY);
 
 		//Fetch particle id in destination buffer
-		const unsigned int particle_id = particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno_from_partition] * config::G_BIN_CAPACITY + source_pidib];
+		const unsigned int destination_id = particle_id_mapping_buffer[particle_buffer.bin_offsets[advection_source_blockno_from_partition] * config::G_BIN_CAPACITY + source_pidib];
 		
 		if(surface_point_type_transfer_device_buffer != nullptr){
-			surface_point_type_transfer_device_buffer[particle_id] = *reinterpret_cast<const int*>(&surface_source_bin.val(_0, source_pidib % config::G_BIN_CAPACITY));
+			surface_point_type_transfer_device_buffer[destination_id] = *reinterpret_cast<const int*>(&surface_source_bin.val(_0, source_pidib % config::G_BIN_CAPACITY));
 		}
 		if(surface_normal_transfer_device_buffer != nullptr){
-			surface_normal_transfer_device_buffer[3 * particle_id] = surface_source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
-			surface_normal_transfer_device_buffer[3 * particle_id + 1] = surface_source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
-			surface_normal_transfer_device_buffer[3 * particle_id + 2] = surface_source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
+			surface_normal_transfer_device_buffer[3 * destination_id] = surface_source_bin.val(_1, source_pidib % config::G_BIN_CAPACITY);
+			surface_normal_transfer_device_buffer[3 * destination_id + 1] = surface_source_bin.val(_2, source_pidib % config::G_BIN_CAPACITY);
+			surface_normal_transfer_device_buffer[3 * destination_id + 2] = surface_source_bin.val(_3, source_pidib % config::G_BIN_CAPACITY);
 		}
 		if(surface_mean_curvature_transfer_device_buffer != nullptr){
-			surface_mean_curvature_transfer_device_buffer[particle_id] = surface_source_bin.val(_4, source_pidib % config::G_BIN_CAPACITY);
+			surface_mean_curvature_transfer_device_buffer[destination_id] = surface_source_bin.val(_4, source_pidib % config::G_BIN_CAPACITY);
 		}
 		if(surface_gauss_curvature_transfer_device_buffer != nullptr){
-			surface_gauss_curvature_transfer_device_buffer[particle_id] = surface_source_bin.val(_5, source_pidib % config::G_BIN_CAPACITY);
+			surface_gauss_curvature_transfer_device_buffer[destination_id] = surface_source_bin.val(_5, source_pidib % config::G_BIN_CAPACITY);
+		}
+		if(mass_buffer != nullptr){
+			mass_buffer[destination_id] = source_bin.val(_0, source_pidib % config::G_BIN_CAPACITY);
+		}
+		if(volume_buffer != nullptr){
+			volume_buffer[destination_id] = calculate_volume(particle_buffer, advection_source_blockno_from_partition, source_pidib);
+		}
+		if(index_buffer != nullptr){
+			index_buffer[destination_id] = particle_id_buffer[particle_buffer.bin_offsets[advection_source_blockno_from_partition] * config::G_BIN_CAPACITY + source_pidib];
 		}
 	}
 }

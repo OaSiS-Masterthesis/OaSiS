@@ -1,0 +1,50 @@
+# - Try to find Ginkgo lib
+#
+# This module supports requiring a minimum version, e.g. you can do
+#   find_package(Ginkgo 3.1.2)
+# to require version 3.1.2 or newer of Ginkgo.
+#
+# Once done this will define
+#
+#  ginkgo_FOUND - system has ginkgo lib with correct version
+#  ginkgo_INCLUDE_DIR - the ginkgo include directory
+#
+# This module reads hints about search locations from 
+# the following enviroment variables:
+#
+# GINKGO_ROOT
+# GINKGO_ROOT_DIR
+
+# Copyright (c) 2006, 2007 Montel Laurent, <montel@kde.org>
+# Copyright (c) 2008, 2009 Gael Guennebaud, <g.gael@free.fr>
+# Copyright (c) 2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+# Redistribution and use is allowed according to the terms of the 2-clause BSD license.
+
+if (ginkgo_INCLUDE_DIR)
+
+  # in cache already
+  set(ginkgo_FOUND)
+
+else (ginkgo_INCLUDE_DIR)
+  
+  # search first if an GinkgoConfig.cmake is available in the system,
+  # if successful this would set ginkgo_INCLUDE_DIR and the rest of
+  # the script will work as usual
+  find_package(ginkgo ${ginkgo_FIND_VERSION} NO_MODULE QUIET)
+
+  if(NOT ginkgo_INCLUDE_DIR)
+    find_path(ginkgo_INCLUDE_DIR NAMES ginkgo.hpp
+        HINTS
+        ENV GINKO_ROOT/include/ginkgo
+        ENV GINKO_ROOT_DIR/include/ginkgo
+        PATHS
+        ${CMAKE_INSTALL_PREFIX}/include
+      )
+  endif(NOT ginkgo_INCLUDE_DIR)
+
+  include(FindPackageHandleStandardArgs)
+  find_package_handle_standard_args(ginkgo DEFAULT_MSG ginkgo_INCLUDE_DIR)
+
+  mark_as_advanced(ginkgo_INCLUDE_DIR)
+
+endif(ginkgo_INCLUDE_DIR)

@@ -105,4 +105,13 @@ endif()
 
 # Ginkgo
 find_package(ginkgo REQUIRED)
+
+#OpenVDB
+set(OPENVDB_USE_STATIC_LIBS ON)
 find_package(OpenVDB REQUIRED)
+
+#VolumeIO
+find_package(volume_io REQUIRED
+	PATHS ${VOLUME_IO_INSTALL_PATH}
+	NO_DEFAULT_PATH
+)

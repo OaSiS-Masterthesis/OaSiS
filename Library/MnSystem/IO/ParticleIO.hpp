@@ -70,6 +70,74 @@ void write_partio_add(const std::vector<std::array<T, dim>>& data, const std::st
 	}
 }
 
+template<typename T, std::size_t dim>
+void write_points(const std::string& filename, const std::vector<std::array<T, dim>>& data, int frame, const std::string& tag = std::string {"position"}) {
+	std::ofstream file_stream;
+	file_stream.open(filename);
+	
+	file_stream << frame << std::endl;
+	
+	file_stream << "VECTOR " << tag << ' ' << dim << " VALUE";
+
+	for(int idx = 0; idx < (int) data.size(); ++idx) {
+		for(int k = 0; k < dim; k++) {
+			file_stream << ' ' << data[idx][k];
+		}
+	}
+	
+	file_stream << std::endl;
+	
+	file_stream.close();
+}
+
+void begin_write_points(std::ofstream** file_stream, const std::string& filename, int frame, const size_t particle_count) {
+	*file_stream = new std::ofstream();
+	(*file_stream)->open(filename);
+	
+	(**file_stream) << frame << std::endl;
+}
+
+void end_write_points(std::ofstream* file_stream) {
+	file_stream->close();
+	
+	delete file_stream;
+}
+
+template<typename T, typename std::enable_if<std::is_floating_point<T>::value, bool>::type = true>
+void write_points_add(const std::vector<T>& data, const std::string& tag, std::ofstream* file_stream){
+	(*file_stream) << "VALUE " << tag;
+	
+	for(int idx = 0; idx < (int) data.size(); ++idx) {
+		(*file_stream) << ' ' << data[idx];
+	}
+	
+	(*file_stream) << std::endl;
+}
+
+template<typename T, typename std::enable_if<std::is_integral<T>::value, bool>::type = true>
+void write_points_add(const std::vector<T>& data, const std::string& tag, std::ofstream* file_stream){
+	(*file_stream) << "INT " << tag;
+
+	for(int idx = 0; idx < (int) data.size(); ++idx) {
+		(*file_stream) << ' ' << data[idx];
+	}
+	
+	(*file_stream) << std::endl;
+}
+
+template<typename T, std::size_t dim, typename std::enable_if<std::is_floating_point<T>::value, bool>::type = true>
+void write_points_add(const std::vector<std::array<T, dim>>& data, const std::string& tag, std::ofstream* file_stream){
+	(*file_stream) << "VECTOR " << tag << ' ' << dim << " VALUE";
+
+	for(int idx = 0; idx < (int) data.size(); ++idx) {
+		for(int k = 0; k < dim; k++) {
+			(*file_stream) << ' ' << data[idx][k];
+		}
+	}
+	
+	(*file_stream) << std::endl;
+}
+
 /// have issues
 auto read_sdf(const std::string& fn, float ppc, float dx, vec<float, 3> offset, vec<float, 3> lengths) {
 	std::vector<std::array<float, 3>> data;

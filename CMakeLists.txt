@@ -17,10 +17,10 @@ set(CMAKE_INCLUDE_SYSTEM_FLAG_CUDA "-isystem ")
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/CMake)
 include(CMake-Utils/setup_cpp.cmake)
 include(CMake-Utils/setup_cuda.cmake)
-include(CMake-Utils/setup_externallibs.cmake)
-
 
 add_subdirectory(Externals)
+
+include(CMake-Utils/setup_externallibs.cmake)
 
 # header only libraries
 include_directories(

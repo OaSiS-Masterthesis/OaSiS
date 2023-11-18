@@ -218,7 +218,7 @@ void parse_scene(const std::string& fn, std::unique_ptr<mn::OasisSimulator>& ben
 								span /=  mn::config::GRID_BLOCK_SPACING_INV;
 							
 								auto positions = mn::read_sdf(model["file"].GetString(), mn::config::MODEL_PPC, mn::config::G_DX, mn::config::G_DOMAIN_SIZE, offset, span);
-								mn::IO::insert_job([&]() {
+								mn::IO::insert_job([&p, positions]() {
 									mn::write_partio<float, mn::config::NUM_DIMENSIONS>(p.stem().string() + ".bgeo", positions);
 								});
 								mn::IO::flush();

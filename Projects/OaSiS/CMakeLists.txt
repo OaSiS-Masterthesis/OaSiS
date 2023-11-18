@@ -13,7 +13,7 @@ if (CUDA_FOUND)
 					rapidjson
 					range-v3
 					Ginkgo::ginkgo
-					OpenVDB::openvdb
+					volume_io
 	)
 
 	#Add headers as system headers
@@ -23,7 +23,6 @@ if (CUDA_FOUND)
 	get_target_property(HEADERS_RAPIDJSON rapidjson INTERFACE_SYSTEM_INCLUDE_DIRECTORIES)
 	get_target_property(HEADERS_RANGE_V3 range-v3 INTERFACE_SYSTEM_INCLUDE_DIRECTORIES)
 	get_target_property(HEADERS_GINKGO Ginkgo::ginkgo INTERFACE_INCLUDE_DIRECTORIES)
-	get_target_property(HEADERS_OPENVDB OpenVDB::openvdb INTERFACE_INCLUDE_DIRECTORIES)
 
 	target_include_directories(oasis
 		SYSTEM
@@ -34,9 +33,13 @@ if (CUDA_FOUND)
 		PRIVATE ${HEADERS_RAPIDJSON}
 		PRIVATE ${HEADERS_RANGE_V3}
 		PRIVATE ${HEADERS_GINKGO}
-		PRIVATE ${HEADERS_OPENVDB}
 	)
-
+	
+	#Install volume_io.dll
+	get_target_property(LIBRARY_VOLUME_IO volume_io IMPORTED_LOCATION)
+	install(FILES
+		${LIBRARY_VOLUME_IO} DESTINATION ${CMAKE_INSTALL_BINDIR}
+	)
 
 	#Copy scene files
 
