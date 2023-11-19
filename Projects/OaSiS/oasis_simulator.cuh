@@ -273,6 +273,12 @@ struct OasisSimulator {
 	
 	std::shared_ptr<gko::solver::Cg<float>::Factory> iq_solver_factory_cg;
 	std::shared_ptr<gko::solver::Gmres<float>::Factory> iq_solver_factory;
+	
+	//Statistics
+	std::map<std::string, std::vector<float>> times_per_step;
+	std::vector<float> max_vels_per_step;
+	std::vector<float> d_ts_per_step;
+	std::vector<int> active_blocks_per_step;
 
 	explicit OasisSimulator(int gpu = 0, Duration dt = DEFAULT_DT, int fps = DEFAULT_FPS, int frames = DEFAULT_FRAMES)
 		: gpuid(gpu)
@@ -907,6 +913,15 @@ struct OasisSimulator {
 		}
 		//NOLINTEND(readability-magic-numbers)
 	}
+	
+	template<typename TimerT>
+	void store_time(const std::string& tag, TimerT& timer){
+		std::map<std::string, std::vector<float>>::iterator iter = times_per_step.find(tag);
+		if(iter == times_per_step.end()){
+			iter = times_per_step.insert(iter, std::make_pair(tag, std::vector<float>()));
+		}
+		iter->second.push_back(timer.elapsed());
+	}
 
 	//NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic) Current c++ version does not yet support std::span
 	void main_loop() {
@@ -974,8 +989,23 @@ struct OasisSimulator {
 		
 		for(cur_frame = 1; cur_frame <= nframes; ++cur_frame) {
 			const Duration next_time = cur_time + seconds_per_frame;
+			
+			//Clear Statistics
+			std::for_each(std::execution::par_unseq, times_per_step.begin(), times_per_step.end(), [](std::map<std::string, std::vector<float>>::value_type& entry){
+				entry.second.clear();
+			});
+			max_vels_per_step.clear();
+			d_ts_per_step.clear();
+			active_blocks_per_step.clear();
+			
 			for(Duration current_step_time = Duration::zero(); current_step_time < seconds_per_frame; current_step_time += dt, cur_time += dt, cur_step++) {
 			//for(Duration current_step_time = Duration::zero(); current_step_time < Duration::zero(); current_step_time += dt, cur_time += dt, cur_step++) {
+				CudaTimer timer_step_device(Cuda::ref_cuda_context(gpuid).stream_compute());
+				CppTimer timer_step_host;
+				
+				timer_step_device.tick();
+				timer_step_host.tick();
+				
 				//Calculate maximum grid velocity and update the grid velocity
 				{
 					auto& cu_dev = Cuda::ref_cuda_context(gpuid);
@@ -1012,6 +1042,7 @@ struct OasisSimulator {
 					cu_dev.syncStream<streamIdx::COMPUTE>();
 
 					timer.tock(fmt::format("GPU[{}] frame {} step {} grid_update_query", gpuid, cur_frame, cur_step));
+					store_time("grid_update", timer);
 				}
 
 				/// host: compute maxvel & next dt
@@ -1028,6 +1059,10 @@ struct OasisSimulator {
 				max_vel = std::sqrt(max_vel);// this is a bug, should insert this line
 				next_dt = compute_dt(max_vel, current_step_time, seconds_per_frame, dt_default);
 				fmt::print(fmt::emphasis::bold, "{} --{}--> {}, defaultDt: {}, max_vel: {}\n", cur_time.count(), next_dt.count(), next_time.count(), dt_default.count(), max_vel);
+				
+				max_vels_per_step.push_back(max_vel);
+				d_ts_per_step.push_back(dt.count());
+				active_blocks_per_step.push_back(partition_block_count);
 				
 				//IQ-Solve!
 				{
@@ -1307,6 +1342,8 @@ struct OasisSimulator {
 					
 					timer.tock(fmt::format("GPU[{}] frame {} step {} surface_reconstruction", gpuid, cur_frame, cur_step));
 					
+					store_time("surface_reconstruction", timer);
+					
 					timer.tick();
 					
 					//All active blocks and neighbours (and a bit more). All neighbours of these blocks do also exist (exterior_block_count with each block having 4 cells being suifficient for a kernel up to 4)
@@ -1483,6 +1520,10 @@ struct OasisSimulator {
 						
 						cu_dev.syncStream<streamIdx::COMPUTE>();
 						
+						CudaTimer timer {cu_dev.stream_compute()};
+					
+						timer.tick();
+						
 						//If we have a surface flow model, let it generate all matrices
 						if(has_surface_flow){
 							match(surface_flow_models[surface_flow_model_id])([this, &coupling_block_count, &solid_id, &fluid_id, &surface_flow_id, &cu_dev](auto& surface_flow_model) {
@@ -1585,6 +1626,9 @@ struct OasisSimulator {
 							
 							cu_dev.syncStream<streamIdx::COMPUTE>();
 						}
+						
+						timer.tock();
+						store_time(std::string("iq_create[") + std::to_string(i) + std::string("]"), timer);
 
 						size_t num_temporary_matrices;
 						if(has_surface_flow){
@@ -1641,6 +1685,8 @@ struct OasisSimulator {
 						
 						//FIXME: Using own matrix_matrix_multiplication cause Ginkgos version (which uses CUDA) fails to produce a symmetric matrix for A * A^T
 						//Create system matric components
+						
+						timer.tick();
 						
 						//If we have a surface flow model, it will generate our system
 						if(has_surface_flow){
@@ -2181,6 +2227,9 @@ struct OasisSimulator {
 						iq_lhs->copy_from(std::move(iq_lhs_permuted->create_submatrix(gko::span::span(0, non_null_rows_count_host), gko::span::span(0, non_null_rows_count_host))));
 						iq_rhs->copy_from(std::move(iq_rhs_permuted->create_submatrix(gko::span::span(0, non_null_rows_count_host), gko::span::span(0, 1))));
 
+						timer.tock();
+						store_time(std::string("iq_matrix_create[") + std::to_string(i) + std::string("]"), timer);
+
 						#if (VERIFY_IQ_MATRIX == 1)
 							//Sort columns
 							std::shared_ptr<gko::matrix::Csr<float, int>> iq_lhs_sorted = gko::share(
@@ -2467,6 +2516,8 @@ struct OasisSimulator {
 						std::cout << std::endl;
 						
 						//IQ-System solve
+						timer.tick();
+						
 						// Create solver
 						const std::chrono::steady_clock::time_point tic_generate_cg = std::chrono::steady_clock::now();
 						ginkgo_executor->synchronize();
@@ -2538,6 +2589,9 @@ struct OasisSimulator {
 							}
 						}
 						
+						timer.tock();
+						store_time(std::string("iq_solve[") + std::to_string(i) + std::string("]"), timer);
+						
 						//Undo permute
 						const std::shared_ptr<const gko::matrix::Dense<float>> iq_result_permuted = gko::share(
 							gko::matrix::Dense<float>::create_const(
@@ -2564,10 +2618,17 @@ struct OasisSimulator {
 						
 						//If we have a surface flow apply mass transfer here before updating velocities
 						if(has_surface_flow){
+							timer.tick();
+							
 							match(surface_flow_models[surface_flow_model_id])([this, &cu_dev, &solid_id, &fluid_id, &surface_flow_id, &iq_result_original, &iq_lhs_parts](auto& surface_flow_model) {
 								surface_flow_model.mass_transfer(managed_memory, particle_bins, partitions, grid_blocks, surface_flow_particle_buffers, rollid, partition_block_count, solid_id, fluid_id, surface_flow_id, ginkgo_executor, exterior_block_count, iq_result_original, gko_identity_values, gko_neg_one_dense, iq_lhs_parts, cu_dev);
 							});
+							
+							timer.tock();
+							store_time(std::string("iq_mass_transfer[") + std::to_string(i) + std::string("]"), timer);
 						}
+						
+						
 						
 						//Calculate delta_v
 						iq_solve_velocity->apply(iq_result_original, iq_solve_velocity_result);
@@ -2706,7 +2767,7 @@ struct OasisSimulator {
 						}
 						*/
 						
-						
+						timer.tick();
 						
 						//If we have a surface flow, apply update step. This may be a noop or just a value copy.
 						if(has_surface_flow){
@@ -2761,10 +2822,15 @@ struct OasisSimulator {
 							});
 							
 							cu_dev.syncStream<streamIdx::COMPUTE>();
+							
+							timer.tock();
+							store_time(std::string("iq_update_after_solve[") + std::to_string(i) + std::string("]"), timer);
 						}
 					}
 					
 					timer.tock(fmt::format("GPU[{}] frame {} step {} IQ solve", gpuid, cur_frame, cur_step));
+					
+					store_time("iq_total", timer);
 				}
 
 				/// g2p2g
@@ -2973,6 +3039,7 @@ struct OasisSimulator {
 					cu_dev.syncStream<streamIdx::COMPUTE>();
 
 					timer.tock(fmt::format("GPU[{}] frame {} step {} g2p2g", gpuid, cur_frame, cur_step));
+					store_time("g2p2g", timer);
 
 					//Resize partition if we increased the size of active blocks
 					//This also deletes current particle buffer meta data.
@@ -3627,6 +3694,11 @@ struct OasisSimulator {
 				
 				rollid = static_cast<char>((rollid + 1) % BIN_COUNT);
 				dt	   = next_dt;
+				
+				timer_step_device.tock();
+				timer_step_host.tock();
+				store_time("total_device", timer_step_device);
+				store_time("total_host", timer_step_host);
 			}
 			IO::flush();
 			output_model();
@@ -3656,6 +3728,7 @@ struct OasisSimulator {
 
 		timer.tick();
 
+		std::vector<int> store_particle_counts(get_model_count());
 		for(int i = 0; i < get_model_count(); ++i) {
 			int surface_flow_id = -1;
 			for(int j = 0; j < surface_flows.size(); ++j) {
@@ -3720,6 +3793,9 @@ struct OasisSimulator {
 				particle_counts[i] = particle_count;
 				particles[i].resize(managed_memory_allocator, sizeof(float) * config::NUM_DIMENSIONS * particle_count);
 			}
+			
+			store_particle_counts[i] = particle_count;
+			
 			//Create/Increase transfer buffers
 			//NOTE: as we use a ReusableAllocator on resize the old buffer is automatically freed
 			surface_transfer_device_buffer = reusable_allocator_surface_transfer.allocate(sizeof(float) * config::NUM_DIMENSIONS * particle_count);
@@ -4265,6 +4341,26 @@ struct OasisSimulator {
 			#endif
 			#endif
 		}
+		#if (WRITE_OUT_STATISTICS == 1)
+		std::string fn_statistics = std::string {"statistics"} + "_frame[" + std::to_string(cur_frame) + "].txt";
+		IO::insert_job([frame = (this->cur_frame - 1), times_per_step = this->times_per_step, max_vels_per_step = this->max_vels_per_step, d_ts_per_step = this->d_ts_per_step, active_blocks_per_step = this->active_blocks_per_step, particle_counts = store_particle_counts, fn_statistics]() {
+			std::ofstream* file_stream;
+			begin_write_points(&file_stream, fn_statistics, frame, 0);
+			
+			write_points_add(particle_counts, std::string("PARTICLE_COUNT"), file_stream);
+			write_points_add(max_vels_per_step, std::string("MAX_VEL"), file_stream);
+			write_points_add(d_ts_per_step, std::string("TIMESTEP"), file_stream);
+			write_points_add(active_blocks_per_step, std::string("ACTIVE_BLOCKS"), file_stream);
+			
+			//Times
+			for(const std::map<std::string, std::vector<float>>::value_type& entry : times_per_step){
+				write_points_add(entry.second, std::string("TIME") + entry.first, file_stream);
+			}
+
+			end_write_points(file_stream);
+		});
+		#endif
+		
 		timer.tock(fmt::format("GPU[{}] frame {} step {} retrieve_particles", gpuid, cur_frame, cur_step));
 		
 		timer.tick();
