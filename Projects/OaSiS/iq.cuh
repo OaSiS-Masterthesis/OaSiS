@@ -756,6 +756,7 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 	
 	__syncthreads();
 	
+	#if (NO_COUPLING == 0)
 	for(int grid_x = -4; grid_x <= 1; ++grid_x){
 		for(int grid_y = -4; grid_y <= 1; ++grid_y){
 			for(int grid_z = -4; grid_z <= 1; ++grid_z){
@@ -821,6 +822,7 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 			}
 		}
 	}
+	#endif
 	
 	__syncthreads();
 	
@@ -971,7 +973,8 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 		}
 	}
 	
-	//Get near fluid particles
+	//Get near solid particles
+	#if (NO_COUPLING == 0)
 	for(int grid_x = -4; grid_x <= 1; ++grid_x){
 		for(int grid_y = -4; grid_y <= 1; ++grid_y){
 			for(int grid_z = -4; grid_z <= 1; ++grid_z){
@@ -1024,8 +1027,9 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 			}
 		}
 	}
-	
+	#endif
 	__syncthreads();
+	
 	
 	const float reduced_mass = mass / static_cast<float>(count_neighbours_shared[particle_id_in_block - particle_offset]);
 	

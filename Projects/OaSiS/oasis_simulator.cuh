@@ -4296,10 +4296,11 @@ struct OasisSimulator {
 				write_vdb_add(mass, std::string("mass"), point_grid, point_index_grid);
 				write_vdb_add(volume, std::string("volume"), point_grid, point_index_grid);
 				write_vdb_add(radius, std::string("radius"), point_grid, point_index_grid);
-				write_vdb_add(surface_point_type, std::string("point_type"), point_grid, point_index_grid);
-				write_vdb_add(surface_normal, std::string("N"), point_grid, point_index_grid);
-				write_vdb_add(surface_mean_curvature, std::string("mean_curvature"), point_grid, point_index_grid);
-				write_vdb_add(surface_gauss_curvature, std::string("gauss_curvature"), point_grid, point_index_grid);
+				//TODO: Reenable outputs if needed
+				//write_vdb_add(surface_point_type, std::string("point_type"), point_grid, point_index_grid);
+				//write_vdb_add(surface_normal, std::string("N"), point_grid, point_index_grid);
+				//write_vdb_add(surface_mean_curvature, std::string("mean_curvature"), point_grid, point_index_grid);
+				//write_vdb_add(surface_gauss_curvature, std::string("gauss_curvature"), point_grid, point_index_grid);
 				if(surface_flow_id != -1){
 					write_vdb_add(surface_flow_mass, std::string("surface_flow_density"), point_grid, point_index_grid);
 				}

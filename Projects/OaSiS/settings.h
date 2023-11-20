@@ -34,6 +34,9 @@
 //NOLINTNEXTLINE(cppcoreguidelines-macro-usage) Macro usage necessary here for preprocessor if
 #define WRITE_OUT_STATISTICS 1//TODO: Move to another place
 
+//NOLINTNEXTLINE(cppcoreguidelines-macro-usage) Macro usage necessary here for preprocessor if
+#define NO_COUPLING 0//TODO: Move to another place
+
 namespace mn {
 
 using ivec3	   = vec<int, 3>;

@@ -1,7 +1,7 @@
 {
 	"simulation": {
 		"gpuid": 0,
-		"fps": 1200,
+		"fps": 48000,
 		"frames": 120,
 		"default_dt": 5e-6
 	},
@@ -14,10 +14,10 @@
 			"rho": 1e3,
 			"bulk_viscosity": 2.47e-3,
 			"gamma": 7.0,
-			"viscosity": 1.0016e-3,
+			"viscosity": 1.0016e-6,
 			"offset": [
-				0.1,
-				0.1,
+				0.2,
+				0.055,
 				0.1
 			],
 			"span": [
@@ -27,7 +27,7 @@
 			],
 			"velocity": [
 				0.0,
-				-1.0,
+				-5.0,
 				0.0
 			]
 		},
@@ -41,7 +41,7 @@
 			"poisson_ratio": 0.4,
 			"offset": [
 				0.2,
-				0.1,
+				0.026,
 				0.1
 			],
 			"span": [
@@ -51,9 +51,16 @@
 			],
 			"velocity": [
 				0.0,
-				-1.0,
+				0.0,
 				0.0
 			]
+		}
+	],
+	"physical_systems": [
+		{
+			"type": "solid-fluid coupling",
+			"solid": 1,
+			"fluid": 0
 		}
 	]
 }

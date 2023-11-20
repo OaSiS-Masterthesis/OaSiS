@@ -2921,6 +2921,7 @@ __global__ void mark_active_particle_blocks(uint32_t block_count, const int* __r
 	//If the particle bucket has particles marke it as active
 	if(particle_bucket_sizes[blockno] > 0) {
 		marks[blockno] = 1;
+		printf("TMP0 %d %d\n", static_cast<int>(blockno), static_cast<int>(block_count));
 	}
 }
 
