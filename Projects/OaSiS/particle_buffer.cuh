@@ -198,15 +198,17 @@ struct ParticleBuffer<MaterialE::J_FLUID> : ParticleBufferImpl<MaterialE::J_FLUI
 	float rho		= config::DENSITY;
 	float volume	= (1.0f / (1u << config::DOMAIN_BITS) / (1u << config::DOMAIN_BITS) / (1u << config::DOMAIN_BITS) / config::MODEL_PPC);
 	float mass		= (config::DENSITY / (1u << config::DOMAIN_BITS) / (1u << config::DOMAIN_BITS) / (1u << config::DOMAIN_BITS) / config::MODEL_PPC);
-	float bulk		= 4e4;//Probably in GPa? Not sure, but GPa seems to work
+	float bulk_viscosity		= 4e4;//Probably in Pa? Not sure, but GPa seems to work
+	float bulk_modulus		= 4e4;//Probably in Pa? Not sure, but GPa seems to work
 	float gamma		= 7.15f;//Penalize large deviations from incompressibility
 	float viscosity = 0.01f;//Probably also in Pa? Not sure, but Pa seems to work
 
-	void update_parameters(float density, float vol, float b, float g, float v) {
+	void update_parameters(float density, float vol, float bv, float bm, float g, float v) {
 		rho		  = density;
 		volume	  = vol;
 		mass	  = volume * density;
-		bulk	  = b;
+		bulk_viscosity	  = bv;
+		bulk_modulus	  = bm;
 		gamma	  = g;
 		viscosity = v;
 	}

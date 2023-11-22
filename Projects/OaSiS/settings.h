@@ -124,6 +124,7 @@ namespace config {
 	constexpr float MARCHING_CUBES_DENSITY_THRESHOLD_FACTOR = 0.75f;
 
 	constexpr float G_GRAVITY = -9.8f;
+	constexpr float G_MACH_NUMBER = 0.1f;
 	
 	constexpr float MAX_ALPHA = config::G_DX * config::G_DX * 0.9f;//FIXME:Set to correct value
 

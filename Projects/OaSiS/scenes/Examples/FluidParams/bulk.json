@@ -1,7 +1,7 @@
 {
 	"simulation": {
 		"gpuid": 0,
-		"fps": 48000,
+		"fps": 120,
 		"frames": 120,
 		"default_dt": 5e-6
 	},
@@ -37,7 +37,7 @@
 			"constitutive": "jfluid",
 			"volume": 7.4505806e-17,
 			"rho": 1e3,
-			"bulk_viscosity": 2.47e-3,
+			"bulk_viscosity": 2.47e-6,
 			"gamma": 7.0,
 			"viscosity": 1.0016e-3,
 			"offset": [
@@ -62,7 +62,7 @@
 			"constitutive": "jfluid",
 			"volume": 7.4505806e-17,
 			"rho": 1e3,
-			"bulk_viscosity": 2.47,
+			"bulk_viscosity": 2.47e-3,
 			"gamma": 7.0,
 			"viscosity": 1.0016e-3,
 			"offset": [
@@ -87,7 +87,7 @@
 			"constitutive": "jfluid",
 			"volume": 7.4505806e-17,
 			"rho": 1e3,
-			"bulk_viscosity": 2.47e3,
+			"bulk_viscosity": 2.47,
 			"gamma": 7.0,
 			"viscosity": 1.0016e-3,
 			"offset": [

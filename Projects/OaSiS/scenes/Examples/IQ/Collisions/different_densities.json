@@ -1,7 +1,7 @@
 {
 	"simulation": {
 		"gpuid": 0,
-		"fps": 120,
+		"fps": 48000,
 		"frames": 120,
 		"default_dt": 5e-6
 	},
@@ -9,14 +9,15 @@
 		{
 			"type": "particle",
 			"file": "two_dragons.sdf",
-			"constitutive": "fixed_corotated_ghost",
+			"constitutive": "jfluid",
 			"volume": 7.4505806e-17,
-			"rho": 1e3,
-			"youngs_modulus": 1e5,
-			"poisson_ratio": 0.004,
+			"rho": 1e2,
+			"bulk_viscosity": 2.47e-3,
+			"gamma": 7.0,
+			"viscosity": 1.0016e-3,
 			"offset": [
 				0.1,
-				0.04,
+				0.055,
 				0.1
 			],
 			"span": [
@@ -35,37 +36,39 @@
 			"file": "two_dragons.sdf",
 			"constitutive": "fixed_corotated_ghost",
 			"volume": 7.4505806e-17,
-			"rho": 1e3,
-			"youngs_modulus": 1e5,
-			"poisson_ratio": 0.04,
-			"offset": [
-				0.2,
-				0.04,
-				0.1
-			],
-			"span": [
-				15.0,
-				15.0,
-				15.0
-			],
-			"velocity": [
-				0.0,
-				-5.0,
-				0.0
-			]
-		},
-		{
-			"type": "particle",
-			"file": "two_dragons.sdf",
-			"constitutive": "fixed_corotated_ghost",
-			"volume": 7.4505806e-17,
-			"rho": 1e3,
+			"rho": 1e6,
 			"youngs_modulus": 1e5,
 			"poisson_ratio": 0.4,
 			"offset": [
 				0.1,
-				0.04,
-				0.2
+				0.026,
+				0.1
+			],
+			"span": [
+				15.0,
+				15.0,
+				15.0
+			],
+			"velocity": [
+				0.0,
+				0.0,
+				0.0
+			]
+		}
+	],
+	{
+			"type": "particle",
+			"file": "two_dragons.sdf",
+			"constitutive": "jfluid",
+			"volume": 7.4505806e-17,
+			"rho": 1e6,
+			"bulk_viscosity": 2.47e-3,
+			"gamma": 7.0,
+			"viscosity": 1.0016e-3,
+			"offset": [
+				0.2,
+				0.055,
+				0.1
 			],
 			"span": [
 				15.0,
@@ -83,13 +86,13 @@
 			"file": "two_dragons.sdf",
 			"constitutive": "fixed_corotated_ghost",
 			"volume": 7.4505806e-17,
-			"rho": 1e3,
+			"rho": 1e2,
 			"youngs_modulus": 1e5,
-			"poisson_ratio": 0.45,
+			"poisson_ratio": 0.4,
 			"offset": [
 				0.2,
-				0.04,
-				0.2
+				0.026,
+				0.1
 			],
 			"span": [
 				15.0,
@@ -98,9 +101,21 @@
 			],
 			"velocity": [
 				0.0,
-				-5.0,
+				0.0,
 				0.0
 			]
+		}
+	],
+	"physical_systems": [
+		{
+			"type": "solid-fluid coupling",
+			"solid": 1,
+			"fluid": 0
+		},
+		{
+			"type": "solid-fluid coupling",
+			"solid": 3,
+			"fluid": 2
 		}
 	]
 }

@@ -162,7 +162,7 @@ __forceinline__ __device__ void store_data_neigbours_surface_flow_coupling<Mater
 }
 
 template<typename Partition, typename Grid, MaterialE MaterialTypeSolid, MaterialE MaterialTypeFluid, typename SurfaceFlowParticleBuffer>
-__forceinline__ __device__ void simple_surface_flow_aggregate_data_solid(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, const SurfaceFlowParticleBuffer surface_flow_particle_buffer, const std::array<float, 3>* __restrict__ position_shared, const float* __restrict__ mass_shared, const float* __restrict__ J_shared, const std::array<float, 3>* __restrict__ normal_shared, const SurfacePointType* __restrict__ point_type_shared, const float* __restrict__ contact_area_shared, const float* __restrict__ mass_surface_flow_shared, const float* __restrict__ J_surface_flow_shared, const std::array<float, 3>* __restrict__ velocity_surface_flow_shared, const int particle_offset, const int current_blockno, const ivec3 current_blockid, const ivec3 block_cellid, const int particle_id_in_block
+__forceinline__ __device__ void simple_surface_flow_aggregate_data_solid(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, const SurfaceFlowParticleBuffer surface_flow_particle_buffer, const float max_vel_fluid, const std::array<float, 3>* __restrict__ position_shared, const float* __restrict__ mass_shared, const float* __restrict__ J_shared, const std::array<float, 3>* __restrict__ normal_shared, const SurfacePointType* __restrict__ point_type_shared, const float* __restrict__ contact_area_shared, const float* __restrict__ mass_surface_flow_shared, const float* __restrict__ J_surface_flow_shared, const std::array<float, 3>* __restrict__ velocity_surface_flow_shared, const int particle_offset, const int current_blockno, const ivec3 current_blockid, const ivec3 block_cellid, const int particle_id_in_block
 , float* __restrict__ scaling_solid, float* __restrict__ pressure_solid_nominator, float* __restrict__ pressure_solid_denominator, float* __restrict__ mass_solid, float* __restrict__ gradient_solid, float* __restrict__ coupling_solid_domain, float* __restrict__ coupling_solid_surface
 , float* __restrict__ coupling_fluid
 , float* __restrict__ velocity_surface, float* __restrict__ scaling_surface, float* __restrict__ pressure_surface_nominator, float* __restrict__ pressure_surface_denominator, float* __restrict__ mass_surface, float* __restrict__ gradient_surface, float* __restrict__ coupling_surface, float* __restrict__ surface_flow_coupling_surface
@@ -415,7 +415,7 @@ __forceinline__ __device__ void simple_surface_flow_aggregate_data_solid(const P
 		
 		iq::store_data_solid(particle_buffer_solid, current_scaling_solid, current_pressure_solid_nominator, current_pressure_solid_denominator, W_pressure, W_velocity, mass, J);
 		if(mass_surface_flow > 0.0f){
-			iq::store_data_fluid(particle_buffer_fluid, current_scaling_surface, current_pressure_surface_nominator, current_pressure_surface_denominator, W_pressure, W_velocity_surface, mass_surface_flow, J_surface_flow);
+			iq::store_data_fluid(particle_buffer_fluid, current_scaling_surface, current_pressure_surface_nominator, current_pressure_surface_denominator, W_pressure, W_velocity_surface, mass_surface_flow, J_surface_flow, max_vel_fluid);
 		}
 	}
 	
@@ -525,7 +525,7 @@ __forceinline__ __device__ void simple_surface_flow_aggregate_data_solid(const P
 }
 
 template<typename Partition, typename Grid, MaterialE MaterialTypeFluid>
-__forceinline__ __device__ void simple_surface_flow_aggregate_data_fluid(const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, const std::array<float, 3>* __restrict__ position_shared, const float* __restrict__ mass_shared, const float* __restrict__ J_shared, const int particle_offset, const int current_blockno, const ivec3 current_blockid, const ivec3 block_cellid, const int particle_id_in_block, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, float* __restrict__ mass_fluid, float* __restrict__ gradient_fluid) {
+__forceinline__ __device__ void simple_surface_flow_aggregate_data_fluid(const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, const float max_vel_fluid, const std::array<float, 3>* __restrict__ position_shared, const float* __restrict__ mass_shared, const float* __restrict__ J_shared, const int particle_offset, const int current_blockno, const ivec3 current_blockid, const ivec3 block_cellid, const int particle_id_in_block, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, float* __restrict__ mass_fluid, float* __restrict__ gradient_fluid) {
 	const vec3 pos {position_shared[particle_id_in_block - particle_offset][0], position_shared[particle_id_in_block - particle_offset][1], position_shared[particle_id_in_block - particle_offset][2]};
 	const float mass = mass_shared[particle_id_in_block - particle_offset];
 	const float J  = J_shared[particle_id_in_block - particle_offset];
@@ -592,7 +592,7 @@ __forceinline__ __device__ void simple_surface_flow_aggregate_data_fluid(const P
 		float* current_pressure_fluid_nominator = &(pressure_fluid_nominator[local_cell_index]);
 		float* current_pressure_fluid_denominator = &(pressure_fluid_denominator[local_cell_index]);
 		
-		iq::store_data_fluid(particle_buffer_fluid, current_scaling_fluid, current_pressure_fluid_nominator, current_pressure_fluid_denominator, W_pressure, W_velocity, mass, J);
+		iq::store_data_fluid(particle_buffer_fluid, current_scaling_fluid, current_pressure_fluid_nominator, current_pressure_fluid_denominator, W_pressure, W_velocity, mass, J, max_vel_fluid);
 	}
 	
 	for(size_t local_cell_index = 0; local_cell_index < iq::get_thread_count<iq::BLOCK_SIZE, (3 * config::G_BLOCKVOLUME + iq::BLOCK_SIZE - 1) / iq::BLOCK_SIZE>(threadIdx.x, 3 * config::G_BLOCKVOLUME); local_cell_index++){
@@ -637,7 +637,7 @@ __forceinline__ __device__ void simple_surface_flow_aggregate_data_fluid(const P
 
 //TODO: Directly store into matrices, notinto local memory
 template<typename Partition, typename Grid, MaterialE MaterialTypeSolid, MaterialE MaterialTypeFluid, typename SurfaceFlowParticleBuffer>
-__global__ void simple_surface_flow_create_iq_system(const uint32_t num_blocks, Duration dt, const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Partition partition, const Grid grid_solid, const Grid grid_fluid, const SurfaceParticleBuffer surface_particle_buffer_solid, const SurfaceParticleBuffer surface_particle_buffer_fluid, const SurfaceFlowParticleBuffer surface_flow_particle_buffer, SimpleSurfaceFlowIQCreatePointers iq_pointers) {
+__global__ void simple_surface_flow_create_iq_system(const uint32_t num_blocks, Duration dt, float max_vel_fluid, const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Partition partition, const Grid grid_solid, const Grid grid_fluid, const SurfaceParticleBuffer surface_particle_buffer_solid, const SurfaceParticleBuffer surface_particle_buffer_fluid, const SurfaceFlowParticleBuffer surface_flow_particle_buffer, SimpleSurfaceFlowIQCreatePointers iq_pointers) {
 	//Particles with offset [-2, 0] can lie within cell (due to storing with interpolation degree 2 wich results in offset of 2); Interolation degree may offset positions so we need [-2, 2] for all interpolation positions in our cell. Then wee also need neighbour positions so we get [-4, 4];
 	constexpr size_t KERNEL_SIZE = 2 * iq::INTERPOLATION_DEGREE_MAX + 5 + 1;//Plus one for both sides being inclusive
 	constexpr size_t KERNEL_OFFSET = iq::INTERPOLATION_DEGREE_MAX + 2;
@@ -829,6 +829,7 @@ __global__ void simple_surface_flow_create_iq_system(const uint32_t num_blocks, 
 								, grid_solid
 								, grid_fluid
 								, surface_flow_particle_buffer
+								, max_vel_fluid
 								, &(position_shared[0])
 								, &(mass_shared[0])
 								, &(J_shared[0])
@@ -911,6 +912,7 @@ __global__ void simple_surface_flow_create_iq_system(const uint32_t num_blocks, 
 								, prev_partition
 								, grid_solid
 								, grid_fluid
+								, max_vel_fluid
 								, &(position_shared[0])
 								, &(mass_shared[0])
 								, &(J_shared[0])

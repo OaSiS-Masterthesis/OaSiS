@@ -1,7 +1,7 @@
 {
 	"simulation": {
 		"gpuid": 0,
-		"fps": 48000,
+		"fps": 120,
 		"frames": 120,
 		"default_dt": 5e-6
 	},
@@ -13,7 +13,8 @@
 			"volume": 7.4505806e-17,
 			"rho": 1e3,
 			"bulk_viscosity": 2.47e-3,
-			"gamma": 1.0,
+			"bulk_modulus": 2.2e9,
+			"gamma": -1.0,
 			"viscosity": 1.0016e-3,
 			"offset": [
 				0.1,
@@ -38,7 +39,8 @@
 			"volume": 7.4505806e-17,
 			"rho": 1e3,
 			"bulk_viscosity": 2.47e-3,
-			"gamma": 5.0,
+			"bulk_modulus": 2.2e9,
+			"gamma": 3.0,
 			"viscosity": 1.0016e-3,
 			"offset": [
 				0.2,
@@ -63,6 +65,7 @@
 			"volume": 7.4505806e-17,
 			"rho": 1e3,
 			"bulk_viscosity": 2.47e-3,
+			"bulk_modulus": 2.2e9,
 			"gamma": 7.0,
 			"viscosity": 1.0016e-3,
 			"offset": [
@@ -88,6 +91,7 @@
 			"volume": 7.4505806e-17,
 			"rho": 1e3,
 			"bulk_viscosity": 2.47e-3,
+			"bulk_modulus": 2.2e9,
 			"gamma": 10.0,
 			"viscosity": 1.0016e-3,
 			"offset": [

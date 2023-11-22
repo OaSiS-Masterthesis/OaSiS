@@ -1,7 +1,7 @@
 {
 	"simulation": {
 		"gpuid": 0,
-		"fps": 120,
+		"fps": 48000,
 		"frames": 120,
 		"default_dt": 5e-6
 	},
@@ -11,9 +11,9 @@
 			"file": "two_dragons.sdf",
 			"constitutive": "fixed_corotated_ghost",
 			"volume": 7.4505806e-17,
-			"rho": 1e3,
-			"youngs_modulus": 1e5,
-			"poisson_ratio": 0.004,
+			"rho": 5e2,
+			"youngs_modulus": 9e3,
+			"poisson_ratio": 0.19,
 			"offset": [
 				0.1,
 				0.04,
@@ -35,9 +35,9 @@
 			"file": "two_dragons.sdf",
 			"constitutive": "fixed_corotated_ghost",
 			"volume": 7.4505806e-17,
-			"rho": 1e3,
-			"youngs_modulus": 1e5,
-			"poisson_ratio": 0.04,
+			"rho": 5.53e2,
+			"youngs_modulus": 1.3e9,
+			"poisson_ratio": 0.3,
 			"offset": [
 				0.2,
 				0.04,
@@ -83,9 +83,9 @@
 			"file": "two_dragons.sdf",
 			"constitutive": "fixed_corotated_ghost",
 			"volume": 7.4505806e-17,
-			"rho": 1e3,
-			"youngs_modulus": 1e5,
-			"poisson_ratio": 0.45,
+			"rho": 1.3e3,
+			"youngs_modulus": 6.9e9,
+			"poisson_ratio": 0.4,
 			"offset": [
 				0.2,
 				0.04,
