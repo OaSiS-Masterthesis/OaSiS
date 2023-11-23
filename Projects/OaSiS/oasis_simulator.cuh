@@ -981,7 +981,9 @@ struct OasisSimulator {
 				}
 			}
 
-			dt = compute_dt(max_vel, Duration::zero(), seconds_per_frame, dt_default);
+			//Pressure travels with speed of sound
+			const float speed_of_sound = max_vel / config::G_MACH_NUMBER;
+			dt = compute_dt((speed_of_sound + max_vel), Duration::zero(), seconds_per_frame, dt_default);
 		}
 
 		fmt::print(fmt::emphasis::bold, "{} --{}--> {}, defaultDt: {}\n", cur_time.count(), dt.count(), seconds_per_frame.count(), dt_default.count());
@@ -1066,7 +1068,9 @@ struct OasisSimulator {
 				}
 
 				max_vel = std::sqrt(max_vel);// this is a bug, should insert this line
-				next_dt = compute_dt(max_vel, current_step_time, seconds_per_frame, dt_default);
+				//Pressure travels with speed of sound
+				const float speed_of_sound = max_vel / config::G_MACH_NUMBER;
+				next_dt = compute_dt((speed_of_sound + max_vel), current_step_time, seconds_per_frame, dt_default);
 				fmt::print(fmt::emphasis::bold, "{} --{}--> {}, defaultDt: {}, max_vel: {}\n", cur_time.count(), next_dt.count(), next_time.count(), dt_default.count(), max_vel);
 				
 				max_vels_per_step.push_back(max_vel);

@@ -967,6 +967,7 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 		*/
 		
 		//Values from ]0; 0.1^-gamma - 1]
+		//TODO: Calc speed of sound on host site as it is also needed for time stepping
 		float tait_parameter = (particle_buffer.rho * data.max_vel * data.max_vel) / ((config::G_MACH_NUMBER * config::G_MACH_NUMBER) * particle_buffer.gamma);
 		float pressure = tait_parameter * (powf(data.J, -particle_buffer.gamma) - 1.0f);
 		//float pressure = (particle_buffer.bulk_viscosity - (2.0f / 3.0f) * particle_buffer.viscosity) * (powf(data.J, -particle_buffer.gamma) - 1.0f);
@@ -1008,6 +1009,7 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 		//Values from ]0; 0.1^-gamma - 1]
 		float tait_parameter = (particle_buffer.rho * data.max_vel * data.max_vel) / ((config::G_MACH_NUMBER * config::G_MACH_NUMBER) * particle_buffer.gamma);
 		float pressure = tait_parameter * (powf(data.J, -particle_buffer.gamma) - 1.0f);
+		//float pressure = (data.max_vel * data.max_vel) / (config::G_MACH_NUMBER * config::G_MACH_NUMBER) * (particle_buffer.rho / data.J);
 		//float pressure = (particle_buffer.bulk_viscosity - (2.0f / 3.0f) * particle_buffer.viscosity) * (powf(data.J, -particle_buffer.gamma) - 1.0f);
 	
 		//Calculating stress density

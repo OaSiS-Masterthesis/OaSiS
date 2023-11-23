@@ -83,7 +83,7 @@ namespace config {
 
 	constexpr float MODEL_PPC	= 8.0f;
 	constexpr float G_MODEL_PPC = MODEL_PPC;
-	constexpr float CFL			= 0.5f;
+	constexpr float CFL			= 0.01f;
 
 	// background_grid
 	constexpr float GRID_BLOCK_SPACING_INV = 10.0f;
