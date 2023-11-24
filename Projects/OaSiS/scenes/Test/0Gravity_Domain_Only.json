@@ -13,6 +13,7 @@
 			"volume": 7.4505806e-9,
 			"rho": 1e3,
 			"bulk_viscosity": 4e4,
+			"bulk_modulus": 2.2e9,
 			"gamma": 7.15,
 			"viscosity": 0.01,
 			"offset": [

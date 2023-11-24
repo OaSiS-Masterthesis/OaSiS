@@ -65,7 +65,7 @@ public:
 		std::array<std::vector<particle_buffer_t>, BIN_COUNT>& particle_bins,
 		std::vector<Partition<1>>& partitions,
 		std::array<std::vector<GridBuffer>, BIN_COUNT>& grid_blocks,
-		std::vector<float>& max_vel_per_model,
+		std::vector<float>& speed_of_sound_per_model,
 		std::vector<SurfaceParticleBuffer>& surface_particle_buffers,
 		std::array<std::vector<SurfaceFlowParticleBuffer>, BIN_COUNT>& surface_flow_particle_buffers,
 		const int rollid,
@@ -141,7 +141,7 @@ public:
 		std::array<std::vector<particle_buffer_t>, BIN_COUNT>& particle_bins,
 		std::vector<Partition<1>>& partitions,
 		std::array<std::vector<GridBuffer>, BIN_COUNT>& grid_blocks,
-		std::vector<float>& max_vel_per_model,
+		std::vector<float>& speed_of_sound_per_model,
 		const int rollid,
 		const int exterior_block_count,
 		const int partition_block_count,
@@ -381,7 +381,7 @@ public:
 		std::array<std::vector<particle_buffer_t>, BIN_COUNT>& particle_bins,
 		std::vector<Partition<1>>& partitions,
 		std::array<std::vector<GridBuffer>, BIN_COUNT>& grid_blocks,
-		std::vector<float>& max_vel_per_model,
+		std::vector<float>& speed_of_sound_per_model,
 		std::vector<SurfaceParticleBuffer>& surface_particle_buffers,
 		std::array<std::vector<SurfaceFlowParticleBuffer>, BIN_COUNT>& surface_flow_particle_buffers,
 		const int rollid,
@@ -439,7 +439,7 @@ public:
 			&particle_bins,
 			&partitions,
 			&grid_blocks,
-			&max_vel_per_model,
+			&speed_of_sound_per_model,
 			&surface_particle_buffers,
 			&surface_flow_particle_buffers,
 			&iq_lhs_scaling_solid_values,
@@ -541,7 +541,7 @@ public:
 			pointers.iq_rhs = iq_rhs_array.get_data();
 			pointers.iq_solve_velocity_result = iq_solve_velocity_result_array.get_data();
 			
-			cu_dev.compute_launch({coupling_block_count, iq::BLOCK_SIZE}, simple_surface_flow_create_iq_system, static_cast<uint32_t>(exterior_block_count), dt, max_vel_per_model[fluid_id], particle_buffer_solid, particle_buffer_fluid, next_particle_buffer_solid, next_particle_buffer_fluid, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], surface_particle_buffers[solid_id], surface_particle_buffers[fluid_id], surface_flow_particle_buffers[rollid][surface_flow_id], pointers);
+			cu_dev.compute_launch({coupling_block_count, iq::BLOCK_SIZE}, simple_surface_flow_create_iq_system, static_cast<uint32_t>(exterior_block_count), dt, speed_of_sound_per_model[fluid_id], particle_buffer_solid, particle_buffer_fluid, next_particle_buffer_solid, next_particle_buffer_fluid, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], surface_particle_buffers[solid_id], surface_particle_buffers[fluid_id], surface_flow_particle_buffers[rollid][surface_flow_id], pointers);
 			
 			managed_memory.release(
 				  particle_buffer_solid.release()
@@ -1159,7 +1159,7 @@ public:
 		std::array<std::vector<particle_buffer_t>, BIN_COUNT>& particle_bins,
 		std::vector<Partition<1>>& partitions,
 		std::array<std::vector<GridBuffer>, BIN_COUNT>& grid_blocks,
-		std::vector<float>& max_vel_per_model,
+		std::vector<float>& speed_of_sound_per_model,
 		const int rollid,
 		const int exterior_block_count,
 		const int partition_block_count,
@@ -1181,7 +1181,7 @@ public:
 			&particle_bins,
 			&partitions,
 			&grid_blocks,
-			&max_vel_per_model,
+			&speed_of_sound_per_model,
 			&iq_solve_velocity_result,
 			&iq_result,
 			&cu_dev
@@ -1210,7 +1210,7 @@ public:
 				, reinterpret_cast<void**>(&next_particle_buffer_fluid.blockbuckets)
 			);
 			
-			cu_dev.compute_launch({partition_block_count, iq::BLOCK_SIZE}, iq::update_velocity_and_strain, max_vel_per_model[fluid_id], particle_buffer_solid, particle_buffer_fluid, get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]), get<typename std::decay_t<decltype(particle_buffer_fluid)>>(particle_bins[(rollid + 1) % BIN_COUNT][fluid_id]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_solve_velocity_result->get_const_values(), iq_solve_velocity_result->get_const_values() + 3 * exterior_block_count * config::G_BLOCKVOLUME, iq_result->get_const_values(), iq_result->get_const_values() + exterior_block_count * config::G_BLOCKVOLUME);
+			cu_dev.compute_launch({partition_block_count, iq::BLOCK_SIZE}, iq::update_velocity_and_strain, speed_of_sound_per_model[fluid_id], particle_buffer_solid, particle_buffer_fluid, get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]), get<typename std::decay_t<decltype(particle_buffer_fluid)>>(particle_bins[(rollid + 1) % BIN_COUNT][fluid_id]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_solve_velocity_result->get_const_values(), iq_solve_velocity_result->get_const_values() + 3 * exterior_block_count * config::G_BLOCKVOLUME, iq_result->get_const_values(), iq_result->get_const_values() + exterior_block_count * config::G_BLOCKVOLUME);
 		
 			managed_memory.release(
 				  particle_buffer_solid.release()

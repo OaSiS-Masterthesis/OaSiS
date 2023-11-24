@@ -8,12 +8,14 @@
 	"models": [
 		{
 			"type": "particle",
-			"file": "two_dragons.sdf",
+			"file": "cube.sdf",
+			"scaleByDx": true,
 			"constitutive": "jfluid",
 			"volume": 7.4505806e-17,
 			"rho": 1.11e3,
 			"bulk_viscosity": 2,
-			"gamma": 2.0,
+			"bulk_modulus": 2.2e9,
+			"gamma": 1.225,
 			"viscosity": 2,
 			"offset": [
 				0.1,
@@ -33,12 +35,14 @@
 		},
 		{
 			"type": "particle",
-			"file": "two_dragons.sdf",
+			"file": "cube.sdf",
+			"scaleByDx": true,
 			"constitutive": "jfluid",
 			"volume": 7.4505806e-17,
 			"rho": 1.33e3,
 			"bulk_viscosity": 0.08,
-			"gamma": 2.0,
+			"bulk_modulus": 2.2e9,
+			"gamma": 3.5,
 			"viscosity": 0.08,
 			"offset": [
 				0.2,
@@ -58,12 +62,14 @@
 		},
 		{
 			"type": "particle",
-			"file": "two_dragons.sdf",
+			"file": "cube.sdf",
+			"scaleByDx": true,
 			"constitutive": "jfluid",
 			"volume": 7.4505806e-17,
 			"rho": 1e3,
 			"bulk_viscosity": 2.47e-3,
-			"gamma": 2.0,
+			"bulk_modulus": 2.2e9,
+			"gamma": 7.0,
 			"viscosity": 1.0016e-3,
 			"offset": [
 				0.1,
@@ -83,12 +89,14 @@
 		},
 		{
 			"type": "particle",
-			"file": "two_dragons.sdf",
+			"file": "cube.sdf",
+			"scaleByDx": true,
 			"constitutive": "jfluid",
 			"volume": 7.4505806e-17,
 			"rho": 12.51e3,
 			"bulk_viscosity": 3.3e-2,
-			"gamma": 2.0,
+			"bulk_modulus": 2.2e9,
+			"gamma": 1.2,
 			"viscosity": 3.3e-2,
 			"offset": [
 				0.2,

@@ -914,7 +914,7 @@ struct CalculateContributionAndStoreParticleDataIntermediate {
 	std::array<float, 3> pos;
 	float J;
 	bool is_coupled;
-	float max_vel;
+	float speed_of_sound;
 };
 
 template<MaterialE MaterialType>
@@ -939,8 +939,29 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 #else
 	(void)nullptr;//Nothing
 #endif
+		/*{
+			float voln	   = data.J * (data.mass / particle_buffer.rho);
+			
+			//NOTE: See also: https://en.wikipedia.org/wiki/Viscous_stress_tensor
+			//NOTE: Stress of incompressible Navier-Stokes flow
+			//(viscose_stress) * volume = (2 * viscosity * strain_rate_tensor) * volume; strain_rate_tensor = 0.5 * (A * (4 / dx^2)) * (A * (4 / dx^2))^T
+			{
+				contrib[0] = ((A[0] + A[0]) * config::G_D_INV * particle_buffer.viscosity) * voln;
+				contrib[1] = (A[1] + A[3]) * config::G_D_INV * particle_buffer.viscosity * voln;
+				contrib[2] = (A[2] + A[6]) * config::G_D_INV * particle_buffer.viscosity * voln;
+
+				contrib[3] = (A[3] + A[1]) * config::G_D_INV * particle_buffer.viscosity * voln;
+				contrib[4] = ((A[4] + A[4]) * config::G_D_INV * particle_buffer.viscosity) * voln;
+				contrib[5] = (A[5] + A[7]) * config::G_D_INV * particle_buffer.viscosity * voln;
+
+				contrib[6] = (A[6] + A[2]) * config::G_D_INV * particle_buffer.viscosity * voln;
+				contrib[7] = (A[7] + A[5]) * config::G_D_INV * particle_buffer.viscosity * voln;
+				contrib[8] = ((A[8] + A[8]) * config::G_D_INV * particle_buffer.viscosity) * voln;
+			}
+		}*/
+
 		/*
-		float tait_parameter = (particle_buffer.rho * data.max_vel * data.max_vel) / ((config::G_MACH_NUMBER * config::G_MACH_NUMBER) * particle_buffer.gamma);
+		float tait_parameter = (particle_buffer.rho * data.speed_of_sound * data.speed_of_sound) / (particle_buffer.gamma);
 		float pressure = tait_parameter * (data.J - 1.0f);
 		//float pressure = (particle_buffer.bulk_viscosity - (2.0f / 3.0f) * particle_buffer.viscosity) * (data.J - 1.0f);
 		
@@ -966,9 +987,10 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 		}
 		*/
 		
+		
 		//Values from ]0; 0.1^-gamma - 1]
 		//TODO: Calc speed of sound on host site as it is also needed for time stepping
-		float tait_parameter = (particle_buffer.rho * data.max_vel * data.max_vel) / ((config::G_MACH_NUMBER * config::G_MACH_NUMBER) * particle_buffer.gamma);
+		float tait_parameter = (particle_buffer.rho * data.speed_of_sound * data.speed_of_sound) / (particle_buffer.gamma);
 		float pressure = tait_parameter * (powf(data.J, -particle_buffer.gamma) - 1.0f);
 		//float pressure = (particle_buffer.bulk_viscosity - (2.0f / 3.0f) * particle_buffer.viscosity) * (powf(data.J, -particle_buffer.gamma) - 1.0f);
 	
@@ -1007,9 +1029,9 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 		
 		//Tait equation
 		//Values from ]0; 0.1^-gamma - 1]
-		float tait_parameter = (particle_buffer.rho * data.max_vel * data.max_vel) / ((config::G_MACH_NUMBER * config::G_MACH_NUMBER) * particle_buffer.gamma);
+		float tait_parameter = (particle_buffer.rho * data.speed_of_sound * data.speed_of_sound) / (particle_buffer.gamma);
 		float pressure = tait_parameter * (powf(data.J, -particle_buffer.gamma) - 1.0f);
-		//float pressure = (data.max_vel * data.max_vel) / (config::G_MACH_NUMBER * config::G_MACH_NUMBER) * (particle_buffer.rho / data.J);
+		//float pressure = (data.speed_of_sound * data.speed_of_sound) * (particle_buffer.rho / data.J);
 		//float pressure = (particle_buffer.bulk_viscosity - (2.0f / 3.0f) * particle_buffer.viscosity) * (powf(data.J, -particle_buffer.gamma) - 1.0f);
 	
 		//Calculating stress density
@@ -1233,7 +1255,7 @@ __forceinline__ __device__ void calculate_contribution_and_store_particle_data<M
 }
 
 template<typename Partition, typename Grid, MaterialE MaterialType, typename FluidParticleBuffer>
-__global__ void g2p2g(Duration dt, Duration new_dt, bool is_coupled, bool is_coupled_as_fluid, float max_vel, const ParticleBuffer<MaterialType> particle_buffer, ParticleBuffer<MaterialType> next_particle_buffer, const Partition prev_partition, Partition partition, const Grid grid, Grid next_grid, unsigned int* prev_particle_id_buffer, unsigned int* particle_id_buffer, FluidParticleBuffer fluid_particle_buffer) {
+__global__ void g2p2g(Duration dt, Duration new_dt, bool is_coupled, bool is_coupled_as_fluid, float speed_of_sound, const ParticleBuffer<MaterialType> particle_buffer, ParticleBuffer<MaterialType> next_particle_buffer, const Partition prev_partition, Partition partition, const Grid grid, Grid next_grid, unsigned int* prev_particle_id_buffer, unsigned int* particle_id_buffer, FluidParticleBuffer fluid_particle_buffer) {
 	static constexpr uint64_t NUM_VI_PER_BLOCK = static_cast<uint64_t>(config::G_BLOCKVOLUME) * 3;
 	static constexpr uint64_t NUM_VI_IN_ARENA  = NUM_VI_PER_BLOCK << 3;
 
@@ -1414,7 +1436,7 @@ __global__ void g2p2g(Duration dt, Duration new_dt, bool is_coupled, bool is_cou
 			store_particle_buffer_tmp.pos													= pos.data_arr();
 			store_particle_buffer_tmp.J														= J;
 			store_particle_buffer_tmp.is_coupled														= is_coupled;
-			store_particle_buffer_tmp.max_vel														= max_vel;
+			store_particle_buffer_tmp.speed_of_sound														= speed_of_sound;
 
 			vec9 contrib;
 			calculate_contribution_and_store_particle_data<MaterialType>(particle_buffer, next_particle_buffer, advection_source_blockno, source_pidib, src_blockno, particle_id_in_block, dt, A.data_arr(), contrib.data_arr(), store_particle_buffer_tmp);
@@ -2103,7 +2125,7 @@ struct CalculateContributionIntermediate {
 	std::array<float, 9> deformation_gradient;
 	float log_jp;
 	bool is_coupled;
-	float max_vel;
+	float speed_of_sound;
 };
 
 template<MaterialE MaterialType>
@@ -2140,7 +2162,7 @@ __forceinline__ __device__ void calculate_contribution<MaterialE::J_FLUID>(const
 		}
 		
 		//Values from ]0; 0.1^-gamma - 1]
-		float tait_parameter = (particle_buffer.rho * data.max_vel * data.max_vel) / ((config::G_MACH_NUMBER * config::G_MACH_NUMBER) * particle_buffer.gamma);
+		float tait_parameter = (particle_buffer.rho * data.speed_of_sound * data.speed_of_sound) / (particle_buffer.gamma);
 		pressure = tait_parameter * (powf(data.J, -particle_buffer.gamma) - 1.0f);
 		//pressure = (particle_buffer.bulk_viscosity - (2.0f / 3.0f) * particle_buffer.viscosity) * (powf(data.J, -particle_buffer.gamma) - 1.0f);
 	}
@@ -2625,7 +2647,7 @@ __forceinline__ __device__ float spawn_new_particles(ParticleBuffer<MaterialType
 }
 
 template<typename Partition, typename Grid, MaterialE MaterialType>
-__global__ void shell_to_grid(Duration dt, Duration new_dt, bool is_coupled, float max_vel, int partition_block_count, const ParticleBuffer<MaterialType> particle_buffer, ParticleBuffer<MaterialType> next_particle_buffer, TriangleMesh triangle_mesh, TriangleShell prev_triangle_shell, TriangleShell triangle_shell, TriangleShellParticleBuffer triangle_shell_particle_buffer, Partition partition, Grid next_grid) {
+__global__ void shell_to_grid(Duration dt, Duration new_dt, bool is_coupled, float speed_of_sound, int partition_block_count, const ParticleBuffer<MaterialType> particle_buffer, ParticleBuffer<MaterialType> next_particle_buffer, TriangleMesh triangle_mesh, TriangleShell prev_triangle_shell, TriangleShell triangle_shell, TriangleShellParticleBuffer triangle_shell_particle_buffer, Partition partition, Grid next_grid) {
 	static constexpr uint64_t NUM_M_VI_PER_BLOCK = static_cast<uint64_t>(config::G_BLOCKVOLUME) * 4;
 	static constexpr uint64_t NUM_M_VI_IN_ARENA	 = NUM_M_VI_PER_BLOCK << 3;
 
@@ -2786,7 +2808,7 @@ __global__ void shell_to_grid(Duration dt, Duration new_dt, bool is_coupled, flo
 		calculate_contribution_tmp.mass = mass_outer;
 		calculate_contribution_tmp.pos													= extrapolated_pos.data_arr();
 		calculate_contribution_tmp.is_coupled = is_coupled;
-		calculate_contribution_tmp.max_vel = max_vel;
+		calculate_contribution_tmp.speed_of_sound = speed_of_sound;
 		
 		
 		

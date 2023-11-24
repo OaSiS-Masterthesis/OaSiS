@@ -205,6 +205,7 @@ struct OasisSimulator {
 	std::vector<std::size_t> checked_bin_counts		  = {};
 	float max_vels;
 	std::vector<float> max_vel_per_model = {};
+	std::vector<float> speed_of_sound_per_model = {};
 	int partition_block_count;
 	int neighbor_block_count;
 	int total_neighbor_block_count;
@@ -707,6 +708,7 @@ struct OasisSimulator {
 		bincount.emplace_back(0);
 		checked_bin_counts.emplace_back(0);
 		max_vel_per_model.emplace_back(0.0f);
+		speed_of_sound_per_model.emplace_back(std::numeric_limits<float>::lowest());
 		
 		//Create triangle_shell_grid
 		for(int copyid = 0; copyid < BIN_COUNT; copyid++) {
@@ -834,7 +836,7 @@ struct OasisSimulator {
 		);
 	}
 
-	void update_j_fluid_parameters(float rho, float vol, float bulk_viscosity, float bulk_modulus, float gamma, float viscosity) {
+	void update_j_fluid_parameters(float rho, float vol, float bulk_viscosity, float bulk_modulus, float gamma, float viscosity, float speed_of_sound) {
 		match(particle_bins[0].back())(
 			[&](auto& particle_buffer) {},
 			[&](ParticleBuffer<MaterialE::J_FLUID>& particle_buffer) {
@@ -847,6 +849,8 @@ struct OasisSimulator {
 				particle_buffer.update_parameters(rho, vol, bulk_viscosity, bulk_modulus, gamma, viscosity);
 			}
 		);
+		
+		speed_of_sound_per_model.back() = speed_of_sound;
 	}
 
 	void update_nacc_parameters(float rho, float vol, float ym, float pr, float beta, float xi) {
@@ -979,10 +983,14 @@ struct OasisSimulator {
 				if(vel_norm > max_vel) {
 					max_vel = vel_norm;
 				}
+				max_vel_per_model[i] = vel_norm;
 			}
 
 			//Pressure travels with speed of sound
-			const float speed_of_sound = max_vel / config::G_MACH_NUMBER;
+			float speed_of_sound = 0.0f;
+			for(int i = 0; i < get_model_count(); ++i) {
+				speed_of_sound = std::max(speed_of_sound, (speed_of_sound_per_model[i] != std::numeric_limits<float>::lowest() ? speed_of_sound_per_model[i] : max_vel_per_model[i] / config::G_MACH_NUMBER));
+			}
 			dt = compute_dt((speed_of_sound + max_vel), Duration::zero(), seconds_per_frame, dt_default);
 		}
 
@@ -1069,7 +1077,10 @@ struct OasisSimulator {
 
 				max_vel = std::sqrt(max_vel);// this is a bug, should insert this line
 				//Pressure travels with speed of sound
-				const float speed_of_sound = max_vel / config::G_MACH_NUMBER;
+				float speed_of_sound = 0.0f;
+				for(int i = 0; i < get_model_count(); ++i) {
+					speed_of_sound = std::max(speed_of_sound, (speed_of_sound_per_model[i] != std::numeric_limits<float>::lowest() ? speed_of_sound_per_model[i] : max_vel_per_model[i] / config::G_MACH_NUMBER));
+				}
 				next_dt = compute_dt((speed_of_sound + max_vel), current_step_time, seconds_per_frame, dt_default);
 				fmt::print(fmt::emphasis::bold, "{} --{}--> {}, defaultDt: {}, max_vel: {}\n", cur_time.count(), next_dt.count(), next_time.count(), dt_default.count(), max_vel);
 				
@@ -1543,7 +1554,7 @@ struct OasisSimulator {
 						//If we have a surface flow model, let it generate all matrices
 						if(has_surface_flow){
 							match(surface_flow_models[surface_flow_model_id])([this, &coupling_block_count, &solid_id, &fluid_id, &surface_flow_id, &cu_dev](auto& surface_flow_model) {
-								surface_flow_model.fill_matrices(managed_memory, particle_bins, partitions, grid_blocks, max_vel_per_model, surface_particle_buffers, surface_flow_particle_buffers, rollid, dt, exterior_block_count, coupling_block_count, solid_id, fluid_id, surface_flow_id, iq_lhs_scaling_solid_values, iq_lhs_scaling_fluid_values, iq_lhs_mass_solid_values, iq_lhs_mass_fluid_values, iq_lhs_3_1_rows, iq_lhs_3_1_columns, iq_lhs_gradient_solid_values, iq_lhs_gradient_fluid_values, iq_lhs_coupling_solid_values, iq_lhs_coupling_fluid_values, iq_rhs_array, iq_solve_velocity_result_array, cu_dev);
+								surface_flow_model.fill_matrices(managed_memory, particle_bins, partitions, grid_blocks, speed_of_sound_per_model, surface_particle_buffers, surface_flow_particle_buffers, rollid, dt, exterior_block_count, coupling_block_count, solid_id, fluid_id, surface_flow_id, iq_lhs_scaling_solid_values, iq_lhs_scaling_fluid_values, iq_lhs_mass_solid_values, iq_lhs_mass_fluid_values, iq_lhs_3_1_rows, iq_lhs_3_1_columns, iq_lhs_gradient_solid_values, iq_lhs_gradient_fluid_values, iq_lhs_coupling_solid_values, iq_lhs_coupling_fluid_values, iq_rhs_array, iq_solve_velocity_result_array, cu_dev);
 							});
 						}else{
 							//IQ-System create
@@ -1619,7 +1630,7 @@ struct OasisSimulator {
 								pointers.iq_rhs = iq_rhs_array.get_data();
 								pointers.iq_solve_velocity_result = iq_solve_velocity_result_array.get_data();
 								
-								cu_dev.compute_launch({coupling_block_count, iq::BLOCK_SIZE}, iq::create_iq_system, static_cast<uint32_t>(exterior_block_count), dt, max_vel_per_model[fluid_id], particle_buffer_solid, particle_buffer_fluid, next_particle_buffer_solid, next_particle_buffer_fluid, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_fluid_particle_buffers[i], surface_particle_buffers[solid_id], surface_particle_buffers[fluid_id], pointers);
+								cu_dev.compute_launch({coupling_block_count, iq::BLOCK_SIZE}, iq::create_iq_system, static_cast<uint32_t>(exterior_block_count), dt, speed_of_sound_per_model[fluid_id], particle_buffer_solid, particle_buffer_fluid, next_particle_buffer_solid, next_particle_buffer_fluid, partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_fluid_particle_buffers[i], surface_particle_buffers[solid_id], surface_particle_buffers[fluid_id], pointers);
 								
 								managed_memory.release(
 									  particle_buffer_solid.release()
@@ -2788,7 +2799,7 @@ struct OasisSimulator {
 						//If we have a surface flow, apply update step. This may be a noop or just a value copy.
 						if(has_surface_flow){
 							match(surface_flow_models[surface_flow_model_id])([this, &solid_id, &fluid_id, &iq_solve_velocity_result, &iq_result_original, &cu_dev](auto& surface_flow_model) {
-								surface_flow_model.update_after_solve(managed_memory, particle_bins, partitions, grid_blocks, max_vel_per_model, rollid, exterior_block_count, partition_block_count, solid_id, fluid_id, iq_solve_velocity_result, iq_result_original, cu_dev);
+								surface_flow_model.update_after_solve(managed_memory, particle_bins, partitions, grid_blocks, speed_of_sound_per_model, rollid, exterior_block_count, partition_block_count, solid_id, fluid_id, iq_solve_velocity_result, iq_result_original, cu_dev);
 							});
 						}else{
 							//Update velocity and ghost matrix strain
@@ -2819,7 +2830,7 @@ struct OasisSimulator {
 									, reinterpret_cast<void**>(&next_particle_buffer_fluid.blockbuckets)
 								);
 								
-								cu_dev.compute_launch({partition_block_count, iq::BLOCK_SIZE}, iq::update_velocity_and_strain, max_vel_per_model[fluid_id], particle_buffer_solid, particle_buffer_fluid, get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]), get<typename std::decay_t<decltype(particle_buffer_fluid)>>(particle_bins[(rollid + 1) % BIN_COUNT][fluid_id]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_solve_velocity_result->get_const_values(), iq_solve_velocity_result->get_const_values() + 3 * exterior_block_count * config::G_BLOCKVOLUME, iq_result_original->get_const_values(), iq_result_original->get_const_values() + exterior_block_count * config::G_BLOCKVOLUME);
+								cu_dev.compute_launch({partition_block_count, iq::BLOCK_SIZE}, iq::update_velocity_and_strain, speed_of_sound_per_model[fluid_id], particle_buffer_solid, particle_buffer_fluid, get<typename std::decay_t<decltype(particle_buffer_solid)>>(particle_bins[(rollid + 1) % BIN_COUNT][solid_id]), get<typename std::decay_t<decltype(particle_buffer_fluid)>>(particle_bins[(rollid + 1) % BIN_COUNT][fluid_id]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][solid_id], grid_blocks[0][fluid_id], iq_solve_velocity_result->get_const_values(), iq_solve_velocity_result->get_const_values() + 3 * exterior_block_count * config::G_BLOCKVOLUME, iq_result_original->get_const_values(), iq_result_original->get_const_values() + exterior_block_count * config::G_BLOCKVOLUME);
 							
 								managed_memory.release(
 									  particle_buffer_solid.release()
@@ -2965,7 +2976,7 @@ struct OasisSimulator {
 						//Perform g2p2g
 						match(particle_bins[rollid][i])([this, &cu_dev, &i, &is_coupled, &is_coupled_as_fluid, &coupling_index, &prev_particle_id_buffer, &particle_id_buffer](const auto& particle_buffer) {
 							//partition_block_count; G_PARTICLE_BATCH_CAPACITY
-							cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, g2p2g, dt, next_dt, is_coupled, is_coupled_as_fluid, max_vel_per_model[i], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], grid_blocks[1][i], prev_particle_id_buffer, particle_id_buffer, (is_coupled ? iq_fluid_particle_buffers[coupling_index] : empty_iq_fluid_particle_buffer));
+							cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, g2p2g, dt, next_dt, is_coupled, is_coupled_as_fluid, speed_of_sound_per_model[i], particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), partitions[(rollid + 1) % BIN_COUNT], partitions[rollid], grid_blocks[0][i], grid_blocks[1][i], prev_particle_id_buffer, particle_id_buffer, (is_coupled ? iq_fluid_particle_buffers[coupling_index] : empty_iq_fluid_particle_buffer));
 						});
 						
 						cu_dev.syncStream<streamIdx::COMPUTE>();
@@ -3242,7 +3253,7 @@ struct OasisSimulator {
 								);
 								
 								//partition_block_count; G_PARTICLE_BATCH_CAPACITY
-								cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, shell_to_grid, dt, next_dt, is_coupled, max_vel_per_model[i], partition_block_count, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), triangle_meshes[i], triangle_shells[rollid][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer, partitions[rollid], grid_blocks[1][i]);
+								cu_dev.compute_launch({partition_block_count, config::G_PARTICLE_BATCH_CAPACITY}, shell_to_grid, dt, next_dt, is_coupled, speed_of_sound_per_model[i], partition_block_count, particle_buffer, get<typename std::decay_t<decltype(particle_buffer)>>(particle_bins[(rollid + 1) % BIN_COUNT][i]), triangle_meshes[i], triangle_shells[rollid][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j], triangle_shells[(rollid + 1) % BIN_COUNT][i][j].particle_buffer, partitions[rollid], grid_blocks[1][i]);
 							
 								managed_memory.release(
 									 particle_buffer.release()

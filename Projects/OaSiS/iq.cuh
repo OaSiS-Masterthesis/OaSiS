@@ -388,7 +388,7 @@ template<MaterialE MaterialTypeSolid>
 __forceinline__ __device__ void store_data_neigbours_coupling_solid(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, float* __restrict__ coupling_solid, const float W_velocity, const float W1_pressure, const float contact_area, const float normal);
 
 template<MaterialE MaterialTypeFluid>
-__forceinline__ __device__ void store_data_fluid(const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, const float W_pressure, const float W_velocity, const float mass, const float J, const float max_vel);
+__forceinline__ __device__ void store_data_fluid(const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, const float W_pressure, const float W_velocity, const float mass, const float J, const float speed_of_sound);
 
 template<MaterialE MaterialTypeFluid>
 __forceinline__ __device__ void store_data_neigbours_fluid(const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, float* __restrict__ gradient_fluid, float* __restrict__ boundary_fluid, const float W1_pressure, const float delta_W_velocity, const float mass);
@@ -478,9 +478,9 @@ __forceinline__ __device__ void store_data_neigbours_coupling_solid<MaterialE::F
 }
 
 template<>
-__forceinline__ __device__ void store_data_fluid<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer_fluid, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, const float W_pressure, const float W_velocity, const float mass, const float J, const float max_vel){			
+__forceinline__ __device__ void store_data_fluid<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer_fluid, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, const float W_pressure, const float W_velocity, const float mass, const float J, const float speed_of_sound){			
 	//const float volume_0 = (mass / particle_buffer_fluid.rho);
-	//float tait_parameter = (particle_buffer.rho * max_vel * max_vel) / ((config::G_MACH_NUMBER * config::G_MACH_NUMBER) * particle_buffer.gamma);
+	//float tait_parameter = (particle_buffer.rho * speed_of_sound * speed_of_sound) / (particle_buffer.gamma);
 	//const float lambda = tait_parameter;
 	//const float lambda = (particle_buffer_fluid.bulk_viscosity - (2.0f / 3.0f) * particle_buffer_fluid.viscosity);
 	//const float pressure = lambda * (powf(J, -particle_buffer_fluid.gamma) - 1.0f);
@@ -497,22 +497,22 @@ __forceinline__ __device__ void store_data_fluid<MaterialE::J_FLUID>(const Parti
 }
 
 template<>
-__forceinline__ __device__ void store_data_fluid<MaterialE::FIXED_COROTATED>(const ParticleBuffer<MaterialE::FIXED_COROTATED> particle_buffer_fluid, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, const float W_pressure, const float W_velocity, const float mass, const float J, const float max_vel){
+__forceinline__ __device__ void store_data_fluid<MaterialE::FIXED_COROTATED>(const ParticleBuffer<MaterialE::FIXED_COROTATED> particle_buffer_fluid, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, const float W_pressure, const float W_velocity, const float mass, const float J, const float speed_of_sound){
 	printf("Material type not supported for coupling as fluid.");
 }
 
 template<>
-__forceinline__ __device__ void store_data_fluid<MaterialE::SAND>(const ParticleBuffer<MaterialE::SAND> particle_buffer_fluid, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, const float W_pressure, const float W_velocity, const float mass, const float J, const float max_vel){
+__forceinline__ __device__ void store_data_fluid<MaterialE::SAND>(const ParticleBuffer<MaterialE::SAND> particle_buffer_fluid, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, const float W_pressure, const float W_velocity, const float mass, const float J, const float speed_of_sound){
 	printf("Material type not supported for coupling as fluid.");
 }
 
 template<>
-__forceinline__ __device__ void store_data_fluid<MaterialE::NACC>(const ParticleBuffer<MaterialE::NACC> particle_buffer_fluid, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, const float W_pressure, const float W_velocity, const float mass, const float J, const float max_vel){
+__forceinline__ __device__ void store_data_fluid<MaterialE::NACC>(const ParticleBuffer<MaterialE::NACC> particle_buffer_fluid, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, const float W_pressure, const float W_velocity, const float mass, const float J, const float speed_of_sound){
 	printf("Material type not supported for coupling as fluid.");
 }
 
 template<>
-__forceinline__ __device__ void store_data_fluid<MaterialE::FIXED_COROTATED_GHOST>(const ParticleBuffer<MaterialE::FIXED_COROTATED_GHOST> particle_buffer_fluid, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, const float W_pressure, const float W_velocity, const float mass, const float J, const float max_vel){
+__forceinline__ __device__ void store_data_fluid<MaterialE::FIXED_COROTATED_GHOST>(const ParticleBuffer<MaterialE::FIXED_COROTATED_GHOST> particle_buffer_fluid, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, const float W_pressure, const float W_velocity, const float mass, const float J, const float speed_of_sound){
 	printf("Material type not supported for coupling as fluid.");
 }
 
@@ -611,11 +611,11 @@ __forceinline__ __device__ void update_strain_solid(const ParticleBuffer<Materia
 }
 
 template<MaterialE MaterialType>
-__forceinline__ __device__ void update_strain_fluid(const ParticleBuffer<MaterialType> particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure, const float max_vel);
+__forceinline__ __device__ void update_strain_fluid(const ParticleBuffer<MaterialType> particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure, const float speed_of_sound);
 
 template<>
-__forceinline__ __device__ void update_strain_fluid<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure, const float max_vel) {
-	float tait_parameter = (particle_buffer.rho * max_vel * max_vel) / ((config::G_MACH_NUMBER * config::G_MACH_NUMBER) * particle_buffer.gamma);
+__forceinline__ __device__ void update_strain_fluid<MaterialE::J_FLUID>(const ParticleBuffer<MaterialE::J_FLUID> particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure, const float speed_of_sound) {
+	float tait_parameter = (particle_buffer.rho * speed_of_sound * speed_of_sound) / (particle_buffer.gamma);
 	const float lambda = tait_parameter;
 	//const float lambda = (particle_buffer.bulk_viscosity - (2.0f / 3.0f) * particle_buffer.viscosity);
 	
@@ -635,27 +635,27 @@ __forceinline__ __device__ void update_strain_fluid<MaterialE::J_FLUID>(const Pa
 }
 
 template<>
-__forceinline__ __device__ void update_strain_fluid(const ParticleBuffer<MaterialE::FIXED_COROTATED> particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure, const float max_vel) {
+__forceinline__ __device__ void update_strain_fluid(const ParticleBuffer<MaterialE::FIXED_COROTATED> particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure, const float speed_of_sound) {
 	printf("Material type not supported for updating strain as fluid.");
 }
 
 template<>
-__forceinline__ __device__ void update_strain_fluid(const ParticleBuffer<MaterialE::SAND> particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure, const float max_vel) {
+__forceinline__ __device__ void update_strain_fluid(const ParticleBuffer<MaterialE::SAND> particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure, const float speed_of_sound) {
 	printf("Material type not supported for updating strain as fluid.");
 }
 
 template<>
-__forceinline__ __device__ void update_strain_fluid(const ParticleBuffer<MaterialE::NACC> particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure, const float max_vel) {
+__forceinline__ __device__ void update_strain_fluid(const ParticleBuffer<MaterialE::NACC> particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure, const float speed_of_sound) {
 	printf("Material type not supported for updating strain as fluid.");
 }
 
 template<>
-__forceinline__ __device__ void update_strain_fluid(const ParticleBuffer<MaterialE::FIXED_COROTATED_GHOST> particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure, const float max_vel) {
+__forceinline__ __device__ void update_strain_fluid(const ParticleBuffer<MaterialE::FIXED_COROTATED_GHOST> particle_buffer, int src_blockno, int particle_id_in_block, const float weighted_pressure, const float speed_of_sound) {
 	printf("Material type not supported for updating strain as fluid.");
 }
 
 template<typename Partition, typename Grid, MaterialE MaterialTypeSolid, MaterialE MaterialTypeFluid>
-__forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, FluidParticleBuffer iq_fluid_particle_buffer, const float max_vel_fluid, const std::array<float, 3>* __restrict__ position_shared, const float* __restrict__ mass_shared, const float* __restrict__ J_shared, const std::array<float, 3>* __restrict__ normal_shared, const SurfacePointType* __restrict__ point_type_shared, const float* __restrict__ contact_area_shared, const int particle_offset, const int current_blockno, const ivec3 current_blockid, const ivec3 block_cellid, const int particle_id_in_block, float* __restrict__ scaling_solid, float* __restrict__ pressure_solid_nominator, float* __restrict__ pressure_solid_denominator, float* __restrict__ mass_solid, float* __restrict__ gradient_solid, float* __restrict__ coupling_solid, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, float* __restrict__ mass_fluid, float* __restrict__ gradient_fluid, float* __restrict__ boundary_fluid, float* __restrict__ velocity_fluid, float* __restrict__ coupling_fluid) {
+__forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, FluidParticleBuffer iq_fluid_particle_buffer, const float speed_of_sound_fluid, const std::array<float, 3>* __restrict__ position_shared, const float* __restrict__ mass_shared, const float* __restrict__ J_shared, const std::array<float, 3>* __restrict__ normal_shared, const SurfacePointType* __restrict__ point_type_shared, const float* __restrict__ contact_area_shared, const int particle_offset, const int current_blockno, const ivec3 current_blockid, const ivec3 block_cellid, const int particle_id_in_block, float* __restrict__ scaling_solid, float* __restrict__ pressure_solid_nominator, float* __restrict__ pressure_solid_denominator, float* __restrict__ mass_solid, float* __restrict__ gradient_solid, float* __restrict__ coupling_solid, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, float* __restrict__ mass_fluid, float* __restrict__ gradient_fluid, float* __restrict__ boundary_fluid, float* __restrict__ velocity_fluid, float* __restrict__ coupling_fluid) {
 	const vec3 normal {normal_shared[particle_id_in_block - particle_offset][0], normal_shared[particle_id_in_block - particle_offset][1], normal_shared[particle_id_in_block - particle_offset][2]};
 	//const SurfacePointType point_type = point_type_shared[particle_id_in_block - particle_offset];
 	const float contact_area = contact_area_shared[particle_id_in_block - particle_offset];
@@ -858,7 +858,7 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 		store_data_solid(particle_buffer_solid, current_scaling_solid, current_pressure_solid_nominator, current_pressure_solid_denominator, W_pressure, W_velocity_solid, mass, J);
 		
 		if(mass_fluid_total > 0.0f){
-			store_data_fluid(particle_buffer_fluid, current_scaling_fluid, current_pressure_fluid_nominator, current_pressure_fluid_denominator, W_pressure, W_velocity_fluid, mass_fluid_total, J, max_vel_fluid);
+			store_data_fluid(particle_buffer_fluid, current_scaling_fluid, current_pressure_fluid_nominator, current_pressure_fluid_denominator, W_pressure, W_velocity_fluid, mass_fluid_total, J, speed_of_sound_fluid);
 		}
 	}
 	
@@ -925,7 +925,7 @@ __forceinline__ __device__ void aggregate_data_solid(const ParticleBuffer<Materi
 }
 
 template<typename Partition, typename Grid, MaterialE MaterialTypeSolid, MaterialE MaterialTypeFluid>
-__forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, const float max_vel_fluid, const std::array<float, 3>* __restrict__ position_shared, const float* __restrict__ mass_shared, const float* __restrict__ J_shared, const std::array<float, 3>* __restrict__ velocity_shared, const std::array<float, 9>* __restrict__ C_shared, int* __restrict__ count_neighbours_shared, const int particle_offset, const int current_blockno, const ivec3 current_blockid, const ivec3 block_cellid, const int particle_id_in_block, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, float* __restrict__ mass_fluid, float* __restrict__ gradient_fluid, float* __restrict__ boundary_fluid, float* __restrict__ velocity_fluid) {
+__forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Grid grid_solid, const Grid grid_fluid, const float speed_of_sound_fluid, const std::array<float, 3>* __restrict__ position_shared, const float* __restrict__ mass_shared, const float* __restrict__ J_shared, const std::array<float, 3>* __restrict__ velocity_shared, const std::array<float, 9>* __restrict__ C_shared, int* __restrict__ count_neighbours_shared, const int particle_offset, const int current_blockno, const ivec3 current_blockid, const ivec3 block_cellid, const int particle_id_in_block, float* __restrict__ scaling_fluid, float* __restrict__ pressure_fluid_nominator, float* __restrict__ pressure_fluid_denominator, float* __restrict__ mass_fluid, float* __restrict__ gradient_fluid, float* __restrict__ boundary_fluid, float* __restrict__ velocity_fluid) {
 	const vec3 pos {position_shared[particle_id_in_block - particle_offset][0], position_shared[particle_id_in_block - particle_offset][1], position_shared[particle_id_in_block - particle_offset][2]};
 	const float mass = mass_shared[particle_id_in_block - particle_offset];
 	const float J  = J_shared[particle_id_in_block - particle_offset];
@@ -1056,7 +1056,7 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 		float* current_pressure_fluid_nominator = &(pressure_fluid_nominator[local_cell_index]);
 		float* current_pressure_fluid_denominator = &(pressure_fluid_denominator[local_cell_index]);
 		
-		store_data_fluid(particle_buffer_fluid, current_scaling_fluid, current_pressure_fluid_nominator, current_pressure_fluid_denominator, W_pressure, W_velocity, reduced_mass, J, max_vel_fluid);
+		store_data_fluid(particle_buffer_fluid, current_scaling_fluid, current_pressure_fluid_nominator, current_pressure_fluid_denominator, W_pressure, W_velocity, reduced_mass, J, speed_of_sound_fluid);
 	}
 	
 	for(size_t local_cell_index = 0; local_cell_index < get_thread_count<BLOCK_SIZE, (3 * config::G_BLOCKVOLUME + BLOCK_SIZE - 1) / BLOCK_SIZE>(threadIdx.x, 3 * config::G_BLOCKVOLUME); local_cell_index++){
@@ -1103,7 +1103,7 @@ __forceinline__ __device__ void aggregate_data_fluid(const ParticleBuffer<Materi
 
 //TODO: Directly store into matrices, not into local memory
 template<typename Partition, typename Grid, MaterialE MaterialTypeSolid, MaterialE MaterialTypeFluid>
-__global__ void create_iq_system(const uint32_t num_blocks, Duration dt, float max_vel_fluid, const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Partition partition, const Grid grid_solid, const Grid grid_fluid, FluidParticleBuffer iq_fluid_particle_buffer, const SurfaceParticleBuffer surface_particle_buffer_solid, const SurfaceParticleBuffer surface_particle_buffer_fluid, IQCreatePointers iq_pointers) {
+__global__ void create_iq_system(const uint32_t num_blocks, Duration dt, float speed_of_sound_fluid, const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, const Partition partition, const Grid grid_solid, const Grid grid_fluid, FluidParticleBuffer iq_fluid_particle_buffer, const SurfaceParticleBuffer surface_particle_buffer_solid, const SurfaceParticleBuffer surface_particle_buffer_fluid, IQCreatePointers iq_pointers) {
 	//Particles with offset [-2, 0] can lie within cell (due to storing with interpolation degree 2 wich results in offset of 2); Interolation degree may offset positions so we need [-2, 2] for all interpolation positions in our cell. Then wee also need neighbour positions so we get [-4, 2];
 	constexpr size_t KERNEL_SIZE = INTERPOLATION_DEGREE_MAX + 3 + 1;//Plus one for both sides being inclusive
 	constexpr size_t KERNEL_OFFSET = INTERPOLATION_DEGREE_MAX + 2;
@@ -1273,7 +1273,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, float m
 								, prev_partition
 								, grid_solid
 								, grid_fluid
-								, max_vel_fluid
+								, speed_of_sound_fluid
 								, &(position_shared[0])
 								, &(mass_shared[0])
 								, &(J_shared[0])
@@ -1389,7 +1389,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, float m
 								, grid_solid
 								, grid_fluid
 								, iq_fluid_particle_buffer
-								, max_vel_fluid
+								, speed_of_sound_fluid
 								, &(position_shared[0])
 								, &(mass_shared[0])
 								, &(J_shared[0])
@@ -1623,7 +1623,7 @@ __global__ void create_iq_system(const uint32_t num_blocks, Duration dt, float m
 }
 
 template<typename Partition, typename Grid, MaterialE MaterialTypeSolid, MaterialE MaterialTypeFluid>
-__global__ void update_velocity_and_strain(float max_vel_fluid, const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, Partition partition, Grid grid_solid, Grid grid_fluid, const float* delta_v_solid, const float* delta_v_fluid, const float* pressure_solid, const float* pressure_fluid) {
+__global__ void update_velocity_and_strain(float speed_of_sound_fluid, const ParticleBuffer<MaterialTypeSolid> particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> particle_buffer_fluid, const ParticleBuffer<MaterialTypeSolid> next_particle_buffer_solid, const ParticleBuffer<MaterialTypeFluid> next_particle_buffer_fluid, const Partition prev_partition, Partition partition, Grid grid_solid, Grid grid_fluid, const float* delta_v_solid, const float* delta_v_fluid, const float* pressure_solid, const float* pressure_fluid) {
 	const int src_blockno		   = static_cast<int>(blockIdx.x);
 	const auto blockid			   = partition.active_keys[blockIdx.x];
 	const ivec3 block_cellid = blockid * static_cast<int>(config::G_BLOCKSIZE);
@@ -1908,7 +1908,7 @@ __global__ void update_velocity_and_strain(float max_vel_fluid, const ParticleBu
 		const ivec3 absolute_local_id = local_id + ivec3(static_cast<int>(KERNEL_OFFSET), static_cast<int>(KERNEL_OFFSET), static_cast<int>(KERNEL_OFFSET));
 		float weighted_pressure = pressure_fluid_shared[absolute_local_id[0]][absolute_local_id[1]][absolute_local_id[2]];
 		
-		update_strain_fluid<MaterialTypeFluid>(particle_buffer_fluid, advection_source_blockno, source_pidib, weighted_pressure, max_vel_fluid);
+		update_strain_fluid<MaterialTypeFluid>(particle_buffer_fluid, advection_source_blockno, source_pidib, weighted_pressure, speed_of_sound_fluid);
 	}
 #endif
 }

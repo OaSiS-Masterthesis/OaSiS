@@ -166,13 +166,18 @@ void parse_scene(const std::string& fn, std::unique_ptr<mn::OasisSimulator>& ben
 
 										benchmark->init_model<mn::MaterialE::FIXED_COROTATED>(positions, velocity, grid_offset);
 										benchmark->update_fr_parameters(model["rho"].GetFloat(), model["volume"].GetFloat(), model["youngs_modulus"].GetFloat(), model["poisson_ratio"].GetFloat());
-										} else if(constitutive == "jfluid") {
-											if(!check_member(model, "rho") || !check_member(model, "volume") || !check_member(model, "bulk_viscosity") || !check_member(model, "bulk_modulus") || !check_member(model, "gamma") || !check_member(model, "viscosity")) {
-												return;
-											}
+									} else if(constitutive == "jfluid") {
+										if(!check_member(model, "rho") || !check_member(model, "volume") || !check_member(model, "bulk_viscosity") || !check_member(model, "bulk_modulus") || !check_member(model, "gamma") || !check_member(model, "viscosity")) {
+											return;
+										}
+										
+										float speed_of_sound = std::numeric_limits<float>::lowest();
+										if(model.HasMember("speed_of_sound")) {
+											speed_of_sound = model["speed_of_sound"].GetFloat();
+										}
 
 										benchmark->init_model<mn::MaterialE::J_FLUID>(positions, velocity, grid_offset);
-										benchmark->update_j_fluid_parameters(model["rho"].GetFloat(), model["volume"].GetFloat(), model["bulk_viscosity"].GetFloat(), model["bulk_modulus"].GetFloat(), model["gamma"].GetFloat(), model["viscosity"].GetFloat());
+										benchmark->update_j_fluid_parameters(model["rho"].GetFloat(), model["volume"].GetFloat(), model["bulk_viscosity"].GetFloat(), model["bulk_modulus"].GetFloat(), model["gamma"].GetFloat(), model["viscosity"].GetFloat(), speed_of_sound);
 									} else if(constitutive == "nacc") {
 										if(!check_member(model, "rho") || !check_member(model, "volume") || !check_member(model, "youngs_modulus") || !check_member(model, "poisson_ratio") || !check_member(model, "beta") || !check_member(model, "xi")) {
 											return;

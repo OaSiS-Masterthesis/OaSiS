@@ -8,32 +8,29 @@
 	"models": [
 		{
 			"type": "particle",
-			"file": "two_dragons.sdf",
+			"file": "cube.sdf",
+			"scaleByDx": true,
 			"constitutive": "jfluid",
 			"volume": 7.4505806e-20,
-			"rho": 1e3,
-			"bulk_viscosity": 2.47e-3,
+			"rho": 1.33e3,
+			"bulk_viscosity": 0.08,
 			"bulk_modulus": 2.2e9,
-			"gamma": 7.0,
-			"viscosity": 1.0016e-3,
+			"gamma": 3.5,
+			"viscosity": 0.08,
+			"speed_of_sound": 0.0,
 			"offset": [
-				0.1,
-				0.056,
-				0.1
-			],
-			"grid_offset": [
-				0.0,
-				0.0,
-				0.0
+				0.44,
+				0.36,
+				0.44
 			],
 			"span": [
-				15.0,
-				15.0,
-				15.0
+				100.0,
+				100.0,
+				100.0
 			],
 			"velocity": [
 				0.0,
-				-5.0,
+				0.0,
 				0.0
 			]
 		},
@@ -46,9 +43,9 @@
 			"youngs_modulus": 1e5,
 			"poisson_ratio": 0.4,
 			"offset": [
-				0.1,
-				0.04,
-				0.1
+				0.48,
+				0.515,
+				0.44
 			],
 			"span": [
 				15.0,
@@ -57,7 +54,7 @@
 			],
 			"velocity": [
 				0.0,
-				0.0,
+				-1.0,
 				0.0
 			]
 		}

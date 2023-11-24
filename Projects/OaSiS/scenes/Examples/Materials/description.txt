@@ -1,8 +1,8 @@
 Fluid:
-0: Honey                (bulk_viscosity: 2 (Unknown, but Newton fluid, so we can assume any) viscosity: 2 rho: 1.11e3 gamma: 1.0; "Anti-Microbial and Physico-Chemical Properties of Processed and Raw Honeys of Mauritius *" https://en.wikipedia.org/wiki/List_of_viscosities)
-1: Maple syrup(66°)     (bulk_viscosity: 0.08 (Unknown, but Newton fluid, so we can assume any) viscosity: 0.08 rho: 1.33e3 gamma: ?; "Rheological properties of Canadian maple syrup" https://chem.libretexts.org/Ancillary_Materials/Exemplars_and_Case_Studies/Exemplars/Foods/Sugar_Solution_Density)
-2: Water                (bulk_viscosity: 2.47e-3 viscosity: 1.0016e-3 rho: 1e3 gamma: 7.0; Reference)
-3: Molten Iron(5950K)   (bulk_viscosity: 3.3e-2 (Actually 3.2e-3, but too low values are bad) viscosity: 3.3e-2 rho: 12.51e3 gamma: ?; "Viscosity measurements on metal melts at highpressure and viscosity calculations for the earth's core")
+0: Honey                (viscosity: 2 rho: 1.11e3 gamma/heat capacity ratio: 1.225; "Anti-Microbial and Physico-Chemical Properties of Processed and Raw Honeys of Mauritius *" "Estimation of Some Important and useful Thermodynamic, Thermophysical and Thermoacoustical Properties of Different Types of Honey Sample" https://en.wikipedia.org/wiki/List_of_viscosities)
+1: Maple syrup(66°)     (viscosity: 0.08 rho: 1.33e3 gamma/heat capacity ratio: 3.5 (estimated half of water); "Rheological properties of Canadian maple syrup" https://chem.libretexts.org/Ancillary_Materials/Exemplars_and_Case_Studies/Exemplars/Foods/Sugar_Solution_Density)
+2: Water                (viscosity: 1.0016e-3 rho: 1e3 gamma/heat capacity ratio: 7.0; Reference)
+3: Molten Iron(5950K)   (viscosity: 3.3e-2 rho: 12.51e3 gamma/heat capacity ratio: 1.2 (undefined, just using experimental value); "Viscosity measurements on metal melts at highpressure and viscosity calculations for the earth's core")
 Solid:
 None (Fixed corrotated cannot handle high youngs modulus. So actually rubber is the only thing it can simulate without exploding.)
 //0: Bread                (youngs: 9e3 rho: 5e2 poisson: 0.19; "A Thermomechanical Material Point Method for Baking and Cooking" "Effect of sourdough at different concentrations on quality and shelf life of bread")
