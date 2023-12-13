@@ -1,8 +1,8 @@
 {
 	"simulation": {
 		"gpuid": 0,
-		"fps": 120,
-		"frames": 120,
+		"fps": 48000,
+		"frames": 300,
 		"default_dt": 5e-6
 	},
 	"models": [
@@ -10,9 +10,9 @@
 			"type": "particle",
 			"file": "two_dragons.sdf",
 			"constitutive": "fixed_corotated_ghost",
-			"volume": 7.4505806e-17,
+			"volume": 7.4505806e-20,
 			"rho": 1e3,
-			"youngs_modulus": 1,
+			"youngs_modulus": 1e3,
 			"poisson_ratio": 0.4,
 			"offset": [
 				0.1,
@@ -34,9 +34,9 @@
 			"type": "particle",
 			"file": "two_dragons.sdf",
 			"constitutive": "fixed_corotated_ghost",
-			"volume": 7.4505806e-17,
+			"volume": 7.4505806e-20,
 			"rho": 1e3,
-			"youngs_modulus": 1e3,
+			"youngs_modulus": 1e4,
 			"poisson_ratio": 0.4,
 			"offset": [
 				0.2,
@@ -58,7 +58,7 @@
 			"type": "particle",
 			"file": "two_dragons.sdf",
 			"constitutive": "fixed_corotated_ghost",
-			"volume": 7.4505806e-17,
+			"volume": 7.4505806e-20,
 			"rho": 1e3,
 			"youngs_modulus": 1e5,
 			"poisson_ratio": 0.4,
@@ -82,7 +82,7 @@
 			"type": "particle",
 			"file": "two_dragons.sdf",
 			"constitutive": "fixed_corotated_ghost",
-			"volume": 7.4505806e-17,
+			"volume": 7.4505806e-20,
 			"rho": 1e3,
 			"youngs_modulus": 1e6,
 			"poisson_ratio": 0.4,

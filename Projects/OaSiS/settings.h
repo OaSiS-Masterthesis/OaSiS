@@ -83,7 +83,7 @@ namespace config {
 
 	constexpr float MODEL_PPC	= 8.0f;
 	constexpr float G_MODEL_PPC = MODEL_PPC;
-	constexpr float CFL			= 0.5f;
+	constexpr float CFL			= 0.0001f;//0.01 (or smaller) for compressible, otherwise 0.5
 
 	// background_grid
 	constexpr float GRID_BLOCK_SPACING_INV = 10.0f;
@@ -93,7 +93,7 @@ namespace config {
 	constexpr float DXINV				 = (GRID_BLOCK_SPACING_INV * (1 << DOMAIN_BITS));
 	constexpr int G_DOMAIN_BITS			 = DOMAIN_BITS;
 	constexpr int G_DOMAIN_SIZE			 = (1 << DOMAIN_BITS);
-	constexpr float G_BOUNDARY_CONDITION = 2.0;
+	constexpr float G_BOUNDARY_CONDITION = 2.0;//31.0 for solid in fluid. otherwise at least 2.
 	constexpr float G_DX				 = 1.f / DXINV;
 	constexpr float G_DX_INV			 = DXINV;
 	constexpr float G_D_INV				 = 4.f * DXINV * DXINV;

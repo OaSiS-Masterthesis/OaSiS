@@ -223,15 +223,20 @@ void parse_scene(const std::string& fn, std::unique_ptr<mn::OasisSimulator>& ben
 									scaleByDx = model["scaleByDx"].GetBool();
 								}
 								
+								bool uniformScale = true;
+								if(model.HasMember("uniformScale")) {
+									uniformScale = model["uniformScale"].GetBool();
+								}
+								
 								//offset and span relative to grid size
 								offset /=  mn::config::GRID_BLOCK_SPACING_INV;
 								span /=  mn::config::GRID_BLOCK_SPACING_INV;
 							
 								std::vector<std::array<float, mn::config::NUM_DIMENSIONS>> positions;
 								if(scaleByDx){
-									positions = mn::read_sdf(model["file"].GetString(), mn::config::MODEL_PPC, mn::config::G_DX, offset, span);
+									positions = mn::read_sdf(model["file"].GetString(), mn::config::MODEL_PPC, mn::config::G_DX, offset, span, uniformScale);
 								}else{
-									positions = mn::read_sdf(model["file"].GetString(), mn::config::MODEL_PPC, mn::config::G_DX, mn::config::G_DOMAIN_SIZE, offset, span);
+									positions = mn::read_sdf(model["file"].GetString(), mn::config::MODEL_PPC, mn::config::G_DX, mn::config::G_DOMAIN_SIZE, offset, span, uniformScale);
 								}
 								
 								mn::IO::insert_job([&p, positions]() {

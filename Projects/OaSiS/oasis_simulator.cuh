@@ -205,6 +205,7 @@ struct OasisSimulator {
 	std::vector<std::size_t> checked_bin_counts		  = {};
 	float max_vels;
 	std::vector<float> max_vel_per_model = {};
+	std::vector<float> default_speed_of_sound_per_model = {};
 	std::vector<float> speed_of_sound_per_model = {};
 	int partition_block_count;
 	int neighbor_block_count;
@@ -708,7 +709,8 @@ struct OasisSimulator {
 		bincount.emplace_back(0);
 		checked_bin_counts.emplace_back(0);
 		max_vel_per_model.emplace_back(0.0f);
-		speed_of_sound_per_model.emplace_back(std::numeric_limits<float>::lowest());
+		default_speed_of_sound_per_model.emplace_back(std::numeric_limits<float>::lowest());
+		speed_of_sound_per_model.emplace_back(0.0f);
 		
 		//Create triangle_shell_grid
 		for(int copyid = 0; copyid < BIN_COUNT; copyid++) {
@@ -850,7 +852,7 @@ struct OasisSimulator {
 			}
 		);
 		
-		speed_of_sound_per_model.back() = speed_of_sound;
+		default_speed_of_sound_per_model.back() = speed_of_sound;
 	}
 
 	void update_nacc_parameters(float rho, float vol, float ym, float pr, float beta, float xi) {
@@ -989,7 +991,8 @@ struct OasisSimulator {
 			//Pressure travels with speed of sound
 			float speed_of_sound = 0.0f;
 			for(int i = 0; i < get_model_count(); ++i) {
-				speed_of_sound = std::max(speed_of_sound, (speed_of_sound_per_model[i] != std::numeric_limits<float>::lowest() ? speed_of_sound_per_model[i] : max_vel_per_model[i] / config::G_MACH_NUMBER));
+				speed_of_sound_per_model[i] = (default_speed_of_sound_per_model[i] != std::numeric_limits<float>::lowest() ? default_speed_of_sound_per_model[i] : max_vel_per_model[i] / config::G_MACH_NUMBER);
+				speed_of_sound = std::max(speed_of_sound, speed_of_sound_per_model[i]);
 			}
 			dt = compute_dt((speed_of_sound + max_vel), Duration::zero(), seconds_per_frame, dt_default);
 		}
@@ -1054,6 +1057,8 @@ struct OasisSimulator {
 						max_vels = max(max_vels, max_vel_per_model[i]);
 						
 						max_vel_per_model[i] = std::sqrt(max_vel_per_model[i]);
+						
+						std::cout << "Max_vel(" << i << "): " << max_vel_per_model[i] << std::endl;
 					}
 					
 					managed_memory.release(tmps.d_max_vel);
@@ -1079,7 +1084,8 @@ struct OasisSimulator {
 				//Pressure travels with speed of sound
 				float speed_of_sound = 0.0f;
 				for(int i = 0; i < get_model_count(); ++i) {
-					speed_of_sound = std::max(speed_of_sound, (speed_of_sound_per_model[i] != std::numeric_limits<float>::lowest() ? speed_of_sound_per_model[i] : max_vel_per_model[i] / config::G_MACH_NUMBER));
+					speed_of_sound_per_model[i] = (default_speed_of_sound_per_model[i] != std::numeric_limits<float>::lowest() ? default_speed_of_sound_per_model[i] : max_vel_per_model[i] / config::G_MACH_NUMBER);
+					speed_of_sound = std::max(speed_of_sound, speed_of_sound_per_model[i]);
 				}
 				next_dt = compute_dt((speed_of_sound + max_vel), current_step_time, seconds_per_frame, dt_default);
 				fmt::print(fmt::emphasis::bold, "{} --{}--> {}, defaultDt: {}, max_vel: {}\n", cur_time.count(), next_dt.count(), next_time.count(), dt_default.count(), max_vel);

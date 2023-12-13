@@ -418,7 +418,7 @@ __forceinline__ __device__ void compute_stress<float, MaterialE::FIXED_COROTATED
 	P[8] = P_hat[0] * U[2] * V[2] + P_hat[1] * U[5] * V[5] + P_hat[2] * U[8] * V[8];
 
 	/// PF'
-	//1/J * Kirchhof-stress * volume
+	//Pichola-Kirchhof-stress * volume
 	PF[0] = (P[0] * F[0] + P[3] * F[3] + P[6] * F[6]) * volume / J;
 	PF[1] = (P[1] * F[0] + P[4] * F[3] + P[7] * F[6]) * volume / J;
 	PF[2] = (P[2] * F[0] + P[5] * F[3] + P[8] * F[6]) * volume / J;

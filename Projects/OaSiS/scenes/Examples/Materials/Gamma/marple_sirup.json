@@ -1,8 +1,8 @@
 {
 	"simulation": {
 		"gpuid": 0,
-		"fps": 120,
-		"frames": 120,
+		"fps": 48000,
+		"frames": 300,
 		"default_dt": 5e-6
 	},
 	"models": [
@@ -11,7 +11,7 @@
 			"file": "cube.sdf",
 			"scaleByDx": true,
 			"constitutive": "jfluid",
-			"volume": 7.4505806e-17,
+			"volume": 7.4505806e-20,
 			"rho": 1.33e3,
 			"bulk_viscosity": 0.08,
 			"gamma": -1.0,
@@ -37,7 +37,7 @@
 			"file": "cube.sdf",
 			"scaleByDx": true,
 			"constitutive": "jfluid",
-			"volume": 7.4505806e-17,
+			"volume": 7.4505806e-20,
 			"rho": 1.33e3,
 			"bulk_viscosity": 0.08,
 			"gamma": 1.0,
@@ -63,7 +63,7 @@
 			"file": "cube.sdf",
 			"scaleByDx": true,
 			"constitutive": "jfluid",
-			"volume": 7.4505806e-17,
+			"volume": 7.4505806e-20,
 			"rho": 1.33e3,
 			"bulk_viscosity": 0.08,
 			"gamma": 3.5,
@@ -89,7 +89,7 @@
 			"file": "cube.sdf",
 			"scaleByDx": true,
 			"constitutive": "jfluid",
-			"volume": 7.4505806e-17,
+			"volume": 7.4505806e-20,
 			"rho": 1.33e3,
 			"bulk_viscosity": 0.08,
 			"gamma": 5.0,

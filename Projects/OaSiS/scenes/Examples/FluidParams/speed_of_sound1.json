@@ -2,7 +2,7 @@
 	"simulation": {
 		"gpuid": 0,
 		"fps": 48000,
-		"frames": 120,
+		"frames": 300,
 		"default_dt": 5e-6
 	},
 	"models": [
@@ -12,16 +12,16 @@
 			"scaleByDx": true,
 			"constitutive": "jfluid",
 			"volume": 7.4505806e-20,
-			"rho": 1e2,
+			"rho": 1e3,
 			"bulk_viscosity": 2.47e-3,
 			"bulk_modulus": 2.2e9,
 			"gamma": 7.0,
 			"viscosity": 1.0016e-3,
-			"speed_of_sound": 0.0,
+			"speed_of_sound": 0.1,
 			"offset": [
 				0.1,
-				0.047,
-				0.12
+				0.04,
+				0.1
 			],
 			"span": [
 				15.0,
@@ -34,47 +34,22 @@
 				0.0
 			]
 		},
-		{
-			"type": "particle",
-			"file": "two_dragons.sdf",
-			"constitutive": "fixed_corotated_ghost",
-			"volume": 7.4505806e-20,
-			"rho": 1e6,
-			"youngs_modulus": 1e5,
-			"poisson_ratio": 0.4,
-			"offset": [
-				0.1,
-				0.026,
-				0.1
-			],
-			"span": [
-				15.0,
-				15.0,
-				15.0
-			],
-			"velocity": [
-				0.0,
-				0.0,
-				0.0
-			]
-		}
-	],
 		{
 			"type": "particle",
 			"file": "cube.sdf",
 			"scaleByDx": true,
 			"constitutive": "jfluid",
 			"volume": 7.4505806e-20,
-			"rho": 1e6,
+			"rho": 1e3,
 			"bulk_viscosity": 2.47e-3,
 			"bulk_modulus": 2.2e9,
 			"gamma": 7.0,
 			"viscosity": 1.0016e-3,
-			"speed_of_sound": 0.0,
+			"speed_of_sound": 1.0,
 			"offset": [
 				0.2,
-				0.047,
-				0.12
+				0.04,
+				0.1
 			],
 			"span": [
 				15.0,
@@ -89,16 +64,20 @@
 		},
 		{
 			"type": "particle",
-			"file": "two_dragons.sdf",
-			"constitutive": "fixed_corotated_ghost",
+			"file": "cube.sdf",
+			"scaleByDx": true,
+			"constitutive": "jfluid",
 			"volume": 7.4505806e-20,
-			"rho": 1e2,
-			"youngs_modulus": 1e5,
-			"poisson_ratio": 0.4,
+			"rho": 1e3,
+			"bulk_viscosity": 2.47e-3,
+			"bulk_modulus": 2.2e9,
+			"gamma": 7.0,
+			"viscosity": 1.0016e-3,
+			"speed_of_sound": 3.0,
 			"offset": [
-				0.2,
-				0.026,
-				0.1
+				0.1,
+				0.04,
+				0.2
 			],
 			"span": [
 				15.0,
@@ -107,21 +86,37 @@
 			],
 			"velocity": [
 				0.0,
-				0.0,
+				-5.0,
 				0.0
 			]
-		}
-	],
-	"physical_systems": [
-		{
-			"type": "solid-fluid coupling",
-			"solid": 1,
-			"fluid": 0
 		},
 		{
-			"type": "solid-fluid coupling",
-			"solid": 3,
-			"fluid": 2
+			"type": "particle",
+			"file": "cube.sdf",
+			"scaleByDx": true,
+			"constitutive": "jfluid",
+			"volume": 7.4505806e-20,
+			"rho": 1e3,
+			"bulk_viscosity": 2.47e-3,
+			"bulk_modulus": 2.2e9,
+			"gamma": 7.0,
+			"viscosity": 1.0016e-3,
+			"speed_of_sound": 5.0,
+			"offset": [
+				0.2,
+				0.04,
+				0.2
+			],
+			"span": [
+				15.0,
+				15.0,
+				15.0
+			],
+			"velocity": [
+				0.0,
+				-5.0,
+				0.0
+			]
 		}
 	]
 }

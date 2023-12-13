@@ -139,7 +139,7 @@ void write_points_add(const std::vector<std::array<T, dim>>& data, const std::st
 }
 
 /// have issues
-auto read_sdf(const std::string& fn, float ppc, float dx, vec<float, 3> offset, vec<float, 3> lengths) {
+auto read_sdf(const std::string& fn, float ppc, float dx, vec<float, 3> offset, vec<float, 3> lengths, bool uniform_scale = true) {
 	std::vector<std::array<float, 3>> data;
 	std::string filename = std::string(AssetDirPath) + "MpmParticles/" + fn;
 
@@ -162,7 +162,11 @@ auto read_sdf(const std::string& fn, float ppc, float dx, vec<float, 3> offset, 
 
 	for(int i = 0, size = samples.size() / 3; i < size; i++) {
 		vec<float, 3> p {samples[i * 3 + 0], samples[i * 3 + 1], samples[i * 3 + 2]};
-		p = (p - mins) * scale + offset;
+		if(uniform_scale){
+			p = (p - mins) * scale + offset;
+		}else{
+			p = (p - mins) * scales + offset;
+		}
 		// particle[0] = ((samples[i * 3 + 0]) + offset[0]);
 		// particle[1] = ((samples[i * 3 + 1]) + offset[1]);
 		// particle[2] = ((samples[i * 3 + 2]) + offset[2]);
@@ -172,7 +176,7 @@ auto read_sdf(const std::string& fn, float ppc, float dx, vec<float, 3> offset, 
 	return data;
 }
 
-auto read_sdf(const std::string& fn, float ppc, float dx, int domainsize, vec<float, 3> offset, vec<float, 3> lengths) {
+auto read_sdf(const std::string& fn, float ppc, float dx, int domainsize, vec<float, 3> offset, vec<float, 3> lengths, bool uniform_scale = true) {
 	std::vector<std::array<float, 3>> data;
 	std::string filename = std::string(AssetDirPath) + "MpmParticles/" + fn;
 
@@ -199,7 +203,11 @@ auto read_sdf(const std::string& fn, float ppc, float dx, int domainsize, vec<fl
 
 	for(int i = 0, size = samples.size() / 3; i < size; i++) {
 		vec<float, 3> p {samples[i * 3 + 0], samples[i * 3 + 1], samples[i * 3 + 2]};
-		p = (p - mins) * scale + offset;
+		if(uniform_scale){
+			p = (p - mins) * scale + offset;
+		}else{
+			p = (p - mins) * scales + offset;
+		}
 		data.push_back(std::array<float, 3> {p[0], p[1], p[2]});
 	}
 	printf("[%f, %f, %f] - [%f, %f, %f], scale %f, parcount %d, lsdx %f, dx %f\n", mins[0], mins[1], mins[2], maxs[0], maxs[1], maxs[2], scale, (int) data.size(), levelsetDx, dx);

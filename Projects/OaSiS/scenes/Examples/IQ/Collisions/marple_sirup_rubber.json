@@ -2,13 +2,13 @@
 	"simulation": {
 		"gpuid": 0,
 		"fps": 48000,
-		"frames": 120,
+		"frames": 1200,
 		"default_dt": 5e-6
 	},
 	"models": [
 		{
 			"type": "particle",
-			"file": "cube.sdf",
+			"file": "cuboid.sdf",
 			"scaleByDx": true,
 			"constitutive": "jfluid",
 			"volume": 7.4505806e-20,
@@ -19,18 +19,18 @@
 			"viscosity": 0.08,
 			"speed_of_sound": 0.0,
 			"offset": [
-				0.1,
+				0.102,
 				0.047,
 				0.12
 			],
 			"span": [
-				15.0,
-				15.0,
-				15.0
+				20.0,
+				20.0,
+				20.0
 			],
 			"velocity": [
 				0.0,
-				-5.0,
+				-1.0,
 				0.0
 			]
 		},
@@ -44,7 +44,7 @@
 			"poisson_ratio": 0.4,
 			"offset": [
 				0.1,
-				0.026,
+				0.0261,
 				0.1
 			],
 			"span": [
